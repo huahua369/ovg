@@ -35,7 +35,143 @@
 #define FULLSCREEN_BIT         0x10000000
 #define SRCTYPE_MASK           0x000000FF
 
- /* ── 4.  Load a pre-compiled SPIR-V file ─────────────────────── */
+#if 1
+#define SDL_BLENDMODE_NONE_FULL(blend) \
+    do { \
+        (blend).enable_blend = false; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_BLEND_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_BLEND_PREMULTIPLIED_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_ADD_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_ADD_PREMULTIPLIED_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_MOD_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_COLOR; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_MUL_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_DST_COLOR; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+#define SDL_BLENDMODE_SCREEN_FULL(blend) \
+    do { \
+        (blend).enable_blend = true; \
+        (blend).src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR; \
+        (blend).color_blend_op = SDL_GPU_BLENDOP_ADD; \
+        (blend).src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE; \
+        (blend).dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR; \
+        (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
+    } while(0)
+
+void set_blend(SDL_GPUColorTargetBlendState& blend, uint32_t blendMode)
+{
+	blend = {};
+	auto bm = static_cast<blendMode_e>(blendMode);
+
+	switch (bm)
+	{
+	case blendMode_e::none:
+		SDL_BLENDMODE_NONE_FULL(blend);
+		break;
+	case blendMode_e::normal:
+		SDL_BLENDMODE_BLEND_FULL(blend);
+		break;
+	case blendMode_e::additive:
+		SDL_BLENDMODE_ADD_FULL(blend);
+		break;
+	case blendMode_e::normal_prem:
+		SDL_BLENDMODE_BLEND_PREMULTIPLIED_FULL(blend);
+		break;
+	case blendMode_e::additive_prem:
+		SDL_BLENDMODE_ADD_PREMULTIPLIED_FULL(blend);
+		break;
+	case blendMode_e::multiply:
+		SDL_BLENDMODE_MUL_FULL(blend);
+		break;
+	case blendMode_e::modulate:
+		SDL_BLENDMODE_MOD_FULL(blend);
+		break;
+	case blendMode_e::screen:
+		SDL_BLENDMODE_SCREEN_FULL(blend);
+		break;
+	default:
+		SDL_BLENDMODE_NONE_FULL(blend);
+		break;
+	}
+
+	blend.color_write_mask =
+		SDL_GPU_COLORCOMPONENT_R |
+		SDL_GPU_COLORCOMPONENT_G |
+		SDL_GPU_COLORCOMPONENT_B |
+		SDL_GPU_COLORCOMPONENT_A;
+}
+#endif // 1
+
+
+
+
+/* ── 4.  Load a pre-compiled SPIR-V file ─────────────────────── */
 void* LoadSPIRV(const char* path, size_t* outSize) {
 	SDL_IOStream* f = SDL_IOFromFile(path, "rb");
 	if (!f) { SDL_Log("Cannot open %s: %s", path, SDL_GetError()); return NULL; }
@@ -186,6 +322,8 @@ bool VG_Init(VGState* g, int width, int height) {
 			.enable_blend = true,
 		},
 	};
+	SDL_GPUColorTargetDescription colorTarget1 = {};
+	set_blend(colorTarget.blend_state, (uint32_t)blendMode_e::normal_prem);
 
 	/* ── 6d. Create the graphics pipeline ────────────────── */
 	SDL_GPUDepthStencilState dss = {};

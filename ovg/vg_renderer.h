@@ -1,19 +1,24 @@
 #pragma once
 /*
- * vg_renderer.c
- *
- * SDL3 GPU vector-graphics renderer built around vg.slang.h
- *
- *  Supports: SOLID / SURFACE / LINEAR / RADIAL / SWEEP paints
- *  Uses:    SDL_PushGPUVertexUniformData  (push constants = UBO + PushConsts)
- *
- *  Build (Linux, Vulkan backend):
- *      glslangValidator -V vg.vert -o vg.vert.spv
- *      glslangValidator -V vg.frag -o vg.frag.spv
- *      gcc vg_renderer.c -o vg_renderer $(sdl3-config --cflags --libs) -lvulkan
- *
- *  Run:  place vg.vert.spv / vg.frag.spv next to the executable.
- */
+  vg_renderer.c
+
+  SDL3 GPU vector-graphics renderer built around vg.slang.h
+
+   Supports: SOLID / SURFACE / LINEAR / RADIAL / SWEEP paints
+   Uses:    SDL_PushGPUVertexUniformData  (push constants = UBO + PushConsts)
+矢量图：预乘混合渲染
+位图：支持none = -1, 不混合
+	normal = 0,	 普通混合
+	additive,
+	multiply,
+	modulate,
+	screen,
+	normal_prem,	 预乘alpha
+	additive_prem,
+模板状态：
+管线配置：
+
+*/
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>

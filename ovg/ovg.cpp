@@ -1206,10 +1206,16 @@ void ovg_set_opacity(vg_state_save_t* ctx, float opacity) {
 	if (ctx)ctx->pushConsts.opacity = opacity;
 }
 void ovg_set_source_color(vg_state_save_t* ctx, uint32_t c) {
-	if (ctx)ctx->color = c;
+	if (ctx)
+	{
+		ctx->color = c; ctx->pattern = 0;
+	}
 }
 void ovg_set_source_rgba(vg_state_save_t* ctx, float r, float g, float b, float a) {
-	if (ctx)ctx->color = CreateRgbaf(r, g, b, a); ctx->pattern = 0;
+	if (ctx)
+	{
+		ctx->color = CreateRgbaf(r, g, b, a); ctx->pattern = 0;
+	}
 }
 void ovg_set_source_rgb(vg_state_save_t* ctx, float r, float g, float b) {
 	ovg_set_source_rgba(ctx, r, g, b, 1.0f);
@@ -2018,7 +2024,6 @@ vg_state_save_t* rvg_t::new_state()
 	t->miterLimit = 10.f;
 	t->curOperator = VG_OPERATOR_OVER;
 	t->curFillRule = VG_FILL_RULE_NON_ZERO;
-	t->aa = false;
 	//t->bounds = b;
 	t->pushConsts = pc;
 	return t;
@@ -2076,10 +2081,22 @@ void rvg_t::paint()
 	cmdlist.push_back({ .vg = c });
 }
 
+#define COLOR_R(c) ((c) & 0xFF)
+#define COLOR_G(c) (((c) >> 8) & 0xFF)
+#define COLOR_B(c) (((c) >> 16) & 0xFF)
+#define COLOR_A(c) (((c) >> 24) & 0xFF)
 
+#define MAKE_RGBA(r,g,b,a) \
+    ((uint32_t)((a) << 24) | ((b) << 16) | ((g) << 8) | (r))
+static inline uint8_t mul_unorm8(uint8_t a, uint8_t b)
+{
+	return (uint8_t)((a * b + 127) / 255);
+}
 void rvg_t::poly_fill(ovg_path_t* ctx, glm::vec4* bounds, vgcmd_t& c)
 {
 	Vertex v = {}; v.color = ctx->color; v.uv = { };
+	uint32_t fillColor = ctx->color; // 自带 alpha
+	uint8_t fillA = COLOR_A(fillColor);
 
 	uint32_t ptrPath = 0;
 	uint32_t firstPtIdx = 0;
@@ -2105,14 +2122,14 @@ void rvg_t::poly_fill(ovg_path_t* ctx, glm::vec4* bounds, vgcmd_t& c)
 	ctx->curVertOffset = _vertex.size();
 	c.vertex.x = _vertex.size();
 #if 1
+	auto& polyPoints = _normals;
 	while (ptrPath < ctx->pathPtr) {
 		uint32_t pathPointCount = ctx->pathes[ptrPath] & PATH_ELT_MASK;
 		if (pathPointCount > 2) {
 			uint32_t firstVertIdx = (uint32_t)_vertex.size();
 
-
+			polyPoints.resize(pathPointCount);
 			// ---- 1. 先收集局部坐标 + 算 bounds（避免展开时重复 transform）----
-			std::vector<glm::vec2> polyPoints(pathPointCount);
 			for (uint32_t i = 0; i < pathPointCount; i++) {
 				glm::vec2 localPos = ctx->points[i + firstPtIdx];
 				polyPoints[i] = localPos;
@@ -2127,7 +2144,7 @@ void rvg_t::poly_fill(ovg_path_t* ctx, glm::vec4* bounds, vgcmd_t& c)
 					if (transformedPos.y > bounds->w) bounds->w = transformedPos.y;
 				}
 			}
-
+			v.color = fillColor;
 			// ---- 2. 展开为 TRIANGLE_LIST ----
 			// 原 FAN 语义: v0 是共享顶点，三角形为 (v0, v_i, v_{i+1})
 			for (uint32_t i = 1; i < pathPointCount - 1; i++) {
@@ -2139,9 +2156,9 @@ void rvg_t::poly_fill(ovg_path_t* ctx, glm::vec4* bounds, vgcmd_t& c)
 				_vertex.push_back(v);
 
 				v.pos = polyPoints[i + 1];
-				_vertex.push_back(v);
+				_vertex.push_back(v); c.vertex.y += 3;
 			}
-			c.vertex.y += (pathPointCount - 2) * 3;  // ← 关键改动
+
 
 		}
 		firstPtIdx += pathPointCount;
@@ -2399,7 +2416,7 @@ void rvg_t::fill_non_zero(ovg_path_t* p)
 	uint32_t ptrPath = 0;
 	uint32_t firstPtIdx = 0;
 	const glm::vec3 uv = { 0,0,-1 };
-	bool aa = false;// t->aa; 
+	bool aa = t->aa;
 	Vertex v = {}; v.color = color; v.uv = { 0, 0 };
 	uint32_t cur_idx = _vertex.size() - p->curVertOffset;
 	auto pcolor = p->colors.data();

@@ -3,6 +3,7 @@
 set(OVG_SOURCES 
     ovg.cpp
     vg_renderer.cpp
+    ovg_renderer_sdl3.cpp
     #filter_pipeline.cpp
     #image_loader.cpp
 )

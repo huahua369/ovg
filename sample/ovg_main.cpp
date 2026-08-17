@@ -4,6 +4,7 @@
 #include "ovg_main.h"
 #include "ovg.h"
 #include "vg_renderer.h"
+#include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
 using namespace std;
@@ -15,12 +16,28 @@ static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 #define M_PI 3.1415926
 #endif
 #define COL(r,g,b,a) MAKE_RGBA(r,g,b,a)
+void draw_second_hand(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, int second, float len, float width)
+{
+	float angle = second * 6.0f * (M_PI / 180.0f);
+	if (len < 1)
+		len = 1;
+
+	cb->save(ctx);
+	cb->translate(ctx, cx, cy);
+	cb->rotate(ctx, angle);
+
+	cb->set_source_rgba(ctx, 1, 0, 0, 0.9f);
+	cb->rounded_rectangle(ctx, -2, -len, width, len, width * 0.5);
+	cb->fill(ctx);
+
+	cb->restore(ctx);
+}
 void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hour, int minute, int second)
 {
 	/* ========== 颜色表 ========== */
 	uint32_t C_FACE = COL(0.98f, 0.97f, 0.93f, 1.0f);   /* 奶油表盘 */
 	uint32_t C_BORDER = COL(0.25f, 0.25f, 0.30f, 1.0f);   /* 深灰边框 */
-	uint32_t C_TICK_H = COL(0.15f, 0.15f, 0.20f, 1.0f);   /* 时刻度   */
+	uint32_t C_TICK_H = COL(0.15f, 0.915f, 0.20f, 1.0f);   /* 时刻度   */
 	uint32_t C_TICK_M = COL(0.55f, 0.55f, 0.60f, 1.0f);   /* 分刻度   */
 	uint32_t C_HOUR_HAND = COL(0.12f, 0.12f, 0.18f, 1.0f);   /* 时针     */
 	uint32_t C_MIN_HAND = COL(0.18f, 0.18f, 0.24f, 1.0f);   /* 分针     */
@@ -59,33 +76,32 @@ void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hou
 
 		if (i % 5 == 0) {
 			/* -- 时刻度（粗） -- */
-			cb->new_path(ctx);
 			cb->move_to(ctx, cx + r_hr_in * ca, cy + r_hr_in * sa);
 			cb->line_to(ctx, cx + r_hr_out * ca, cy + r_hr_out * sa);
 			cb->set_source_color(ctx, C_TICK_H);
-			cb->set_line_width(ctx, R * 0.020f);
+			cb->set_line_width(ctx, 2);// R * 0.020f);
 			cb->stroke(ctx);
 		}
 		else {
 			/* -- 分刻度（细） -- */
-			cb->new_path(ctx);
-			cb->move_to(ctx, cx + r_min_in * ca, cy + r_min_in * sa);
-			cb->line_to(ctx, cx + r_min_out * ca, cy + r_min_out * sa);
+			glm::vec2 p0 = { cx + r_min_in * ca, cy + r_min_in * sa }, p1 = { cx + r_min_out * ca, cy + r_min_out * sa };
+			cb->move_to(ctx, p0.x, p0.y);
+			cb->line_to(ctx, p1.x, p1.y);
 			cb->set_source_color(ctx, C_TICK_M);
-			cb->set_line_width(ctx, R * 0.007f);
+			cb->set_line_width(ctx, 1);
 			cb->stroke(ctx);
 		}
 	}
 
 	/* ========== 4. 数字标记（12 个小圆点） ========== */
-	float num_r = R * 0.66f;
+	float num_r = R * 0.866f;
 	for (int i = 0; i < 12; i++) {
 		float a = (float)i * (2.0f * M_PI / 12.0f) - M_PI / 2.0f;
 		float nx = cx + num_r * cosf(a);
 		float ny = cy + num_r * sinf(a);
 
 		cb->new_path(ctx);
-		cb->circle(ctx, nx, ny, R * 0.012f);
+		cb->circle(ctx, nx, ny, 5);
 		cb->set_source_color(ctx, C_NUM_DOT);
 		cb->fill(ctx);
 	}
@@ -124,14 +140,15 @@ void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hou
 	/* ========== 8. 秒针（细长红色） ========== */
 	{
 		float L = R * 0.80f, W = R * 0.007f;
-		cb->save(ctx);
-		cb->translate(ctx, cx, cy);
-		cb->rotate(ctx, sec_ang + M_PI / 2.0f);
-		cb->new_path(ctx);
-		cb->rounded_rectangle(ctx, -W * 0.5f, -R * 0.07f, W, L + R * 0.07f, W * 0.5f);
-		cb->set_source_color(ctx, C_SEC_HAND);
-		cb->fill(ctx);
-		cb->restore(ctx);
+		//	cb->save(ctx);
+		//	cb->translate(ctx, cx, cy);
+		//	cb->rotate(ctx, sec_ang + M_PI / 2.0f);
+		//	cb->new_path(ctx);
+		//	cb->rounded_rectangle(ctx, -W * 0.5f, -R * 0.07f, W, L + R * 0.07f, W * 0.5f);
+		//	cb->set_source_color(ctx, C_SEC_HAND);
+		//	cb->fill(ctx);
+		//	cb->restore(ctx);
+		draw_second_hand(cb, ctx, cx, cy, second, L + R * 0.07f, 2);
 	}
 
 	/* ========== 9. 中心装饰圆点 ========== */

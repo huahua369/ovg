@@ -145,7 +145,7 @@ struct vg_state_save_t {
 	vg_pattern_t* pattern;
 	vg_clip_state_t		clippingState;
 	uint32_t			references = 1;
-	bool aa = true;
+	bool aa = false;
 	bool glutessEnable = false;
 };
 enum class depth_stencil_State :uint8_t {
