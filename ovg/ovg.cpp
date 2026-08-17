@@ -3851,9 +3851,9 @@ void mesh2d_x::add_image_angle(void* img, const glm::ivec2& texsize, const glm::
 
 #endif // 1
 
-ovg_draw_data get_draw_list(rvg_t* p)
+ovg_draw_data_t get_draw_list(rvg_t* p)
 {
-	ovg_draw_data r = {};
+	ovg_draw_data_t r = {};
 	if (p)
 	{
 		r.d = p->cmdlist.data(); r.count = p->cmdlist.size();

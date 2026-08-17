@@ -69,6 +69,7 @@ void        free_vgfbo_sdl3(vg_fbo_t* fbo);
 
 // 绘制入口
 void ovg_draw_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo, bool clearAll);
+void ovg_draw_data(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, ovg_draw_data_t*data);
 
 // 获取内部命令缓冲区（用于录制渲染命令）
 SDL_GPUCommandBuffer* ovg_get_command_buffer(ovg_ctx_t* ctx);

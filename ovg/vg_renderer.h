@@ -53,7 +53,7 @@ typedef struct VGState {
 	int msaaHeight = 0;
 
 	SDL_GPUSampleCount msaaSampleCount = SDL_GPU_SAMPLECOUNT_4;
-	ovg_draw_data* data;
+	ovg_draw_data_t* data;
 } VGState;
 
 

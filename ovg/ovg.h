@@ -231,7 +231,7 @@ struct geomVertex2 {
 	uint32_t color;
 	uint32_t color1;
 };
-struct ovg_draw_data {
+struct ovg_draw_data_t {
 	gcmd_t* d;				// 渲染命令列表
 	size_t count;
 	ovgVertex* vg_vertex;	// 矢量顶点

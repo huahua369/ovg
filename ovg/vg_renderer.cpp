@@ -725,7 +725,7 @@ void mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm::mat
 }
 
 /* ── 9.  Per-frame rendering ───────────────────────────────────── */
-void VG_RenderFrame(VGState* g, ovg_draw_data* data) {
+void VG_RenderFrame(VGState* g, ovg_draw_data_t* data) {
 	int w, h;
 	SDL_GetWindowSizeInPixels(g->window, &w, &h);
 	float fw = (float)w, fh = (float)h;
