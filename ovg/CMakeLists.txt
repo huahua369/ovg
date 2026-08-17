@@ -1,29 +1,19 @@
  
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# ---- 查找 SDL3 ----
-find_package(SDL3 REQUIRED)
-
-# ---- 源文件 ----
-set(SOURCES
-    ovg_main.cpp
-    vg/ovg.cpp
-    vg/vg_renderer.cpp
+  
+set(OVG_SOURCES 
+    ovg.cpp
+    vg_renderer.cpp
     #filter_pipeline.cpp
     #image_loader.cpp
 )
-
-# ---- 可执行文件 ----
-add_executable(ovg ${SOURCES})
-
-target_link_libraries(ovg PRIVATE SDL3::SDL3)
-target_include_directories(ovg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
+find_package(glm CONFIG REQUIRED)
+add_library(libovg STATIC ${OVG_SOURCES})
+target_link_libraries(libovg
+  PUBLIC glm::glm-header-only
+)
 # ---- 着色器编译（自定义命令）----
 set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
-set(BUILD_DIR   ${CMAKE_CURRENT_BINARY_DIR})
+set(BUILD_DIR ${EXECUTABLE_OUTPUT_PATH})
 
 # 检测 slangc
 find_program(SLANGC slangc)
@@ -75,9 +65,6 @@ else()
     )
     list(APPEND COMPILED_SHADERS ${BUILD_DIR}/blit_vs.${SLANG_EXT} ${BUILD_DIR}/blit_fs.${SLANG_EXT})
 
-    add_custom_target(shaders ALL DEPENDS ${COMPILED_SHADERS})
-    add_dependencies(ovg shaders)
+    add_custom_target(shaders ALL DEPENDS ${COMPILED_SHADERS}) 
+    add_dependencies(libovg shaders)
 endif()
-
-# ---- 安装 ----
-install(TARGETS ovg RUNTIME DESTINATION bin)

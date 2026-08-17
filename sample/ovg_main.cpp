@@ -2,8 +2,8 @@
 //
 
 #include "ovg_main.h"
-#include "vg/ovg.h"
-#include "vg/vg_renderer.h"
+#include "ovg.h"
+#include "vg_renderer.h"
 #include <Windows.h>
 #include <cmath>
 using namespace std;

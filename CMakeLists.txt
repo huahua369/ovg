@@ -9,11 +9,15 @@ if (POLICY CMP0141)
   set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
 endif()
 project ("ovg")
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #设置执行文件输出目录
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/out/bin/${platform_dir})
 #设置库文件输出目录
 set(LIBRARY_OUTPUT_PATH ${EXECUTABLE_OUTPUT_PATH})
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 LINK_DIRECTORIES(${EXECUTABLE_OUTPUT_PATH})
+include_directories("ovg")
 # 包含子项目。
 add_subdirectory ("ovg")
+add_subdirectory ("sample")
