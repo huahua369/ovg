@@ -234,7 +234,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();
@@ -247,6 +247,12 @@ int main()
 		SDL_Log("Init failed: %s", SDL_GetError());
 		return 1;
 	}
+	auto dev = new_sdl3gpu_device(g->device);
+	assert(dev);
+	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
+	assert(ctx);
+
+	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y);
 	bool running = true;
 	while (running) {
 		SDL_Event ev;
@@ -254,15 +260,23 @@ int main()
 			if (ev.type == SDL_EVENT_QUIT) running = false;
 		}
 		draw(cb, vg, surfsize);
+
 		auto dlist = get_draw_list(vg);
 		VG_RenderFrame(g, &dlist);
+		ovg_draw_data(ctx, &fbo, &dlist);
 		SDL_Delay(16);  /* ~60 FPS */
 	}
 
+	SDL_WaitForGPUIdle(g->device);
 	/* Cleanup */
 	SDL_ReleaseGPUBuffer(g->device, g->vertexBuffer);
 	SDL_ReleaseGPUSampler(g->device, g->linearSampler);
 	SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
+
+	free_vgfbo_sdl3(&fbo);
+	free_ovgctx_sdl3(ctx);
+	free_sdl3gpu_device(dev);
+
 	SDL_DestroyGPUDevice(g->device);
 	SDL_DestroyWindow(g->window);
 	SDL_Quit();

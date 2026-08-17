@@ -30,40 +30,25 @@
  // ========================================================================
  // 着色器 SPIR-V 数据（extern 声明，链接时从 spv 数组引入）
  // ========================================================================
-extern const uint32_t vg_vert[];
-extern size_t          vg_vert_len;
-extern const uint32_t vg_frag[];
-extern size_t          vg_frag_len;
 
-extern const uint32_t a_base3d_vert[];
-extern size_t          a_base3d_vert_len;
-extern const uint32_t a_base3d_frag[];
-extern size_t          a_base3d_frag_len;
+#include "shaders/spv_c/a_vg.vert.h"
+#include "shaders/spv_c/a_vg.frag.h"
 
-extern const uint32_t a_base3d_mask_vert[];
-extern size_t          a_base3d_mask_vert_len;
-extern const uint32_t a_base3d_mask_frag[];
-extern size_t          a_base3d_mask_frag_len;
+#include "shaders/spv_c/a_base3d.vert.h"
+#include "shaders/spv_c/a_base3d.frag.h"
 
-extern const uint32_t a_base3d_dsc_vert[];
-extern size_t          a_base3d_dsc_vert_len;
-extern const uint32_t a_base3d_dsc_frag[];
-extern size_t          a_base3d_dsc_frag_len;
+#include "shaders/spv_c/a_base3d_mask.vert.h"
+#include "shaders/spv_c/a_base3d_mask.frag.h"
 
-extern const uint32_t a_base3d_inst_vert[];
-extern size_t          a_base3d_inst_vert_len;
-extern const uint32_t a_base3d_inst_frag[];
-extern size_t          a_base3d_inst_frag_len;
+#include "shaders/spv_c/a_base3d_dsc.vert.h"
+#include "shaders/spv_c/a_base3d_dsc.frag.h"
 
-extern const uint32_t a_base3d_dsc_inst_vert[];
-extern size_t          a_base3d_dsc_inst_vert_len;
-extern const uint32_t a_base3d_dsc_inst_frag[];
-extern size_t          a_base3d_dsc_inst_frag_len;
+#include "shaders/spv_c/a_base3d_inst.vert.h"
+#include "shaders/spv_c/a_base3d_inst.frag.h"
 
-inline size_t align_up(size_t val, size_t align)
-{
-	return (val + align - 1) / align * align;
-}
+#include "shaders/spv_c/a_base3d_dsc_inst.vert.h"
+#include "shaders/spv_c/a_base3d_dsc_inst.frag.h"
+
 
 // ========================================================================
 // 内部数据结构
@@ -112,9 +97,8 @@ struct blend_params {
 // 设备上下文
 struct ovg_device_t {
 	SDL_GPUDevice* gpuDevice = nullptr;
-	SDL_GPUCommandBuffer* cmdBuffer = nullptr;
 
-	shadermodule_vf    shaderModules[5];
+	shadermodule_vf    shaderModules[5] = {};
 
 	sdl3gpu_texture* emptyTexture = nullptr;
 	SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_INVALID;
@@ -195,8 +179,9 @@ struct ovg_ctx_t {
 // ========================================================================
 // 工具函数
 // ========================================================================
-template<typename T>
-inline T align_up(T val, T align) {
+
+inline size_t align_up(size_t val, size_t align)
+{
 	return (val + align - 1) / align * align;
 }
 
@@ -264,7 +249,7 @@ static void create_uniform_buffer(ovg_device_t* dev, sdl3gpu_buffer* buf, uint32
 static void create_vertex_buffer(ovg_device_t* dev, sdl3gpu_buffer* buf, uint32_t size, uint32_t stride) {
 	buf->device = dev->gpuDevice;
 	buf->stride = stride;
-	buf->size = size;
+	buf->size = align_up(size, 256);
 
 	SDL_GPUBufferCreateInfo info = {};
 	info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -300,7 +285,7 @@ static void resize_buffer(sdl3gpu_buffer* buf, uint32_t newSize) {
 
 	SDL_GPUBufferCreateInfo info = {};
 	info.usage = usage;
-	info.size = newSize;
+	info.size = align_up(newSize, 256);;
 
 	SDL_GPUBuffer* newBuf = SDL_CreateGPUBuffer(buf->device, &info);
 	assert(newBuf && "Failed to resize buffer");
@@ -331,13 +316,15 @@ static void resize_buffer(sdl3gpu_buffer* buf, uint32_t newSize) {
 
 	SDL_ReleaseGPUBuffer(buf->device, buf->buffer);
 	buf->buffer = newBuf;
-	buf->size = newSize;
+	buf->size = info.size;
 }
 
 static void upload_buffer_data(sdl3gpu_buffer* buf, const void* data, uint32_t offset, uint32_t size) {
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(buf->device);
 	if (!cmd) return;
-
+	if (buf->size < size) {
+		resize_buffer(buf, size + buf->size * 0.5);
+	}
 	SDL_GPUTransferBufferCreateInfo tbi = {};
 	tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
 	tbi.size = size;
@@ -581,11 +568,11 @@ static void set_blend_params(blend_params& bp, blendMode_e mode) {
 // ========================================================================
 static void init_shader_modules(ovg_device_t* dev) {
 	struct { const uint32_t* v; size_t vlen; const uint32_t* f; size_t flen; } shaders[5] = {
-		{a_base3d_vert,         a_base3d_vert_len,         a_base3d_frag,         a_base3d_frag_len},
-		{a_base3d_mask_vert,    a_base3d_mask_vert_len,    a_base3d_mask_frag,    a_base3d_mask_frag_len},
-		{a_base3d_dsc_vert,    a_base3d_dsc_vert_len,     a_base3d_dsc_frag,     a_base3d_dsc_frag_len},
-		{a_base3d_inst_vert,    a_base3d_inst_vert_len,    a_base3d_inst_frag,    a_base3d_inst_frag_len},
-		{a_base3d_dsc_inst_vert,a_base3d_dsc_inst_vert_len,a_base3d_dsc_inst_frag,a_base3d_dsc_inst_frag_len},
+		{a_base3d_vert,       sizeof(a_base3d_vert),         a_base3d_frag,          sizeof(a_base3d_frag)},
+		{a_base3d_mask_vert,    sizeof(a_base3d_mask_vert),    a_base3d_mask_frag,     sizeof(a_base3d_mask_frag)},
+		{a_base3d_dsc_vert,     sizeof(a_base3d_dsc_vert),     a_base3d_dsc_frag,     sizeof(a_base3d_dsc_frag)},
+		{a_base3d_inst_vert,    sizeof(a_base3d_inst_vert),    a_base3d_inst_frag,    sizeof(a_base3d_inst_frag)},
+		{a_base3d_dsc_inst_vert, sizeof(a_base3d_dsc_inst_vert),a_base3d_dsc_inst_frag, sizeof(a_base3d_dsc_inst_frag)},
 	};
 
 	for (int i = 0; i < 5; i++) {
@@ -668,7 +655,7 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(
 
 	SDL_GPUMultisampleState msState = {};
 	msState.sample_count = inputs->samples;
-	msState.sample_mask = 0xFFFFFFFF;
+	msState.sample_mask = 0;// 0xFFFFFFFF;
 
 	SDL_GPUVertexBufferDescription vertexBufferDesc = {};
 	vertexBufferDesc.slot = 0;
@@ -722,8 +709,8 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	ovg_device_t* dev = ctx->device;
 
 	// 编译 VG 着色器
-	SDL_GPUShader* vgVert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX, vg_vert, vg_vert_len, "main");
-	SDL_GPUShader* vgFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, vg_frag, vg_frag_len, "main");
+	SDL_GPUShader* vgVert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX, vg_vert, sizeof(vg_vert), "main");
+	SDL_GPUShader* vgFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, vg_frag, sizeof(vg_frag), "main");
 
 	// 公共顶点属性: pos(2) + uv(2) + color(1) = 20 bytes
 	SDL_GPUVertexAttribute vgAttrs[3] = {
@@ -983,7 +970,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 
 	SDL_GPUMultisampleState msState = {};
 	msState.sample_count = SDL_GPU_SAMPLECOUNT_1;
-	msState.sample_mask = 0xFFFFFFFF;
+	msState.sample_mask = 0;// 0xFFFFFFFF;
 
 	SDL_GPUVertexBufferDescription vbDesc = {};
 	vbDesc.slot = 0;
@@ -1124,12 +1111,12 @@ void ovg_set_stencil_reference(ovg_ctx_t* ctx, SDL_GPURenderPass* pass, uint8_t 
 // ========================================================================
 // 设备创建与销毁
 // ========================================================================
-ovg_device_t* new_sdl3gpu_device(SDL_GPUDevice* gpuDevice, SDL_GPUCommandBuffer* cmdBuf) {
+ovg_device_t* new_sdl3gpu_device(SDL_GPUDevice* gpuDevice) {
 	if (!gpuDevice) return nullptr;
 
 	ovg_device_t* dev = new ovg_device_t();
 	dev->gpuDevice = gpuDevice;
-	dev->cmdBuffer = cmdBuf;
+
 	dev->supportedFormats = detect_supported_shader_format(gpuDevice);
 
 	init_shader_modules(dev);
@@ -1289,7 +1276,7 @@ void free_vgfbo_sdl3(vg_fbo_t* fbo) {
 void ovg_resolve_msaa_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo) {
 	if (!ctx || !cmdBuf || !fbo) return;
 	if (!fbo->colorTexMS || !fbo->colorTex) return;
-
+	return;
 	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmdBuf);
 	if (!copyPass) return;
 
@@ -1315,7 +1302,7 @@ void ovg_resolve_msaa_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_
 SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearAll) {
 	if (!ctx || !fbo) return nullptr;
 
-	SDL_GPUCommandBuffer* cmdBuf = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
+	SDL_GPUCommandBuffer* cmdBuf = ctx->currentCmdBuf;
 	if (!cmdBuf) return nullptr;
 
 	sdl3gpu_texture* colorTex = (sdl3gpu_texture*)fbo->colorTex;
@@ -1327,16 +1314,19 @@ SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearA
 		return nullptr;
 	}
 
+
+
 	SDL_GPUTexture* renderColorTex = colorTexMS ? colorTexMS->texture : colorTex->texture;
 
 	SDL_GPUColorTargetInfo colorTargetInfo = {};
 	colorTargetInfo.texture = renderColorTex;
 	colorTargetInfo.load_op = clearAll ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-	colorTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
+	colorTargetInfo.store_op = (fbo && fbo->colorTexMS && fbo->colorTex) ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
 	colorTargetInfo.clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 	//colorTargetInfo.layer_count = 1;
 	colorTargetInfo.resolve_mip_level = 1;
 	colorTargetInfo.resolve_layer = 1;
+	colorTargetInfo.resolve_texture = colorTex->texture;
 
 	SDL_GPUDepthStencilTargetInfo depthTargetInfo = {};
 	depthTargetInfo.texture = depthStencil->texture;
@@ -1354,7 +1344,6 @@ SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearA
 	}
 
 	ctx->currentRenderPass = renderPass;
-	ctx->currentCmdBuf = cmdBuf;
 	ctx->currentVgPipeIndex = -1;
 
 	// 设置视口
@@ -1389,10 +1378,10 @@ SDL_GPURenderPass* ovg_get_current_render_pass(ovg_ctx_t* ctx) {
 	return ctx->currentRenderPass;
 }
 
-void ovg_end_frame(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo) {
+void ovg_end_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 	if (!ctx) return;
 
-	SDL_GPUCommandBuffer* actualCmd = cmdBuf ? cmdBuf : ctx->currentCmdBuf;
+	SDL_GPUCommandBuffer* actualCmd = ctx->currentCmdBuf;
 
 	if (ctx->currentRenderPass) {
 		SDL_EndGPURenderPass(ctx->currentRenderPass);
@@ -1564,16 +1553,16 @@ void ovg_draw_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo, 
 	SDL_GPUColorTargetInfo colorTargetInfo = {};
 	colorTargetInfo.texture = renderColorTex;
 	colorTargetInfo.load_op = clearAll ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-	colorTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
+	colorTargetInfo.store_op = (colorTexMS && colorTex) ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
 	colorTargetInfo.clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 
 	SDL_GPUDepthStencilTargetInfo depthTargetInfo = {};
 	depthTargetInfo.texture = depthStencil->texture;
 	depthTargetInfo.load_op = clearAll ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-	depthTargetInfo.store_op = (colorTexMS && colorTex) ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
+	depthTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
 	depthTargetInfo.stencil_load_op = clearAll ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-	depthTargetInfo.stencil_store_op = (colorTexMS && colorTex) ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
+	depthTargetInfo.stencil_store_op = SDL_GPU_STOREOP_STORE;
 	depthTargetInfo.clear_depth = 1.0f;
 	depthTargetInfo.clear_stencil = 0;
 
@@ -1613,4 +1602,17 @@ void ovg_draw_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo, 
 	if (colorTexMS && colorTex) {
 		//ovg_resolve_msaa_sdl3(ctx, cmdBuf, fbo);
 	}
+}
+void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
+{
+	if (!ctx || !fbo || !fbo->colorTex || !data || !data->count)return;
+	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
+	if (!cmd)return;
+	ctx->currentCmdBuf = cmd;
+	ovg_upload_vbo(ctx, data->vg_vertex, 0, data->v_count * sizeof(ovgVertex));
+	ovg_upload_ibo(ctx, data->vg_indices, 0, data->i_count * sizeof(uint32_t));
+
+	ovg_begin_frame(ctx, fbo, true);
+
+	ovg_end_frame(ctx, fbo);
 }

@@ -516,6 +516,6 @@ void free_canvas_cb(ovg_canvas_cb*);
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
 
-ovg_draw_data get_draw_list(rvg_t* p);
+ovg_draw_data_t get_draw_list(rvg_t* p);
 
 void draw_grid_fill(rvg_t* vg, glm::vec2 size, glm::ivec2 cols, int width);

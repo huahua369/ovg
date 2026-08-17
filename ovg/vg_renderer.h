@@ -101,4 +101,4 @@ void VG_PushDrawUniforms(VGState* g, SDL_GPUCommandBuffer* cmd, float vpW, float
 #define STENCIL_ALL_BIT               0x3
 
 
-void VG_RenderFrame(VGState* g, ovg_draw_data* data);
+void VG_RenderFrame(VGState* g, ovg_draw_data_t* data);
