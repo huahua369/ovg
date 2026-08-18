@@ -1556,7 +1556,7 @@ vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* windo
 	fbo.width = width;
 	fbo.height = height;
 	if (!ctx || !ctx->device) return fbo;
-
+	fbo.ctx = ctx;
 	ovg_device_t* dev = ctx->device;
 	if (window)
 		fbo.window = window;
@@ -1864,8 +1864,165 @@ void ovg_mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm:
 	grad->cp[0] = glm::vec4(glm::vec2(cp0[0]), glm::vec2(cp0[1]));
 	grad->cp[1] = glm::vec4(glm::vec2(cp1[0]), glm::vec2(cp1[1]));
 	ovg_sort_gradient_stops(grad, grad->stops, grad->count);
+} 
+
+SDL_Rect set_scissor_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, glm::vec4* scissor)
+{
+	SDL_Rect r = { 0,0,-1,-1 };
+	if (pass)
+	{
+		r = { 0,0,(int)fbo->width,(int)fbo->height };
+		if (scissor)
+		{
+			r.x = scissor->x; r.y = scissor->y;
+			r.w = (uint32_t)glm::max(scissor->z, 1.0f); r.h = (uint32_t)std::max(scissor->w, 1.0f);
+		}
+		SDL_SetGPUScissor(pass, &r);
+	}
+	return r;
 }
 
+void cmd_draw_full_screen_quad_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, glm::vec4* scissor, SDL_Rect* clip, push_constants_t& pc)
+{
+#if defined(_DEBUG)
+	SDL_PushGPUDebugGroup(fbo->cmd, "_draw_full_screen_quad");
+#endif
+	SDL_Rect bounds = { 0,0,fbo->width, fbo->height };
+	if (scissor) {
+		SDL_Rect r = { (int32_t)glm::max((int)scissor->x, 0), (int32_t)glm::max((int)scissor->y, 0),
+					 (int32_t)glm::max((int)scissor->z - (int32_t)scissor->x + 1, 1),
+					   (int32_t)glm::max((int)scissor->w - (int32_t)scissor->y + 1, 1) };
+		SDL_SetGPUScissor(pass, &r);
+	}
+	uint32_t firstVertIdx = c->full_screen_quad;
+	if (c->state)
+		pc.fsq_patternType = c->state->pushConsts.fsq_patternType;
+	pc.fsq_patternType |= FULLSCREEN_BIT;
+	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
+	SDL_DrawGPUPrimitives(pass, 3, 1, firstVertIdx, 0);
+	pc.fsq_patternType &= ~FULLSCREEN_BIT;
+	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
+	if (scissor)
+		SDL_SetGPUScissor(pass, clip && clip->w > 0 && clip->h > 0 ? clip : &bounds);
+#if defined(_DEBUG) 
+	SDL_PopGPUDebugGroup(fbo->cmd);
+#endif
+}
+void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip)
+{
+	push_constants_t pc = {};
+	auto t = c->state;
+	if (t) {
+		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
+
+		int smax = std::max(fbo->width, fbo->height);
+		pc = t->pushConsts;
+		pc.size = { fbo->width,fbo->height };
+		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
+		fbo->ctx->gpubuf->bindVBO(pass, 0);
+		fbo->ctx->gpubuf->bindIBO(pass, 0);
+		SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
+		SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+		if (t->pattern && t->pattern->type != vg_pattern_type_t::VG_PATTERN_TYPE_SOLID) {
+			pc.source = { smax,smax,0,0 };
+		}
+		if (t->pattern)
+			pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) + t->pattern->type;
+		//glm::transpose(pc.mat);
+		if (t->pattern) {
+			auto gr = *(vg_gradient_t*)t->pattern->data;
+			glm::mat3 patmat = t->pattern->matrix;
+			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat);
+			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
+		}
+		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
+	}
+	switch (c->type) {
+	case 0:
+	{
+		if (t && t->curFillRule == VG_FILL_RULE_EVEN_ODD) {
+			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipePolyFill);
+			SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
+			ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
+			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, &c->bounds, cuclip, pc);
+		}
+		else {
+			SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
+		}
+	}
+	break;
+	case 1:
+	{
+		SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
+	}
+	break;
+	case 2:
+	{
+		const int bw = c->bounds.z;
+		const int bh = c->bounds.w;
+		if (bw != 0 && bh != 0) {
+			*cuclip = set_scissor_sdl3(fbo, pass, (bw < 0 || bh < 0) ? nullptr : &c->bounds);
+			break;
+		}
+		if (c->vertex.y > 0 || c->index.y > 0) {
+#if defined(_DEBUG)
+			SDL_PushGPUDebugGroup(fbo->cmd, "clip");
+#endif
+			if (t && t->curFillRule == VG_FILL_RULE_EVEN_ODD) {
+				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipePolyFill);
+				SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
+				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
+			}
+			else {
+				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
+				SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
+			}
+			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, nullptr, 0, pc);
+#if defined(_DEBUG)
+			SDL_PopGPUDebugGroup(fbo->cmd);
+#endif
+		}
+		else {
+			//SDL_GPUDepthStencilTarget dst = {
+			//	.clear_depth = 1.0f,
+			//	.clear_stencil = 0,
+			//	.load_op = SDL_GPU_LOADOP_CLEAR,
+			//	.store_op = SDL_GPU_STOREOP_STORE
+			//};
+			//SDL_ClearGPUDepthStencilTarget(cmd, pass, &dst);
+		}
+	}
+	break;
+	case 3:
+	{
+		cmd_draw_full_screen_quad_sdl3(fbo, pass, c, nullptr, 0, pc);
+	}
+	break;
+	case 4:
+	{
+		//SDL_GPUColorTarget colorTarget = {
+		//	.clear_color = {
+		//		static_cast<float>(c->bounds.x),
+		//		static_cast<float>(c->bounds.y),
+		//		static_cast<float>(c->bounds.z),
+		//		static_cast<float>(c->bounds.w)
+		//	},
+		//	.load_op = SDL_GPU_LOADOP_CLEAR,
+		//	.store_op = SDL_GPU_STOREOP_STORE
+		//};
+
+		//SDL_GPUDepthStencilTarget depthStencilTarget = {
+		//	.clear_depth = 1.0f,
+		//	.clear_stencil = 0,
+		//	.load_op = SDL_GPU_LOADOP_CLEAR,
+		//	.store_op = SDL_GPU_STOREOP_STORE
+		//};
+		//SDL_ClearGPUColorTarget(cmd, pass, &colorTarget);
+		//SDL_ClearGPUDepthStencilTarget(cmd, pass, &depthStencilTarget);
+	}
+	break;
+	}
+}
 void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 {
 	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !data->count)return;
@@ -1883,6 +2040,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 	}
 	int smax = std::max(fbo->width, fbo->height);
 	ctx->currentCmdBuf = cmd;
+	fbo->cmd = cmd;
 	size_t ress[] = { data->v_count * sizeof(ovgVertex),data->i_count * sizeof(uint32_t)
 		,data->g_count * sizeof(uint32_t)
 		,data->v1_count * sizeof(geomVertex1)
@@ -1897,49 +2055,14 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 	fbo->color = swapchain;
 	auto cmd0 = ovg_begin_frame(ctx, fbo, true);
 	auto pass = ctx->currentRenderPass;
+	SDL_Rect cuClip = {};
 	for (size_t i = 0; data && i < data->count; i++)
 	{
 		auto& it = data->d[i];
-		auto& st = it.vg.state;
-		auto& vg = it.vg;
-		auto pc = st->pushConsts;
-		pc.size = { fbo->width,fbo->height };
-		ovg_bind_vg_pipeline(ctx, cmd, pass, (int)st->curOperator);
-		ctx->gpubuf->bindVBO(pass, 0);
-		ctx->gpubuf->bindIBO(pass, 0);
-		SDL_GPUTextureSamplerBinding binding = { .texture = ctx->device->emptyTexture->texture,	.sampler = ctx->device->emptyTexture->sampler, };
-		SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 		switch (it.g.stype) {
 		case 0:
-		{
-			push_constants_t pc0 = {};
-			if (it.vg.state->pattern && it.vg.state->pattern->type != vg_pattern_type_t::VG_PATTERN_TYPE_SOLID) {
-				pc.source = { smax,smax,0,0 };
-			}
-			memcpy(&pc0.source, &pc.source, sizeof(float) * 4);
-			pc0.size[0] = pc.size.x;
-			pc0.size[1] = pc.size.y;
-			if (it.vg.state->pattern)
-				pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) + it.vg.state->pattern->type;
-			pc0.fsq_patternType = pc.fsq_patternType;
-			pc0.opacity = pc.opacity;
-			pc0.mat = pc.mat; //glm::transpose(pc.mat);
-			pc0.matInv = pc.matInv;// glm::transpose(pc.matInv);
-			if (it.vg.state->pattern) {
-				auto gr = *(vg_gradient_t*)it.vg.state->pattern->data;
-				glm::mat3 patmat = it.vg.state->pattern->matrix;
-				ovg_mul_pat(&gr, it.vg.state->pattern->type, pc.mat, patmat);
-				SDL_PushGPUFragmentUniformData(cmd, 0, &gr, sizeof(vg_gradient_t));
-			}
-			SDL_PushGPUVertexUniformData(cmd, 0, &pc0, sizeof(pc0));
-
-			if (it.vg.index.y < 1)
-			{
-				SDL_DrawGPUPrimitives(pass, it.vg.vertex.y, 1, it.vg.vertex.x, 0);
-			}
-			else {
-				SDL_DrawGPUIndexedPrimitives(pass, vg.index.y, 1, vg.index.x, vg.vertex.x, 0);
-			}
+		{ 
+			draw_vg_sdl3(fbo, pass, &it.vg, &cuClip);
 		}
 		break;
 		case 1:
@@ -1952,5 +2075,5 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 
 	ovg_end_frame(ctx, fbo);
 	SDL_SubmitGPUCommandBuffer(cmd);
-	SDL_WaitForGPUIdle(ctx->device->gpuDevice);
+	//SDL_WaitForGPUIdle(ctx->device->gpuDevice);
 }

@@ -11,11 +11,13 @@ struct sdl3gpu_texture;  // 内部纹理包装器
 // FBO 结构体 - SDL3 GPU 版本
 struct vg_fbo_t {
 	uint32_t width, height;
+	ovg_ctx_t* ctx = 0;
 	SDL_Window* window;
 	SDL_GPUTexture* color;       // 窗口主颜色纹理
 	sdl3gpu_texture* colorTex;       // 主颜色纹理
 	sdl3gpu_texture* colorTexMS;     // MSAA 解析前纹理（可选）
 	sdl3gpu_texture* depthStencilTex; // 深度+模板纹理
+	SDL_GPUCommandBuffer* cmd;
 	bool            hasStencil;      // 是否有模板附件
 };
 

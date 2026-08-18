@@ -1015,7 +1015,7 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 	v.y = sinf(a) * radius + yc;
 	// if (!vec2_equ (v,lastP))
 	_add_point(ctx, v.x, v.y);
-	_set_curve_end(ctx);	
+	_set_curve_end(ctx);
 	auto d = abs(v0 - v);
 	d *= 1000.0;
 	if (d.x < 1.0 && d.y < 1.0)
@@ -1260,16 +1260,18 @@ void ovg_set_fill_rule(vg_state_save_t* ctx, int fr) {
 	if (ctx)ctx->curFillRule = fr;
 }
 void ovg_set_dash(vg_state_save_t* ctx, const float* dashes, uint32_t num_dashes, float offset) {
-	if (!ctx)return;
+	if (!ctx || !dashes)return;
 	auto t = (ss_act*)ctx;
 	if (!dashes || !num_dashes) {
 		t->dashCount = 0;
 	}
-	if (t->dashes && t->dashCount != num_dashes)
+	if (!t->dashes || t->dashCount != num_dashes)
 	{
-		t->ac->free_mem(t->dashes, t->dashCount);
+		if (t->dashes)
+			t->ac->free_mem(t->dashes, t->dashCount);
 		t->dashes = (float*)t->ac->allocate(sizeof(float) * num_dashes);
 	}
+	t->dashCount = num_dashes;
 	t->dashOffset = offset;
 	if (t->dashes)
 		memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
@@ -4188,11 +4190,42 @@ void vctx_set_fill_rule(rvg_t* ctx, int fr) {
 }
 
 void vctx_set_dash(rvg_t* ctx, const float* dashes, uint32_t num_dashes, float offset) {
-	if (ctx) ovg_set_dash(ctx->cur_st, dashes, num_dashes, offset);
+	if (!ctx || !dashes)return;
+	auto t = ctx->cur_st;
+	if (!dashes || !num_dashes) {
+		t->dashCount = 0;
+	}
+	if (!t->dashes || t->dashCount != num_dashes)
+	{
+		if (t->dashes)
+			ctx->ac->free_mem(t->dashes, t->dashCount);
+		t->dashes = (float*)ctx->ac->allocate(sizeof(float) * num_dashes);
+	}
+	t->dashCount = num_dashes;
+	t->dashOffset = offset;
+	if (t->dashes)
+		memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
+	else
+		t->dashCount = 0;
 }
 
-void vctx_set_dash8(rvg_t* ctx, uint64_t dashes, uint32_t num_dashes, float offset) {
-	if (ctx) ovg_set_dash8(ctx->cur_st, dashes, num_dashes, offset);
+void vctx_set_dash8(rvg_t* ctx, uint64_t dashes0, uint32_t num_dashes, float offset) {
+	if (ctx) {
+		float dashes[64] = {};
+		uint64_t x = 1;
+		auto t = dashes;
+		auto v8 = (uint8_t*)&dashes0;
+		if (num_dashes > 64)num_dashes = 64;
+		{
+			if (num_dashes > 8)num_dashes = 8;
+			for (size_t i = 0; i < num_dashes; i++)
+			{
+				*t = v8[i]; t++;
+			}
+			if (num_dashes > 0)
+				vctx_set_dash(ctx, dashes, num_dashes, offset);
+		}
+	}
 }
 
 void vctx_translate(rvg_t* ctx, float dx, float dy) {

@@ -516,10 +516,10 @@ struct ovg_ctx_cb {
 	void  (*recording_destroy)(ovg_recording_t* rec);
 
 };
-
+// 对象模式接口
 ovg_canvas_cb* new_canvas_cb();
 void free_canvas_cb(ovg_canvas_cb*);
-
+// 状态机模式接口，两个模式接口创建的对象不能混用
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
 
