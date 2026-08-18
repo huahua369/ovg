@@ -54,7 +54,8 @@ void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hou
 
 	/* ========== 2. 表盘底色 + 边框 ========== */
 	cb->new_path(ctx);
-	cb->circle(ctx, cx, cy, R * 0.94f);
+	float rr = R * 0.94f;
+	cb->circle(ctx, cx, cy, rr);
 	cb->set_source_color(ctx, C_FACE);
 	cb->fill_preserve(ctx);
 	cb->set_source_color(ctx, C_BORDER);
@@ -79,7 +80,7 @@ void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hou
 			cb->move_to(ctx, cx + r_hr_in * ca, cy + r_hr_in * sa);
 			cb->line_to(ctx, cx + r_hr_out * ca, cy + r_hr_out * sa);
 			cb->set_source_color(ctx, C_TICK_H);
-			cb->set_line_width(ctx, 2);// R * 0.020f);
+			cb->set_line_width(ctx, R * 0.020f);
 			cb->stroke(ctx);
 		}
 		else {
@@ -92,7 +93,6 @@ void draw_clock(ovg_ctx_cb* cb, rvg_t* ctx, float cx, float cy, float R, int hou
 			cb->stroke(ctx);
 		}
 	}
-
 	/* ========== 4. 数字标记（12 个小圆点） ========== */
 	float num_r = R * 0.866f;
 	for (int i = 0; i < 12; i++) {
@@ -184,7 +184,7 @@ void draw_clock_scene(ovg_ctx_cb* cb, rvg_t* ctx, int w, int h, int hh, int mm, 
 void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 {
 	cb->clear(vg);
-	cb->set_fill_rule(vg, VG_FILL_RULE_EVEN_ODD);
+	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 	draw_grid_fill(vg, surfsize, glm::ivec2(-1, 0xffdfdfdf), 20);
 	cb->set_source_color(vg, 0xff0080ff);
 	auto pat = cb->new_pattern_linear(vg, 0, 0, 0, 256);
@@ -234,7 +234,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();
@@ -249,21 +249,30 @@ int main()
 	}
 	auto dev = new_sdl3gpu_device(g->device);
 	assert(dev);
-	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
+	auto format = SDL_GetGPUSwapchainTextureFormat(g->device, g->window);
+	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
 
-	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y);
+	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
+	runtime_cx rtc = {};
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
 			if (ev.type == SDL_EVENT_QUIT) running = false;
 		}
-		draw(cb, vg, surfsize);
-
+		rtc.begin();
+		draw(cb, vg, surfsize);// 录制图元
+		int ms = rtc.end();
+		//if (ms > 0)
+		//	printf("draw build ms: %d\n", ms);
 		auto dlist = get_draw_list(vg);
-		VG_RenderFrame(g, &dlist);
-		ovg_draw_data(ctx, &fbo, &dlist);
+		rtc.begin();
+		ovg_draw_data(ctx, &fbo, &dlist);// 提交渲染
+		ms = rtc.end();
+		//if (ms > 0)
+		//	printf("submit draw ms: %d\n", ms);
+		//VG_RenderFrame(g, &dlist);
 		SDL_Delay(16);  /* ~60 FPS */
 	}
 

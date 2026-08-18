@@ -86,13 +86,20 @@ enum vg_clip_state_t :uint8_t {
 	vg_clip_state_clip_saved = 0x06,
 };
 
-enum vg_operator_t :uint8_t {
+enum class vg_operator_t :uint8_t {
 	VG_OPERATOR_CLEAR,
 
 	VG_OPERATOR_SOURCE,
 	VG_OPERATOR_OVER,
 	VG_OPERATOR_DIFFERENCE,
 	VG_OPERATOR_MAX,
+};
+enum vg_pipe_t :uint8_t {
+	VG_PIPE_OVER,
+	VG_PIPE_CLEAR,
+	VG_PIPE_SUB,
+	VG_PIPE_POLYFILL,
+	VG_PIPE_CLIPPING
 };
 
 // 渲染命令
@@ -136,7 +143,7 @@ struct vg_state_save_t {
 	uint32_t	dashCount;  // value count in dash array, 0 if dash not set.
 	float		dashOffset; // an offset for dash
 	float* dashes;     // an array of alternate lengths of on and off stroke.
-	uint8_t		curOperator;
+	vg_operator_t curOperator;
 	uint8_t		lineCap;
 	uint8_t		lineJoin;
 	uint8_t		curFillRule;

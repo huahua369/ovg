@@ -918,6 +918,7 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 	if (a2 - a1 > 2.f * M_PI) // limit arc to 2PI
 		a2 = a1 + 2.f * M_PI;
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
+	auto v0 = v;
 	float step = _get_arc_step(path, radius);
 	float a = a1;
 	if (_current_path_is_empty(path)) {
@@ -954,6 +955,11 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 	// if (!vec2_equ (v,lastP))//this test should not be required
 	_add_point(path, v.x, v.y);
 	_set_curve_end(path);
+	// todo 结束精度1000
+	auto d = abs(v0 - v);
+	d *= 1000.0;
+	if (d.x < 1.0 && d.y < 1.0)
+		ovg_close_path(path);
 }
 void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float a1, float a2)
 {
@@ -967,7 +973,7 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 		a2 = a1 - 2.f * M_PI;
 
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
-
+	auto v0 = v;
 	float step = _get_arc_step(ctx, radius);
 	float a = a1;
 
@@ -1009,7 +1015,11 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 	v.y = sinf(a) * radius + yc;
 	// if (!vec2_equ (v,lastP))
 	_add_point(ctx, v.x, v.y);
-	_set_curve_end(ctx);
+	_set_curve_end(ctx);	
+	auto d = abs(v0 - v);
+	d *= 1000.0;
+	if (d.x < 1.0 && d.y < 1.0)
+		ovg_close_path(path);
 }
 void ovg_curve_to(ovg_path_t* path, float x1, float y1, float x2, float y2, float x3, float y3)
 {
@@ -1152,7 +1162,7 @@ void ovg_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_flag
 {
 	if (!path)
 		return;
-	float x1, y1;
+	float x1 = 0.0, y1 = 0.0;
 	auto cp = _get_current_point(path);
 	_elliptic_arc(path, x1, y1, x, y, large_arc_flag, sweep_flag, rx, ry, phi);
 }
@@ -1165,6 +1175,7 @@ void ovg_rel_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_
 }
 void ovg_circle(ovg_path_t* path, float x, float y, float radius) {
 	ovg_arc(path, x, y, radius, 0, 2.0 * glm::pi<float>());
+
 }
 
 #ifdef CreateRgbaf
@@ -1243,7 +1254,7 @@ void ovg_set_source(vg_state_save_t* ctx, vg_pattern_t* pat) {
 	if (ctx)ctx->pattern = pat;
 }
 void ovg_set_operator(vg_state_save_t* ctx, int op) {
-	if (ctx)ctx->curOperator = op;
+	if (ctx)ctx->curOperator = (vg_operator_t)op;
 }
 void ovg_set_fill_rule(vg_state_save_t* ctx, int fr) {
 	if (ctx)ctx->curFillRule = fr;
@@ -1518,7 +1529,7 @@ vg_state_save_t* ovg_new_state(mem_resource_t* ac0) {
 		pc.mat = pc.matInv = glm::mat3x2(1.0);
 		p->lineWidth = 1.f;
 		p->miterLimit = 10.f;
-		p->curOperator = VG_OPERATOR_OVER;
+		p->curOperator = vg_operator_t::VG_OPERATOR_OVER;
 		p->curFillRule = VG_FILL_RULE_NON_ZERO;
 		p->pushConsts = pc;
 	}
@@ -1763,7 +1774,8 @@ void rvg_t::stroke_preserve()
 	str.hw = p->t->lineWidth * 0.5f;
 	str.lhMax = p->t->miterLimit * p->t->lineWidth;
 	uint32_t ptrPath = 0;
-	curColor = p->t->color;
+	curColor = p->color = p->t->color;
+
 	while (ptrPath < ctx->pathPtr) {
 		uint32_t ptrSegment = 0, lastSegmentPointIdx = 0;
 		uint32_t firstPathPointIdx = str.cp;
@@ -2022,7 +2034,7 @@ vg_state_save_t* rvg_t::new_state()
 
 	t->lineWidth = 1.f;
 	t->miterLimit = 10.f;
-	t->curOperator = VG_OPERATOR_OVER;
+	t->curOperator = vg_operator_t::VG_OPERATOR_OVER;
 	t->curFillRule = VG_FILL_RULE_NON_ZERO;
 	//t->bounds = b;
 	t->pushConsts = pc;
