@@ -185,7 +185,9 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 {
 	cb->clear(vg);
 	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
-	draw_grid_fill(vg, surfsize, glm::ivec2(-1, 0xffdfdfdf), 20);
+	glm::vec2 sf = surfsize;
+	sf *= 0.5;
+	draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 	cb->set_source_color(vg, 0xff0080ff);
 	auto pat = cb->new_pattern_linear(vg, 0, 0, 0, 256);
 	cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 1);// 蓝
@@ -301,7 +303,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();

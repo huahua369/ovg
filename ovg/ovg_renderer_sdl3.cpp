@@ -961,7 +961,8 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, cons
 	dsState.enable_stencil_test = inputs->stencilTestEnable;
 	dsState.front_stencil_state = inputs->stencilFront;
 	dsState.back_stencil_state = inputs->stencilBack;
-
+	dsState.compare_mask = inputs->ds.compare_mask;
+	dsState.write_mask = inputs->ds.write_mask;
 	SDL_GPURasterizerState rasterState = {};
 	rasterState.fill_mode = SDL_GPU_FILLMODE_FILL;
 	rasterState.cull_mode = SDL_GPU_CULLMODE_NONE;
