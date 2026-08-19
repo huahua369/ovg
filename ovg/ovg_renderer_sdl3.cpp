@@ -27,6 +27,7 @@ set3 frag ubo
 
 #include <array>
 #include <map>
+#include <set>
 #include <vector>
 #include <cstring>
 #include <cassert>
@@ -185,12 +186,13 @@ struct ovg_ctx_t {
 	SDL_GPUGraphicsPipeline* pipeCLEAR = nullptr;  // 清除操作 (logic op CLEAR) 
 	SDL_GPUGraphicsPipeline* pipeClipping = nullptr;  // 裁剪掩码写入 (stencil REPLACE)
 
-	SDL_GPUGraphicsPipeline* pipeStencilClear; // 清 0
-	SDL_GPUGraphicsPipeline* pipeStencilFill;  // 非零填充
-	SDL_GPUGraphicsPipeline* pipeClipInc;      // push
-	SDL_GPUGraphicsPipeline* pipeClipDec;      // pop
-	SDL_GPUGraphicsPipeline* pipeStencilDraw;  // 在裁剪区内绘制 
-	int clipDepth;   // 当前裁剪深度（0 = 无裁剪）
+	SDL_GPUGraphicsPipeline* pipeStencilClear = nullptr; // 清 0
+	SDL_GPUGraphicsPipeline* pipeStencilFill = nullptr;  // 非零填充
+	SDL_GPUGraphicsPipeline* pipeClipInc = nullptr;      // push
+	SDL_GPUGraphicsPipeline* pipeClipDec = nullptr;      // pop
+	SDL_GPUGraphicsPipeline* pipeStencilDraw = nullptr;  // 在裁剪区内绘制 
+	std::set<SDL_GPUGraphicsPipeline*> freepipe;
+	int clipDepth = 0;   // 当前裁剪深度（0 = 无裁剪）
 	// ─── 几何管线缓存 ─────────────────────────────
 	std::map<uint64_t, pipelinestate_p_internal> geomPipelines;
 	pipelinestate_p_internal* currentPipeline = nullptr;
@@ -233,8 +235,6 @@ struct ovg_ctx_t {
 #define VG_VBO_SIZE         (VG_PTS_SIZE * 4)
 #define VG_IBO_SIZE         (VG_VBO_SIZE * 6)
 
-// Stencil 位平面
-#define STENCIL_CLIP_BIT    0x1   // bit1: 裁剪掩码（REPLACE 写入）
 
 // 顶点布局
 #define OVG_VERTEX_SIZE     20   // pos.xy(8) + uv.xy(8) + color(4)
@@ -938,7 +938,7 @@ struct vg_pipeline_inputs {
 	SDL_GPUStencilOpState stencilBack;
 };
 
-static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, const vg_pipeline_inputs* inputs)
+static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, const vg_pipeline_inputs* inputs, ovg_ctx_t* ctx)
 {
 	blend_params bp = {};
 	set_blend_params(bp, inputs->blendMode);
@@ -1013,6 +1013,8 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, cons
 	if (!pipeline) {
 		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create graphics pipeline: %s", SDL_GetError());
 	}
+	if (ctx)
+		ctx->freepipe.insert(pipeline);
 	return pipeline;
 }
 
@@ -1063,7 +1065,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.depthTestEnable = false;
 		inputs.depthWriteEnable = false;
 		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::none;  
+		inputs.blendMode = blendMode_e::none;
 		inputs.vertexStride = sizeof(ovgVertex);
 		inputs.numAttributes = 3;
 		inputs.enable_color_write_mask = true;// 只写 stencil
@@ -1071,14 +1073,14 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 
 		// ★ 核心 stencil 状态 
-		inputs.ds.compare_mask = STENCIL_CLIP_BIT;   
-		inputs.ds.write_mask = STENCIL_CLIP_BIT;    
+		inputs.ds.compare_mask = STENCIL_CLIP_BIT;
+		inputs.ds.write_mask = STENCIL_CLIP_BIT;
 		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_REPLACE;
 		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilBack = inputs.stencilFront;
-		ctx->pipeClipping = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeClipping = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -1117,7 +1119,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		//inputs.stencilFront.reference = 0;  // 动态覆盖
 		inputs.stencilBack = inputs.stencilFront;
 
-		ctx->pipeOVER = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeOVER = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -1151,7 +1153,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.stencilBack = inputs.stencilFront;
 		inputs.logicOp = SDL_GPU_BLENDOP_SUBTRACT;
 		inputs.logicOpEnable = true;
-		ctx->pipeSUB = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeSUB = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -1184,7 +1186,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.stencilBack = inputs.stencilFront;
 
 		inputs.enable_color_write_mask = true;
-		ctx->pipeCLEAR = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeCLEAR = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	// todo 管线
 	{
@@ -1215,7 +1217,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		inputs.stencilBack = inputs.stencilFront;
 
-		ctx->pipeStencilClear = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeStencilClear = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	{
 		vg_pipeline_inputs inputs = {};
@@ -1245,7 +1247,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		inputs.stencilBack = inputs.stencilFront;
 
-		ctx->pipeClipInc = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeClipInc = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	{
 		vg_pipeline_inputs inputs = {};
@@ -1275,7 +1277,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		inputs.stencilBack = inputs.stencilFront;
 
-		ctx->pipeClipDec = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeClipDec = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	{
 		vg_pipeline_inputs inputs = {};
@@ -1309,7 +1311,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		inputs.stencilBack = inputs.stencilFront;
 
-		ctx->pipeStencilDraw = create_graphics_pipeline(dev, &inputs);
+		ctx->pipeStencilDraw = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	// 释放 VG 着色器（管道已持有引用）
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgVert);
@@ -1612,16 +1614,15 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 
 void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 	if (!ctx) return;
-
-	if (ctx->pipeOVER)     SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeOVER);
-	if (ctx->pipeSUB)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeSUB);
-	if (ctx->pipeCLEAR)    SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeCLEAR);
-	if (ctx->pipeClipping) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeClipping);
-
+	for (auto p : ctx->freepipe)
+	{
+		if (p) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p);
+	}
 	for (auto& [key, p] : ctx->geomPipelines) {
 		if (p.pipeline)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p.pipeline);
 		if (p.defaultSampler) SDL_ReleaseGPUSampler(ctx->device->gpuDevice, p.defaultSampler);
 	}
+	ctx->freepipe.clear();
 	ctx->geomPipelines.clear();
 
 	delete ctx->gpubuf;
@@ -2098,19 +2099,17 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 			SDL_PushGPUDebugGroup(fbo->cmd, "clip");
 #endif 
 			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
+			SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);
 			draw_ct(pass, c);
 #if defined(_DEBUG)
 			SDL_PopGPUDebugGroup(fbo->cmd);
 #endif
 		}
 		else {
-			//SDL_GPUDepthStencilTarget dst = {
-			//	.clear_depth = 1.0f,
-			//	.clear_stencil = 0,
-			//	.load_op = SDL_GPU_LOADOP_CLEAR,
-			//	.store_op = SDL_GPU_STOREOP_STORE
-			//};
-			//SDL_ClearGPUDepthStencilTarget(cmd, pass, &dst);
+			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeStencilClear);
+			SDL_SetGPUStencilReference(pass, c->ref);
+			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, nullptr, 0, pc);
+			SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);
 		}
 	}
 	break;
@@ -2276,6 +2275,6 @@ bool VG_Init(VGState* g, int width, int height) {
 		return false;
 	}
 	SDL_ClaimWindowForGPUDevice(g->device, g->window);
-	 
+
 	return true;
 }
