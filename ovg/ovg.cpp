@@ -1092,7 +1092,7 @@ void ovg_rectangle(ovg_path_t* path, float x, float y, float w, float h)
 	_add_point(path, x + w, y + h);
 	_add_point(path, x, y + h);
 	assert(path->pathPtr < path->pathes.size());
-	path->pathes[path->pathPtr] |= (PATH_CLOSED_BIT | PATH_IS_CONVEX_BIT); 
+	path->pathes[path->pathPtr] |= (PATH_CLOSED_BIT | PATH_IS_CONVEX_BIT);
 	ovg_close_path(path);
 }
 void ovg_rounded_rectangle(ovg_path_t* path, float x, float y, float w, float h, float radius)
@@ -1684,7 +1684,7 @@ struct rvg_t {
 	std::pmr::vector<glm::vec2> _normals;
 	// 23d
 	geom_primitive gps = {};
- 
+
 	vg_state_save_t* cur_st = 0;
 	ovg_path_t* cur_path = 0;
 	size_t gCount = 0;	// ubo数量
@@ -1811,9 +1811,8 @@ void rvg_t::stroke_preserve()
 				break;
 				//return;
 			}
-			dc.curDashOffset = fmodf(
-				p->t->dashOffset,
-				dc.totDashLength); // cur dash offset between defined path point and last dash segment(on/off) start
+			dc.curDashOffset = fmodf(fmodf(p->t->dashOffset, dc.totDashLength) + dc.totDashLength, dc.totDashLength);
+			// cur dash offset between defined path point and last dash segment(on/off) start
 			str.iL = lastPathPointIdx;
 		}
 		else if (_path_is_closed(ctx, ptrPath)) {
@@ -1857,6 +1856,11 @@ void rvg_t::stroke_preserve()
 				str.iL++;
 				str.cp++;
 			}
+			//else {
+			//	// 强制结束当前 dash
+			//	dc.dashOn = false;
+			//	dc.curDashOffset = 0.0f;
+			//}
 			if (!dc.dashOn) {
 				// finishing last dash that is already started, draw end caps but not too close to start
 				// the default gap is the next void
@@ -1917,7 +1921,7 @@ void rvg_t::fill_preserve()
 	p->color = color;
 	vgcmd_t c = {};
 #if 0
-	 
+
 	if (p->t->curFillRule == VG_FILL_RULE_EVEN_ODD) {
 
 		glm::vec4 bounds = { FLT_MAX, FLT_MAX, FLT_MIN, FLT_MIN };
@@ -2260,9 +2264,9 @@ static float path_signed_area(const glm::vec2* pts, int n) {
 // 用 tess2 做 non-zero fill 的主函数
 // 替换原来的 fill_non_zero
 // ---------------------------------------------------------------------------
- 
+
 #ifdef VG_FILL_NZ_GLUTESS2
- 
+
 void rvg_t::fill_non_zero_tess2(ovg_path_t* ctx)
 {
 	Vertex v{};
@@ -2371,7 +2375,7 @@ void rvg_t::fill_non_zero(ovg_path_t* p)
 {
 	auto t = p->t;
 	uint32_t color = t->color;
-	p->color = color; 
+	p->color = color;
 #ifdef VG_FILL_NZ_GLUTESS2
 	fill_non_zero_tess2(p);
 	return;

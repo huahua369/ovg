@@ -1,12 +1,42 @@
 ﻿#pragma once
 
 #include <cstdint>
+#include <queue>
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <queue>
+#include <vector>
 #include "ovg.h"
 // Forward declarations
 struct ovg_device_t;
 struct ovg_ctx_t;
 struct sdl3gpu_texture;  // 内部纹理包装器
+
+struct VGState {
+	SDL_Window* window;
+	SDL_GPUDevice* device;
+	/* CPU-side data mirrors */
+	int width = 0, height = 0;
+	SDL_GPUTexture* emptyImg;
+	SDL_GPUSampler* sampler;
+	SDL_GPURenderPass* pass;
+	SDL_GPUCommandBuffer* cmd;
+	std::queue<SDL_GPUTransferBuffer*> rq;
+
+	SDL_GPUTexture* msaaColor = nullptr;
+	SDL_GPUTexture* msaaDepth = nullptr;
+
+	int msaaWidth = 0;
+	int msaaHeight = 0;
+
+	SDL_GPUSampleCount msaaSampleCount = SDL_GPU_SAMPLECOUNT_4;
+	ovg_draw_data_t* data;
+};
 
 // FBO 结构体 - SDL3 GPU 版本
 struct vg_fbo_t {
@@ -42,6 +72,7 @@ struct pipelinestate_p {
 	gem_info_t              state = {};
 };
 
+bool VG_Init(VGState* g, int width, int height);
 // 设备创建与销毁
 ovg_device_t* new_sdl3gpu_device(SDL_GPUDevice* gpuDevice);
 void          free_sdl3gpu_device(ovg_device_t* dev);

@@ -1,9 +1,7 @@
 ﻿// ovg.cpp: 定义应用程序的入口点。
 //
 
-#include "ovg_main.h"
-#include "ovg.h"
-#include "vg_renderer.h"
+#include "ovg_main.h" 
 #include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
@@ -186,7 +184,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->clear(vg);
 	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 	glm::vec2 sf = surfsize;
-	sf *= 0.5;
+	//sf *= 0.5;
 	draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 
 
@@ -283,11 +281,12 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 				   10.0   /* skip*/
 	};
 	int    ndash = sizeof(dashes) / sizeof(dashes[0]);
-	double offset = -50.0;
+	double offset = 10.0;
 
 	cb->set_dash(vg, dashes, ndash, offset);
 
-	cb->set_source_rgba(vg, 0, 0, 0, 1);	cb->stroke(vg); //描边
+	cb->set_source_rgba(vg, 0, 0, 0, 1);	
+	cb->stroke(vg); //描边
 	cb->restore(vg);
 	//cb->translate(vg, 0, -128);
 	cb->reset_clip(vg);
@@ -361,16 +360,12 @@ int main()
 			ms = rtc.end();
 			/*if (ms > 0)
 				printf("submit draw ms: %d\n", ms);*/
-				//VG_RenderFrame(g, &dlist);
 		}
 		SDL_Delay(16);  /* ~60 FPS */
 	}
 
 	SDL_WaitForGPUIdle(g->device);
 	/* Cleanup */
-	SDL_ReleaseGPUBuffer(g->device, g->vertexBuffer);
-	SDL_ReleaseGPUSampler(g->device, g->linearSampler);
-	SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
 
 	free_vgfbo_sdl3(&fbo);
 	free_ovgctx_sdl3(ctx);
