@@ -320,7 +320,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();

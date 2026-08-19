@@ -4,7 +4,6 @@ FILE(GLOB_RECURSE TESS2_SRC
 )
 set(OVG_SOURCES 
     ovg.cpp
-    vg_renderer.cpp
     ovg_renderer_sdl3.cpp
     ${TESS2_SRC}
     #filter_pipeline.cpp
