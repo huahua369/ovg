@@ -1201,8 +1201,9 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.depthWriteEnable = false;
 		inputs.stencilTestEnable = true;
 		inputs.blendMode = blendMode_e::none;
-		inputs.vertexStride = 0;
-		inputs.numAttributes = 0;
+		inputs.vertexStride = sizeof(ovgVertex);
+		inputs.numAttributes = 3;
+		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 		inputs.enable_color_write_mask = true;
 		inputs.color_write_mask = 0;
 
@@ -1231,8 +1232,9 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.depthWriteEnable = false;
 		inputs.stencilTestEnable = true;
 		inputs.blendMode = blendMode_e::none;
-		inputs.vertexStride = 0;
-		inputs.numAttributes = 0;
+		inputs.vertexStride = sizeof(ovgVertex);
+		inputs.numAttributes = 3;
+		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 		inputs.enable_color_write_mask = true;
 		inputs.color_write_mask = 0;
 
@@ -1261,8 +1263,9 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.depthWriteEnable = false;
 		inputs.stencilTestEnable = true;
 		inputs.blendMode = blendMode_e::none;
-		inputs.vertexStride = 0;
-		inputs.numAttributes = 0;
+		inputs.vertexStride = sizeof(ovgVertex);
+		inputs.numAttributes = 3;
+		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 		inputs.enable_color_write_mask = true;
 		inputs.color_write_mask = 0;
 

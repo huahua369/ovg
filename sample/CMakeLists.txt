@@ -8,7 +8,7 @@ find_package(harfbuzz CONFIG REQUIRED)
 
 # ---- 源文件 ----
 set(SRC
-    ovg_main.cpp
+    main.cpp
     ${OVG_SOURCES}
 )
 set(SRC_TEXT
