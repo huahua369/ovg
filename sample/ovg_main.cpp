@@ -188,6 +188,10 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	glm::vec2 sf = surfsize;
 	sf *= 0.5;
 	draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+
+
+	//cb->rounded_rectangle(vg, 20, 20, 600, 600, 10);
+	//cb->clip(vg);
 	cb->set_source_color(vg, 0xff0080ff);
 	auto pat = cb->new_pattern_linear(vg, 0, 0, 0, 256);
 	cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 1);// 蓝
@@ -196,7 +200,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->set_source(vg, pat);
 	cb->rectangle(vg, 20, 20, 300, 300);
 	cb->fill(vg);
-	cb->translate(vg, 0, 0);
+	cb->translate(vg, 0, 460);
 	{
 		auto pat = cb->new_pattern_sweep(vg, 160, 160, 0, 2);
 		cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0.81);// 蓝
@@ -206,8 +210,9 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 		cb->rectangle(vg, 20, 20, 300, 300);
 		cb->fill(vg);
 	}
+	cb->translate(vg, 0, -460);
 	cb->translate(vg, 120, 250);
-	cb->circle(vg, 150, 150, 200);
+	cb->circle(vg, 150, 150, 160);
 	pat = cb->new_pattern_radial(vg, 150, 150, 25.6, 102.4, 102.4, 128.0, false);
 	cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0);// 蓝
 	cb->pattern_add_color_stop(pat, 0.5, 0, 1, 0, 1);// 绿
@@ -265,11 +270,10 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->save(vg);
 	cb->translate(vg, 0, 128);
 	cb->rectangle(vg, 12, 12, 232, 70);
-	cb->new_sub_path(vg); 
+	cb->new_sub_path(vg);
 	cb->arc(vg, 64, 64, 40, 0, 2 * M_PI);
 	cb->new_sub_path(vg);
 	cb->arc_negative(vg, 192, 64, 40, 0, -2 * M_PI);
-	//cb->set_glutess(vg, true);
 	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 	cb->set_source_rgba(vg, 0, 0, 0.9, 1);
 	cb->fill_preserve(vg);// 填充
@@ -281,15 +285,14 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	int    ndash = sizeof(dashes) / sizeof(dashes[0]);
 	double offset = -50.0;
 
-	//cb->set_dash(vg, dashes, ndash, offset);
+	cb->set_dash(vg, dashes, ndash, offset);
 
-	//cb->set_glutess(vg, false);
 	cb->set_source_rgba(vg, 0, 0, 0, 1);	cb->stroke(vg); //描边
 	cb->restore(vg);
 	//cb->translate(vg, 0, -128);
 	cb->reset_clip(vg);
 	//cb->rectangle(vg, 128,128, 300, 200);
-	cb->translate(vg, 400, 0);
+	cb->translate(vg, 300, 0);
 	{
 		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false);
 		cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0);// 蓝
@@ -298,7 +301,22 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 		cb->set_source(vg, pat);
 	}
 	cb->arc(vg, 128, 128.0, 76.8, 0, 2 * M_PI);
-	cb->fill_preserve(vg);// 填充
+	cb->fill(vg);// 填充
+
+	cb->set_source_rgba(vg, 0.1f, 0.9f, 0.1f, 1.0f);
+	cb->move_to(vg, 100, 100);
+	cb->rel_line_to(vg, 200, 0);
+	cb->rel_line_to(vg, 0, 150);
+	cb->rel_line_to(vg, -200, 0);
+	cb->close_path(vg);
+
+	cb->move_to(vg, 150, 150);
+	cb->rel_line_to(vg, 0, 50);
+	cb->rel_line_to(vg, 100, 0);
+	cb->rel_line_to(vg, 0, -50);
+	cb->close_path(vg);
+
+	cb->fill(vg);
 }
 
 int main()
@@ -330,18 +348,21 @@ int main()
 		while (SDL_PollEvent(&ev)) {
 			if (ev.type == SDL_EVENT_QUIT) running = false;
 		}
-		rtc.begin();
-		draw(cb, vg, surfsize);// 录制图元
-		int ms = rtc.end();
-		/*if (ms > 0)
-			printf("draw build ms: %d\n", ms);*/
-		auto dlist = get_draw_list(vg);
-		rtc.begin();
-		ovg_draw_data(ctx, &fbo, &dlist);// 提交渲染
-		ms = rtc.end();
-		/*if (ms > 0)
-			printf("submit draw ms: %d\n", ms);*/
-		//VG_RenderFrame(g, &dlist);
+		if (ovg_get_window_swapchain(ctx, &fbo))
+		{
+			rtc.begin();
+			draw(cb, vg, surfsize);// 录制图元
+			int ms = rtc.end();
+			/*if (ms > 0)
+				printf("draw build ms: %d\n", ms);*/
+			auto dlist = get_draw_list(vg);
+			rtc.begin();
+			ovg_draw_data(ctx, &fbo, &dlist);// 提交渲染
+			ms = rtc.end();
+			/*if (ms > 0)
+				printf("submit draw ms: %d\n", ms);*/
+				//VG_RenderFrame(g, &dlist);
+		}
 		SDL_Delay(16);  /* ~60 FPS */
 	}
 

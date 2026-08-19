@@ -98,7 +98,6 @@ enum vg_pipe_t :uint8_t {
 	VG_PIPE_OVER,
 	VG_PIPE_CLEAR,
 	VG_PIPE_SUB,
-	VG_PIPE_POLYFILL,
 	VG_PIPE_CLIPPING
 };
 
@@ -153,7 +152,6 @@ struct vg_state_save_t {
 	vg_clip_state_t		clippingState;
 	uint32_t			references = 1;
 	bool aa = false;
-	bool glutessEnable = false;
 };
 enum class depth_stencil_State :uint8_t {
 	d_depthtest_enable = 0x01,

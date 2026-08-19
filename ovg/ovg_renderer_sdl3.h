@@ -11,14 +11,15 @@ struct sdl3gpu_texture;  // 内部纹理包装器
 // FBO 结构体 - SDL3 GPU 版本
 struct vg_fbo_t {
 	uint32_t width, height;
+	uint32_t dw, dh;
 	ovg_ctx_t* ctx = 0;
 	SDL_Window* window;
-	SDL_GPUTexture* color;       // 窗口主颜色纹理
-	sdl3gpu_texture* colorTex;       // 主颜色纹理
-	sdl3gpu_texture* colorTexMS;     // MSAA 解析前纹理（可选）
-	sdl3gpu_texture* depthStencilTex; // 深度+模板纹理
+	SDL_GPUTexture* color;				// 窗口主颜色纹理
+	sdl3gpu_texture* colorTex;			// 主颜色纹理
+	sdl3gpu_texture* colorTexMS;		// MSAA 解析前纹理（可选）
+	sdl3gpu_texture* depthStencilTex;	// 深度+模板纹理
 	SDL_GPUCommandBuffer* cmd;
-	bool            hasStencil;      // 是否有模板附件
+	bool hasStencil;// 是否有模板附件
 };
 
 
@@ -53,6 +54,7 @@ void        free_ovgctx_sdl3(ovg_ctx_t* ctx);
 vg_fbo_t    new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
 void        free_vgfbo_sdl3(vg_fbo_t* fbo);
 
+void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
 // 绘制入口 
 void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data);
 

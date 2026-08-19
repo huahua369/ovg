@@ -181,8 +181,7 @@ struct ovg_ctx_t {
 	// ─── 5 条 VG 专用管道 ───────────────────────
 	SDL_GPUGraphicsPipeline* pipeOVER = nullptr;  // 正常绘制 (blend = OVER)
 	SDL_GPUGraphicsPipeline* pipeSUB = nullptr;  // 差值绘制 (blend = SUB)
-	SDL_GPUGraphicsPipeline* pipeCLEAR = nullptr;  // 清除操作 (logic op CLEAR)
-	SDL_GPUGraphicsPipeline* pipePolyFill = nullptr;  // 奇偶填充 (stencil INVERT)
+	SDL_GPUGraphicsPipeline* pipeCLEAR = nullptr;  // 清除操作 (logic op CLEAR) 
 	SDL_GPUGraphicsPipeline* pipeClipping = nullptr;  // 裁剪掩码写入 (stencil REPLACE)
 
 	// ─── 几何管线缓存 ─────────────────────────────
@@ -228,9 +227,7 @@ struct ovg_ctx_t {
 #define VG_IBO_SIZE         (VG_VBO_SIZE * 6)
 
 // Stencil 位平面
-#define STENCIL_FILL_BIT    0x1   // bit0: 奇偶填充（INVERT 翻转）
-#define STENCIL_CLIP_BIT    0x2   // bit1: 裁剪掩码（REPLACE 写入）
-#define STENCIL_ALL_BIT     0x3   // bit0+bit1
+#define STENCIL_CLIP_BIT    0x1   // bit1: 裁剪掩码（REPLACE 写入）
 
 // 顶点布局
 #define OVG_VERTEX_SIZE     20   // pos.xy(8) + uv.xy(8) + color(4)
@@ -915,9 +912,11 @@ struct vg_pipeline_inputs {
 	SDL_GPUTextureFormat depthFormat;
 	SDL_GPUSampleCount   samples;
 	SDL_GPUPrimitiveType topology;
+	SDL_GPUColorComponentFlags color_write_mask;
 	bool                 depthTestEnable;
 	bool                 depthWriteEnable;
 	bool                 stencilTestEnable;
+	bool                 enable_color_write_mask;
 	bool                 logicOpEnable;
 	SDL_GPUBlendOp       logicOp;
 	blendMode_e          blendMode;
@@ -969,7 +968,9 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, cons
 	rasterState.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 	rasterState.enable_depth_bias = false;
 	rasterState.enable_depth_clip = false;
-
+	colorTarget.blend_state.enable_color_write_mask = inputs->enable_color_write_mask;
+	if (inputs->enable_color_write_mask)
+		colorTarget.blend_state.color_write_mask = inputs->color_write_mask;
 	SDL_GPUMultisampleState msState = {};
 	msState.sample_count = inputs->samples;
 	msState.sample_mask = 0;// 0xFFFFFFFF;
@@ -1039,43 +1040,6 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	};
 
 	// ═══════════════════════════════════════════════════════════════
-	// ① pipePolyFill — 奇偶填充
-	//   职责：翻转 bit0（INVERT），不关心 ref
-	//   使用：TRIANGLE_FAN，compareOp=ALWAYS（保证所有像素都通过）
-	// ═══════════════════════════════════════════════════════════════
-	{
-		vg_pipeline_inputs inputs = {};
-		inputs.vertShader = vgVert;
-		inputs.fragShader = vgFrag;
-		inputs.colorFormat = ctx->colorFormat;
-		inputs.depthFormat = ctx->depthFormat;
-		inputs.samples = ctx->samples;
-		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-		inputs.depthTestEnable = false;
-		inputs.depthWriteEnable = false;
-		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::normal_prem;  // 只写 stencil，不写颜色
-		inputs.vertexStride = sizeof(ovgVertex);
-		inputs.numAttributes = 3;
-		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
-
-		// ★ 核心 stencil 状态
-		//   compareOp = ALWAYS → 所有像素都通过模板测试
-		//   passOp    = INVERT  → 通过后翻转 bit0
-		//   writeMask = FILL_BIT → 只动 bit0，不动 bit1（裁剪位）
-		//   ref 无关（因为 ALWAYS 不比较 ref）
-		inputs.ds.compare_mask = STENCIL_FILL_BIT;     // 0x1
-		inputs.ds.write_mask = STENCIL_FILL_BIT;     // 0x1
-		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
-		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_INVERT;
-		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilBack = inputs.stencilFront;
-
-		ctx->pipePolyFill = create_graphics_pipeline(dev, &inputs);
-	}
-
-	// ═══════════════════════════════════════════════════════════════
 	// ② pipeClipping — 裁剪掩码写入
 	//   职责：把通过的像素 bit1 写成 ref（= STENCIL_CLIP_BIT = 0x2）
 	//   使用：TRIANGLE_LIST，compareOp=ALWAYS
@@ -1092,30 +1056,21 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.depthTestEnable = false;
 		inputs.depthWriteEnable = false;
 		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::none;  // 只写 stencil
+		inputs.blendMode = blendMode_e::none;  
 		inputs.vertexStride = sizeof(ovgVertex);
 		inputs.numAttributes = 3;
+		inputs.enable_color_write_mask = true;// 只写 stencil
+		inputs.color_write_mask = 0;
 		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 
-		// ★ 核心 stencil 状态
-		//   compareOp = ALWAYS → 所有像素通过
-		//   passOp    = REPLACE → 通过后 stencil = ref
-		//   writeMask = CLIP_BIT → 只动 bit1
-		//   ref = STENCIL_CLIP_BIT (0x2) → 动态设置
-		//
-		// 注意：compare_mask 设成 FILL_BIT(0x1) 意味着只比较 bit0
-		//       但 compareOp=ALWAYS 使比较结果恒为真
-		//       所以 compare_mask 实际上不影响通过/不通过
-		//       它只影响"哪些位参与比较"——这里设成 ALL_BIT 更清晰
-		inputs.ds.compare_mask = STENCIL_ALL_BIT;      // 0x3（参与比较全部位）
-		inputs.ds.write_mask = STENCIL_CLIP_BIT;     // 0x2（只写 bit1）
+		// ★ 核心 stencil 状态 
+		inputs.ds.compare_mask = STENCIL_CLIP_BIT;   
+		inputs.ds.write_mask = STENCIL_CLIP_BIT;    
 		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_REPLACE;
 		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
-		//inputs.ds.reference = 0;  // 初始值，实际由 SetStencilReference 动态覆盖
 		inputs.stencilBack = inputs.stencilFront;
-
 		ctx->pipeClipping = create_graphics_pipeline(dev, &inputs);
 	}
 
@@ -1221,6 +1176,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilBack = inputs.stencilFront;
 
+		inputs.enable_color_write_mask = true;
 		ctx->pipeCLEAR = create_graphics_pipeline(dev, &inputs);
 	}
 
@@ -1398,12 +1354,6 @@ void ovg_bind_vg_pipeline(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPUR
 		// EQUAL 比较：只画 bit1 == 1 的像素
 		SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);  // 0x2
 		break;
-
-	case VG_PIPE_POLYFILL:
-		// INVERT 翻转：ref 无关（ALWAYS），设 0 即可
-		SDL_SetGPUStencilReference(pass, 0);
-		break;
-
 	case VG_PIPE_CLEAR:
 		// stencil 已禁用，ref 无关
 		SDL_SetGPUStencilReference(pass, 0);
@@ -1535,7 +1485,6 @@ void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 	if (ctx->pipeOVER)     SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeOVER);
 	if (ctx->pipeSUB)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeSUB);
 	if (ctx->pipeCLEAR)    SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeCLEAR);
-	if (ctx->pipePolyFill) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipePolyFill);
 	if (ctx->pipeClipping) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, ctx->pipeClipping);
 
 	for (auto& [key, p] : ctx->geomPipelines) {
@@ -1865,7 +1814,7 @@ void ovg_mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm:
 	grad->cp[0] = glm::vec4(glm::vec2(cp0[0]), glm::vec2(cp0[1]));
 	grad->cp[1] = glm::vec4(glm::vec2(cp1[0]), glm::vec2(cp1[1]));
 	ovg_sort_gradient_stops(grad, grad->stops, grad->count);
-} 
+}
 
 SDL_Rect set_scissor_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, glm::vec4* scissor)
 {
@@ -1909,6 +1858,17 @@ void cmd_draw_full_screen_quad_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcm
 	SDL_PopGPUDebugGroup(fbo->cmd);
 #endif
 }
+void draw_ct(SDL_GPURenderPass* pass, vgcmd_t* c)
+{
+	if (c->index.y > 0)
+	{
+		SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
+	}
+	else
+	{
+		SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
+	}
+}
 void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip)
 {
 	push_constants_t pc = {};
@@ -1940,22 +1900,8 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 	}
 	switch (c->type) {
 	case 0:
-	{
-		if (t && t->curFillRule == VG_FILL_RULE_EVEN_ODD) {
-			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipePolyFill);
-			SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
-			ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
-			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, &c->bounds, cuclip, pc);
-		}
-		else {
-			SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
-		}
-	}
-	break;
 	case 1:
-	{
-		SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
-	}
+	{ draw_ct(pass, c); }
 	break;
 	case 2:
 	{
@@ -1968,17 +1914,9 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 		if (c->vertex.y > 0 || c->index.y > 0) {
 #if defined(_DEBUG)
 			SDL_PushGPUDebugGroup(fbo->cmd, "clip");
-#endif
-			if (t && t->curFillRule == VG_FILL_RULE_EVEN_ODD) {
-				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipePolyFill);
-				SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
-				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
-			}
-			else {
-				SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
-				SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, static_cast<int32_t>(c->vertex.x), 0);
-			}
-			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, nullptr, 0, pc);
+#endif 
+			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeClipping);
+			draw_ct(pass, c);
 #if defined(_DEBUG)
 			SDL_PopGPUDebugGroup(fbo->cmd);
 #endif
@@ -2024,24 +1962,40 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 	break;
 	}
 }
-void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
-{
-	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !data->count)return;
-	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
-	if (!cmd)return;
 
+void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
+
+	if (!ctx || !fbo || !(fbo->window || fbo->colorTex))return 0;
+	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
+	if (!cmd)return 0;
 	uint32_t sw = 0, sh = 0;
 	SDL_GPUTexture* swapchain = NULL;
 	if (fbo->window) {
 		bool aq = SDL_AcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh);
+		fbo->dw = sw; fbo->dh = sh;
 		if (!aq || !sw || !sh) {
 			SDL_CancelGPUCommandBuffer(cmd);
-			return;
+			return 0;
+		}
+		if (fbo->width != sw || fbo->height != sh)
+		{
+			SDL_WaitForGPUSwapchain(ctx->device->gpuDevice, fbo->window);
+			free_vgfbo_sdl3(fbo);
+			*fbo = new_vgfbo_sdl3(ctx, sw, sh, fbo->window);
 		}
 	}
-	int smax = std::max(fbo->width, fbo->height);
-	ctx->currentCmdBuf = cmd;
+
+	fbo->color = swapchain;
 	fbo->cmd = cmd;
+	return cmd;
+}
+void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
+{
+	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !data->count)return;
+	if (!fbo->cmd)return;
+	auto cmd = fbo->cmd;
+	int smax = std::max(fbo->width, fbo->height);
+	ctx->currentCmdBuf = fbo->cmd;
 	size_t ress[] = { data->v_count * sizeof(ovgVertex),data->i_count * sizeof(uint32_t)
 		,data->g_count * sizeof(uint32_t)
 		,data->v1_count * sizeof(geomVertex1)
@@ -2053,7 +2007,6 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 	ctx->gpubuf->add_vbo(data->vertex2, ress[4]);
 	ctx->gpubuf->add_ibo(data->geom_indices, ress[2]);
 	ctx->gpubuf->end(cmd);
-	fbo->color = swapchain;
 	auto cmd0 = ovg_begin_frame(ctx, fbo, true);
 	auto pass = ctx->currentRenderPass;
 	SDL_Rect cuClip = {};
@@ -2062,7 +2015,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
 		auto& it = data->d[i];
 		switch (it.g.stype) {
 		case 0:
-		{ 
+		{
 			draw_vg_sdl3(fbo, pass, &it.vg, &cuClip);
 		}
 		break;

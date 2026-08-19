@@ -1,17 +1,24 @@
  
-  
+FILE(GLOB_RECURSE TESS2_SRC 
+  tess2/src/*.c 
+)
 set(OVG_SOURCES 
     ovg.cpp
     vg_renderer.cpp
     ovg_renderer_sdl3.cpp
+    ${TESS2_SRC}
     #filter_pipeline.cpp
     #image_loader.cpp
 )
+
 find_package(glm CONFIG REQUIRED)
 add_library(libovg STATIC ${OVG_SOURCES})
 target_link_libraries(libovg
   PUBLIC glm::glm-header-only
 )
+
+target_include_directories(libovg PRIVATE "tess2/Include"})
+
 # ---- 着色器编译（自定义命令）----
 set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(BUILD_DIR ${EXECUTABLE_OUTPUT_PATH})
