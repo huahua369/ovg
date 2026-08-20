@@ -184,7 +184,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->clear(vg);
 	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 	glm::vec2 sf = surfsize;
-	sf *= 0.5;
+	//sf *= 0.5;
 	draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 	cb->reset_clip(vg, 0); // 清空模板裁剪值
 	cb->rounded_rectangle(vg, 20, 20, 600, 600, 10);
@@ -288,10 +288,10 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	//cb->translate(vg, 0, -128);
 	//cb->reset_clip(vg, 0);
 
-	cb->translate(vg, 300, 0);
+	cb->translate(vg, 300, -200);
 	//cb->rectangle(vg, 20, 150, 200, 100, 10);
 	//cb->clip(vg, vg);// 圆角矩形裁剪
-	cb->clip_rect(vg, 20, 150, 300, 500);// 矩形裁剪会接受当前矩阵影响
+	//cb->clip_rect(vg, 20, 150, 300, 500);// 矩形裁剪会接受当前矩阵影响
 	{
 		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false);
 		cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0);// 蓝
@@ -302,20 +302,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->arc(vg, 128, 128.0, 76.8, 0, 2 * M_PI);
 	cb->fill(vg);// 填充
 
-	cb->set_source_rgba(vg, 0.1f, 0.9f, 0.1f, 1.0f);
-	cb->move_to(vg, 100, 100);
-	cb->rel_line_to(vg, 200, 0);
-	cb->rel_line_to(vg, 0, 150);
-	cb->rel_line_to(vg, -200, 0);
-	cb->close_path(vg);
 
-	cb->move_to(vg, 150, 150);
-	cb->rel_line_to(vg, 0, 50);
-	cb->rel_line_to(vg, 100, 0);
-	cb->rel_line_to(vg, 0, -50);
-	cb->close_path(vg);
-
-	cb->fill(vg);
 }
 
 int main()
@@ -350,7 +337,7 @@ int main()
 		if (ovg_get_window_swapchain(ctx, &fbo))
 		{
 			rtc.begin();
-			draw(cb, vg, surfsize);// 录制图元
+			draw(cb, vg, fbo.display_size);// 录制图元
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/
