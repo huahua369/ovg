@@ -896,12 +896,12 @@ static hb_font_t* load_font(const char* family, const char* style)
 	return hb_font;
 }
 
-class font_mg
+class font_cache_cx
 {
 public:
 	struct FontStyle {
 		std::string family;
-		std::set<std::string> fullname;
+		std::set<std::string> alias;
 		std::string style;
 		std::string file;
 		hb_font_t* font;
@@ -909,21 +909,37 @@ public:
 		int slant;
 		int index;
 	};
-	std::map<std::string, std::vector<FontStyle>> _familys;
+	std::map<std::string, std::vector<FontStyle*>> _familys;
+	std::vector<FontStyle*> _emojis;
+	std::vector<FontStyle*> _temp;
 public:
-	font_mg();
-	~font_mg();
-	void get_family_to_styles();
-
+	font_cache_cx();
+	~font_cache_cx();
+	hb_font_t* get_font(const char* family, const char* style, int weight, int slant);
 private:
-
+	void get_family_to_styles();
+	size_t mk_font(const char* family, const char* style, int weight, int slant);
 };
 
-font_mg::font_mg()
-{}
+font_cache_cx::font_cache_cx()
+{
+	get_family_to_styles();
+}
 
-font_mg::~font_mg()
-{}
+font_cache_cx::~font_cache_cx()
+{
+	for (auto& [k, v] : _familys) {
+		for (auto it : v) {
+			if (it) {
+				if (it->font)
+					hb_font_destroy(it->font);
+				delete it;
+			}
+		}
+	}
+	_familys.clear();
+	_emojis.clear();
+}
 
 hb_font_t* load_font(const char* file, int idx) {
 	hb_font_t* font = 0; hb_face_t* face = 0;
@@ -994,10 +1010,9 @@ void get_pat_strs(FcPattern* font, const char* o, std::set<std::string>& rv)
 	} while (1);
 	return;
 }
-void font_mg::get_family_to_styles()
+void font_cache_cx::get_family_to_styles()
 {
-	std::map<std::string, std::vector<FontStyle>> result;
-
+	std::map<std::string, std::vector<FontStyle*>> result;
 	FcConfig* cfg = FcInitLoadConfigAndFonts();
 	FcPattern* pat = FcPatternCreate();
 	FcObjectSet* os = FcObjectSetBuild(
@@ -1019,11 +1034,24 @@ void font_mg::get_family_to_styles()
 		if (!style)style = (FcChar8*)"";
 		if (!file || !family || !(*file) || !(*family))continue;
 		hb_font_t* font = 0;
-		auto familys = get_pat_strs(p, FC_FAMILY);
-		get_pat_strs(p, FC_FULLNAME, familys);
-		//auto font = load_font((char*)file, index);
-		//if (font)
-		result[(char*)family].push_back({ (char*)family,familys,(char*)style,  file,font,weight, slant, index });
+		auto it = new FontStyle();
+		if (it)
+		{
+			get_pat_strs(p, FC_FAMILY, it->alias);
+			get_pat_strs(p, FC_FULLNAME, it->alias);
+			it->family = (char*)family;
+			std::string fname = it->family;
+			if (fname.find("moji") != std::string::npos)
+			{
+				_emojis.push_back(it);
+			}
+			it->style = (char*)style;
+			it->file = file;
+			it->weight = weight;
+			it->slant = slant;
+			it->index = index;
+			result[(char*)family].push_back(it);
+		}
 	}
 	FcFontSetDestroy(fs);
 	FcObjectSetDestroy(os);
@@ -1032,6 +1060,62 @@ void font_mg::get_family_to_styles()
 	FcConfigDestroy(cfg);
 	_familys.swap(result);
 }
+hb_font_t* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
+{
+	if (mk_font(family, style, weight, slant)) {
+		if (_temp.size()) {
+			return _temp[0]->font;
+		}
+	}
+	return nullptr;
+}
+
+size_t font_cache_cx::mk_font(const char* family, const char* style, int weight, int slant)
+{
+	size_t n = 0;
+	_temp.clear();
+	if (!family || !(*family))return n;
+	{
+		auto it = _familys.find(family);
+		if (it != _familys.end()) {
+			auto& v = it->second;
+			for (auto& vt : v)
+			{
+				bool bst = !style || !(*style);
+				if (bst) {
+					bst = (style && *style && vt->style == style);
+				}
+				bool bw = vt->weight == weight || weight < 1;
+				bool bsl = vt->slant == slant || slant < 1;
+				if (bst && bw && bsl) {
+					_temp.push_back(vt);
+				}
+			}
+		}
+	}
+	if (_temp.empty()) {
+		for (auto& [k, v] : _familys) {
+			for (auto it : v) {
+				if (it) {
+					if (it->alias.find(family) != it->alias.end())
+						_temp.push_back(it);
+				}
+			}
+		}
+	}
+	for (auto it : _temp) {
+		if (!it->font)
+		{
+			it->font = load_font(it->file.c_str(), it->index);
+		}
+		if (it->font)
+		{
+			n++;
+		}
+	}
+	return n;
+}
+
 /* ─────────────────────────────────────────────
  * 对一行逻辑文本做 Bidi 重排 + HarfBuzz 整形
  * ───────────────────────────────────────────── */
@@ -1147,8 +1231,11 @@ int testfont()
 	const char* text = "Hello 世界 مرحبا 123";
 
 	printf("Input: %s\n\n", text);
-	font_mg fmg;
-	fmg.get_family_to_styles();
+	font_cache_cx fmg;
+	auto emj = fmg.get_font("Segoe UI Emoji", 0, 0, 0);
+	auto ns = fmg.get_font("NSimSun", 0, 0, 0);
+
+
 	UErrorCode st = U_ZERO_ERROR;
 
 	/* ── ICU：UTF-8 → UTF-16 ── */
