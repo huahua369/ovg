@@ -1,10 +1,11 @@
  
 
 
-# ---- 查找 SDL3 ----
+# ---- 查找 lib ----
 find_package(SDL3 REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(harfbuzz CONFIG REQUIRED) 
+find_package(Fontconfig REQUIRED)
 
 # ---- 源文件 ----
 set(SRC
@@ -12,13 +13,13 @@ set(SRC
     ${OVG_SOURCES}
 )
 set(SRC_TEXT
-    ../ovg/dwtext.cpp 
+    ../ovg/ovgfonts.cpp  
 )
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(ovg ${SRC})
-target_link_libraries(ovg PRIVATE SDL3::SDL3 libovg)
+target_link_libraries(ovg PRIVATE SDL3::SDL3 libovg harfbuzz::harfbuzz Fontconfig::Fontconfig)
 add_executable(test_text ${SRC_TEXT})
-target_link_libraries(test_text PRIVATE SDL3::SDL3 libovg harfbuzz::harfbuzz ${RAQM_LIBRARIES})
+target_link_libraries(test_text PRIVATE SDL3::SDL3 libovg harfbuzz::harfbuzz Fontconfig::Fontconfig)
   

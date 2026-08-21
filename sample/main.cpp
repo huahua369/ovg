@@ -6,6 +6,8 @@
 #include <Windows.h>
 #include <cmath>
 using namespace std;
+
+
 /* ---------- 颜色辅助 ---------- */
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -305,6 +307,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 }
 
+int testfont();
 int main()
 {
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
@@ -313,8 +316,9 @@ int main()
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 
-
 	VGState g[1] = {};
+
+	testfont();
 
 	if (!VG_Init(g, surfsize.x, surfsize.y)) {
 		SDL_Log("Init failed: %s", SDL_GetError());

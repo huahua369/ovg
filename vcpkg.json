@@ -13,6 +13,9 @@
       "version>=": "2024-07-29#1"
     },
     {
+      "name": "pkgconf"
+    },
+    {
       "name": "glm"
     },
     {
@@ -26,7 +29,7 @@
     },
     {
       "name": "harfbuzz",
-      "version>=": "13.0.1",
+      "version>=": "14.3.1",
       "features": [ "icu" ]
     },
     {

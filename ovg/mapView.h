@@ -1,0 +1,422 @@
+﻿#ifndef __MAPVIEW__H__
+#define __MAPVIEW__H__
+#include <string> 
+#include <functional> 
+#include <vector>  
+#include <map>  
+#include <thread>  
+#include <mutex>
+//---------------------------------------------------------------------------------------------
+/*
+使用方法
+MapView mv;
+mv.openfile(str.c_str());			//打开文件
+char *buf = (char*)mv.mapview();	//获取映射内容
+if (buf)
+{
+guiSetStr(_edit_cmdout, buf);
+}
+
+*/
+//---------------------------------------------------------------------------------------------
+
+#ifndef RWread
+
+
+#define RWread(p,v,s,c) ((p)->read((void*)v,s*c))
+#define RWtell(p) (p)->tell()
+#define RWseek(p,pos,o) (p)->seek(pos,o)
+
+#endif // !RWread
+
+#ifndef fseeki64
+#ifdef _WIN32
+#define fseeki64 _fseeki64
+#define ftelli64 _ftelli64
+#else			
+#define fseeki64 fseeko64
+#define ftelli64 ftello64
+#endif // _WIN32
+#endif
+
+#ifndef NO_MAPFILE
+#ifndef _MFILE_
+#define _MFILE_
+#endif // !_MFILE_
+
+namespace hz
+{
+	class rw_t
+	{
+	public:
+		enum class seek_s
+		{
+			set = 0,
+			cur = 1,
+			end = 2
+		};
+
+	private:
+		char* _data = 0;
+		int64_t _pos = 0, _end = 0, _last_size = 0;
+
+	public:
+		int64_t tell()
+		{
+			return _pos;
+		}
+		int64_t last_size()
+		{
+			return _last_size;
+		}
+		size_t seek(int64_t _offset, int _origin = 0)
+		{
+			switch (_origin)
+			{
+			case 0:
+				_pos = _offset;
+				break;
+			case 1:
+				_pos += _offset;
+				break;
+			case 2:
+				if (_offset > 0)
+				{
+					_offset = 0;
+				}
+				_pos = _end + _offset;
+				break;
+			default:
+				break;
+			}
+			return _pos <= _end ? _pos : -1;
+		}
+		bool iseof()
+		{
+			bool r = (_pos >= _end);
+			if (r) {
+				r = r;
+			}
+			return r;
+		}
+		virtual int64_t read(void* buf, int64_t len)
+		{
+			int64_t ret = 0;
+			if (_end > 0 && buf)
+			{
+				char* d = (char*)_data;
+				auto s = _end - _pos;
+				ret = len;
+				if (ret > s)
+				{
+					ret = s;
+				}
+				memcpy(buf, d + _pos, ret);
+				_pos += ret;
+				if (_pos > _end)
+				{
+					_pos = _end;
+				}
+			}
+			return ret;
+		}
+		virtual int64_t write(const void* buf, int64_t len)
+		{
+			int64_t ret = 0, ns = _pos + len;
+			if (_last_size < ns)
+				_last_size = ns;
+			if (_end < _last_size)
+			{
+				//resize(_last_size);
+			}
+			if (_end > 0 && buf && _data)
+			{
+				char* d = (char*)_data;
+				auto s = _end - _pos;
+				ret = len;
+				if (ret > s)
+				{
+					ret = s;
+				}
+				memcpy(d + _pos, buf, ret);
+				_pos += ret;
+				if (_pos > _end)
+				{
+					_pos = _end;
+				}
+			}
+			return ret;
+		}
+		virtual int resize(int64_t s)
+		{
+			return 0;
+		}
+		int64_t size()
+		{
+			return _end;
+		}
+		void set_data(void* d)
+		{
+			_data = (char*)d;
+		}
+		void set_end(int64_t e)
+		{
+			_end = e;
+		}
+		void set(void* d, int64_t e)
+		{
+			_data = (char*)d;
+			_end = e;
+		}
+		char* data() { return _data; }
+	public:
+		rw_t()
+		{
+		}
+		rw_t(char* d, int64_t e) :_data(d), _end(e)
+		{
+		}
+
+		virtual	~rw_t()
+		{
+		}
+
+	private:
+
+	};
+
+	class mfile_t :public rw_t
+	{
+	private:
+#ifdef _WIN32
+		void* hFile = nullptr; // 文件的句柄 
+		void* hMapFile = nullptr; // 文件内存映射区域的句柄 
+#else
+		int _fd = 0;
+#endif // _WIN32
+		std::string _fn;
+		bool _is_rdonly = true;
+		int _prot = 0, _flags = 0, _flags_fl = 0, _flags_o = 0;
+		char* _pm = nullptr;
+		// 映射的大小
+		uint64_t _msize = 0;
+		// 文件大小
+		uint64_t _fsize = 0;
+		// 1M
+		int _block = 1024 * 1024;
+		std::string _errstr;
+	public:
+		mfile_t();
+		~mfile_t();
+		/*
+		is_rdonly=true则需要文件存在
+		is_shared=是否共享，window设置false则会共享读
+		is_async在window无效
+		*/
+		bool open_m(const std::string& fn, bool is_rdonly, bool is_shared = false, bool is_async = true);
+		uint64_t get_file_size();
+		// 修改文件大小
+		int ftruncate_m(int64_t rs);
+		// 创建映射，文件空的话pos必需为0
+		char* map(uint64_t ms, int64_t pos);
+		int flush(size_t pos = 0, size_t size = -1);
+		int unmap(bool isclose = false);
+		void close_m();
+		// up是否更新到文件
+		size_t write_m(const char* data, size_t len, bool up = false);
+		uint64_t get_size();
+		char* open_d(const std::string& fn, bool is_rdonly);
+		// 打开或创建修改大小，0则不改变大小可能返回0
+		char* new_m(const std::string& fn, size_t size);
+		void clear_ptr();
+		void swap(mfile_t& m);
+		void swap(mfile_t* m);
+		static std::string getLastError();
+	private:
+
+	};
+
+
+	// DLL动态加载
+	class Shared
+	{
+	private:
+		void* _ptr = 0;
+		std::once_flag oc;
+		bool isinit = false;
+	public:
+		static std::string toLower(const std::string& s);
+		static Shared* loadShared1(Shared* ptr, const std::string& fnstr, std::vector<std::string>* pdir = nullptr);
+		static Shared* loadShared(const std::string& fnstr, std::vector<std::string>* pdir = nullptr);
+		static void destroy(Shared* p);
+	public:
+		bool loadFile(const std::string& fnstr);
+		void dll_close();
+		void* _dlsym(const char* funcname);
+
+		// 批量获取
+		void dllsyms(const char** funs, void** outbuf, int n);
+		// 批量获取
+		void dlsyms(const std::vector<std::string>& funs, void** outbuf);
+		void dlsyms(const std::vector<const char*>& funs, void** outbuf);
+		template<class T>
+		T get_cb(const std::string& str, T& ot)
+		{
+			T ret = (T)_dlsym(str.c_str());
+			ot = ret;
+			return ret;
+		}
+		template<class T>
+		T get_cb(const std::string& str, T* ot)
+		{
+			T ret = (T)_dlsym(str.c_str());
+			if (ot)
+				*ot = ret;
+			return ret;
+		}
+		template<class T>
+		T get_cb(const std::string& str)
+		{
+			T ret = (T)_dlsym(str.c_str());
+			return ret;
+		}
+		static void* dllsym(void* ptr, const char* fn);
+		std::string getLastError();
+	public:
+		Shared();
+		~Shared();
+
+	private:
+
+	};
+
+
+	// type 0全部，1=只有文件file,2=只有文件夹folder
+	std::vector<std::string> listFiles(const std::string& path, bool isRecursive, int type);
+	size_t listFiles(const char* path, bool isRecursive, int type, std::vector<std::string>* p);
+
+	// 获取可创建临时文件的目录
+	std::string get_temp_path();
+	std::string genfn(std::string fn);
+
+	int browse_openfile(const std::string& title, const std::string& strCurrentPath, std::string filter, void* hWnd
+		, std::function<void(const std::vector<std::string>&)> rfunc, int n = 10);
+	int browse_folder(const std::string& strCurrentPath, std::function<void(const std::string&)> rfunc, const std::string& title = "");
+	int browse_folder(const std::string& strCurrentPath, const std::string& title, std::function<void(const std::string&)> rfunc);
+	std::string browse_folder(const std::string& strCurrentPath, const std::string& title);
+	std::string browse_folder_w(const std::wstring& strCurrentPath, const std::wstring& title);
+
+	std::string browse_save_file(const std::string& title, const std::string& strCurrentPath, std::string filter, void* hWnd);
+
+	std::vector<std::string> browse_openfile(const std::string& title, const std::string& strCurrentPath, std::string filter, void* hWnd, bool multi_select);
+	// 打开资源管理器
+	bool open_folder_select_file(std::string n);
+
+
+	std::string gbk_to_u8(const std::string& str);
+	std::string u16_to_u8(const std::wstring& str);
+	std::string u16_to_gbk(const std::wstring& str);
+	std::string u8_to_gbk(const std::string& str);
+	std::wstring u8_to_u16(const std::string& str);
+	std::wstring gbk_to_u16(const std::string& str);
+	std::string gb_to_u8(const char* str, size_t len);
+	std::string big5_to_u8(const char* str, size_t len);
+	std::string shift_jis_to_u8(const char* str, size_t len);
+#ifdef NJSON_H
+	njson read_json(const std::string& fn);
+	void save_json(const std::string& fn, const njson& n, int indent_cbor);
+	void save_json0(const std::string& fn, const njson0& n, int indent_cbor);
+#endif
+	std::string get_dir(const char* t);
+
+	bool save_file(const std::string& fn, const char* data, uint64_t size, uint64_t pos, bool is_plus);
+
+	bool is_utf8(const char* str, int len);
+	// 路过bom
+	char* tbom(char* str, int* outn);
+
+	std::string icu_u16_gbk(const void* str, size_t size);
+	std::string icu_gbk_u8(const char* str, size_t size);
+	std::string icu_u8_gbk(const char* str, size_t size);
+	std::string icu_u16_u8(const void* str, size_t size);
+	std::u16string icu_u8_u16(const char* str, size_t size);
+	std::string get_text_code(const char* data8, size_t size);
+	std::vector<const char*> get_convert_name();
+	std::string icu_convert(const char* instring, int32_t inlen, const char* dst_name, const char* src_name);
+
+	size_t load_rc(int id, const char* type, std::string* opt);
+	struct file_zt
+	{
+		size_t size; std::vector<char> d;
+	};
+	void load_rczip(int id, std::map<std::string, file_zt>* opt);
+
+
+	char* _basename(const char* name);
+	char* get_suffix(const char* name);
+	void check_make_path(const std::string& filename);
+	std::string _dirname(const char* path);
+	bool access_2(const char* filename);
+
+}//!hz
+
+#endif
+#endif /* end __MAPVIEW__H__*/
+
+class app_cx;
+namespace hz {
+
+	size_t read_binary_file(const std::string& filename0, std::string& result);
+	void save_cache(const char* fnstr, void* data, int size, const std::string& externalCachePath);
+
+}
+
+namespace md {
+
+	void split(std::string str, const std::string& pattern, std::vector<std::string>& result);
+	std::vector<std::string> split(const std::string& str, const std::string& pattern);
+	// 多分割符
+	std::vector<std::string> split_m(const std::string& str, const std::string& pattern, bool is_space);
+	void get_lines(const std::string& str, std::function<void(const char* str)> cb);
+	std::string replace_s(const std::string& str, const std::string& old_value, const std::string& new_value);
+	// 验证是否为ut8编码
+	bool validate_u8(const char* str, int len);
+	int64_t get_utf8_count(const char* buffer, int64_t len);
+	const char* utf8_char_pos(const char* buffer, int64_t pos, uint64_t len);
+	uint32_t get_u8_idx(const char* str, int64_t idx);
+	const char* get_u8_last(const char* str, uint32_t* codepoint);
+	std::string u16_u8(uint16_t* str, size_t len);
+	void u16_u8(uint16_t* str, size_t len, std::string& r);
+	//std::wstring u8_u16(const std::string& str);
+	std::u16string u8_u16(const char* str, size_t len);
+	size_t u8_u16p(const char* str, size_t len, std::u16string* r);
+	std::wstring u8_w(const char* str, size_t len);
+	std::wstring u8_w(const std::string& str);
+	std::string gb_u8(const char* str, size_t len);
+
+	int utf8_to_unicode(const char* utf8, uint32_t* unicode);
+	int utf16_to_unicode(const uint16_t* str, uint32_t* unicode);
+	void unicode_to_utf8(char* utf8, uint32_t unicode);
+	uint32_t fons_decutf8(uint32_t* down, uint32_t* codep, uint32_t byte);
+	const char* utf8_next_char(const char* p);
+	const char* get_utf8_first(const char* str);
+	const char* get_utf8_prev(const char* str);
+	std::string trim(const std::string& str, const char* pch);
+	std::string trim_ch(const std::string& str, const std::string& pch);
+	int64_t file_size(FILE* fp);
+}
+
+namespace pg
+{
+	std::string to_string(double _Val);
+	std::string to_string_p(uint32_t _Val);
+	std::string to_string_p(uint64_t _Val);
+	std::string to_string_hex(uint32_t _Val);
+	std::string to_string_hex(uint64_t _Val, int n, const char* x);
+	std::string to_string_hex2(uint32_t _Val);
+	std::string to_string(double _Val, const char* fmt);
+}
+inline uint64_t align_up(uint64_t val, uint64_t alignment);
+inline uint64_t align_down(uint64_t val, uint64_t alignment);
+inline uint64_t divideroundingup(uint64_t a, uint64_t b);
+

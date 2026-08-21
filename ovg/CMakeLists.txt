@@ -6,8 +6,8 @@ set(OVG_SOURCES
     ovg.cpp
     ovg_renderer_sdl3.cpp
     ${TESS2_SRC}
-    #filter_pipeline.cpp
-    #image_loader.cpp
+    ovgfonts.cpp
+    mapView.cpp
 )
 
 find_package(glm CONFIG REQUIRED)
