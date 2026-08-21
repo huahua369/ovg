@@ -42,6 +42,10 @@
 #define VG_FILL_NZ_GLUTESS2
 #endif
 
+#include <harfbuzz/hb.h> 
+#include <fontconfig/fontconfig.h>
+#include "ovg_fonts.h"
+
 void init_ovg_cb(ovg_canvas_cb* cb);
 void init_ovg_ctx_cb(ovg_ctx_cb* cb);
 
@@ -173,10 +177,14 @@ void free_canvas_cb(ovg_canvas_cb* p) {
 		delete p;
 	}
 }
+
+class font_cache_cx;
+
 class ovg_ctx_cx :public ovg_ctx_cb
 {
 public:
-
+	font_cache_cx* font_ctx = 0;
+	ovg_canvas_cb* cav = 0;
 public:
 	ovg_ctx_cx();
 	~ovg_ctx_cx();
@@ -198,6 +206,9 @@ ovg_ctx_cx::~ovg_ctx_cx()
 	auto ac1 = (usp_ac_cx*)ac;
 	if (ac1)
 		delete ac1;
+	if (font_ctx)
+		delete font_ctx;
+	font_ctx = 0;
 	ac = 0;
 }
 ovg_ctx_cb* new_ctx_cb()
@@ -3727,6 +3738,8 @@ void vctx_replay_command(rvg_t* ctx, ovg_recording_t* rec, uint32_t cmdIndex);
 uint32_t vctx_recording_get_count(ovg_recording_t* rec);
 void* vctx_recording_get_data(ovg_recording_t* rec);
 void  vctx_recording_destroy(ovg_recording_t* rec);
+// familys多个字体时用小写逗号分隔，style逗号分隔字体的风格(可空) 比如(char*)u8"Consolas,新宋体,Segoe UI Emoji
+
 
 // TODO 命令模式实现
 #define PRI2CTX(ac) 
@@ -4191,6 +4204,89 @@ void* vctx_recording_get_data(ovg_recording_t* rec) {
 void  vctx_recording_destroy(ovg_recording_t* rec) {
 
 }
+struct font_familys_cx :public font_familys_t {
+	std::pmr::vector<hb_font_t*> v;
+	usp_ac_cx* ac = 0;
+};
+void vg_split(std::string str, const std::string& pattern, std::vector<std::string>& result)
+{
+	std::string::size_type pos;
+	str += pattern;//扩展字符串以方便操作
+	int size = str.size();
+	result.clear();
+	int ct = 0;
+	for (int i = 0; i < size; i++)
+	{
+		pos = str.find(pattern, i);
+		if (pos < size)
+		{
+			std::string s = str.substr(i, pos - i);
+			result.push_back(s);
+			i = pos + pattern.size() - 1;
+			ct++;
+		}
+	}
+}
+font_cache_cx* new_font_cache()
+{
+	auto p = new font_cache_cx();
+	if (p)
+	{
+		p->ac = new usp_ac_cx();
+	}
+	return p;
+}
+void free_font_cache(font_cache_cx* p)
+{
+	if (p) {
+		if (p->ac)delete p->ac;
+		delete p;
+	}
+}
+font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const char* styles) {
+	if (!ctx || !familys || !*familys)return nullptr;
+	font_familys_cx* p = 0;
+	auto ac = ctx->ac;
+	do {
+		std::vector<std::string> v, st;
+		vg_split(familys, ",", v);
+		if (styles && *styles)
+			vg_split(styles, ",", st);
+		if (v.empty() || !ctx || !ac)
+		{
+			break;
+		}
+		const char* style = st.size() ? st[0].c_str() : nullptr;
+		size_t ix = 1;
+		auto p = (font_familys_cx*)ac->new_obj<font_familys_cx>();
+		if (!p) {
+			return 0;
+		}
+		p->count = 0;
+		for (auto& it : v)
+		{
+			auto font = ctx->get_font(it.c_str(), style, 0, 0);
+			if (ix < st.size())
+			{
+				style = st.size() ? st[ix].c_str() : nullptr;
+			}
+			ix++;
+			if (font)
+			{
+				p->v.push_back(font); p->count++;
+			}
+		}
+		p->familys = p->v.data();
+	} while (0);
+	return p;
+}
+void delete_font_family(font_familys_t* p) {
+	auto p1 = (font_familys_cx*)p;
+	if (p && p1->ac) {
+		p1->ac->free_obj(p1);
+	}
+}
+
 void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 {
 	if (!cb)return;

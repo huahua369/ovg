@@ -4,7 +4,14 @@
 */
 #include <cstdint>
 
+# ifdef __cplusplus 
+extern "C" {
+#endif
+	typedef struct hb_font_t hb_font_t;
 
+# ifdef __cplusplus 
+}
+#endif
 // 内存资源分配器
 struct mem_resource_t;
 
@@ -243,7 +250,11 @@ struct vg_gradient_t {
 };
 // 纹理表面，由后端提供
 struct vg_surface_t;
-struct font_familys_t;
+
+struct font_familys_t {
+	hb_font_t** familys;
+	int count;
+};
 
 struct vg_pattern_t {
 	int					status;
@@ -552,7 +563,7 @@ struct ovg_canvas_cb {
 struct ovg_ctx_cb {
 	mem_resource_t* ac;	// 内存分配器，由new_ctx_cb自己创建 	
 	// 渲染操作，rvg_t可以多次执行fill或stroke/clip
-	rvg_t* (*new_rvg)(mem_resource_t* ac);
+	rvg_t* (*new_rvg)(mem_resource_t* ctx);
 	void (*destroy_rvg)(rvg_t* p);
 	void(*clear)(rvg_t* v);			// 清空画布 
 	// 路径操作
@@ -662,3 +673,9 @@ void free_ctx_cb(ovg_ctx_cb*);
 ovg_draw_data_t get_draw_list(rvg_t* p);
 
 void draw_grid_fill(rvg_t* vg, glm::vec2 size, glm::ivec2 cols, int width);
+// 字体相关
+class font_cache_cx;
+font_cache_cx* new_font_cache();
+void free_font_cache(font_cache_cx* p);
+font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
+void delete_font_family(font_familys_t* p);
