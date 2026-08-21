@@ -243,7 +243,7 @@ struct vg_gradient_t {
 };
 // 纹理表面，由后端提供
 struct vg_surface_t;
-struct font_family_t;
+struct font_familys_t;
 
 struct vg_pattern_t {
 	int					status;
@@ -418,7 +418,7 @@ struct text_st_t {
 // 文本样式
 struct text_style_t
 {
-	font_family_t* family = 0;
+	font_familys_t* family = 0;
 	float fontsize = 0;
 	float lineheight = 0;
 	glm::vec2 align = { 0.50,0.50 };	// 文本对齐

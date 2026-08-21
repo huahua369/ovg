@@ -1,5 +1,11 @@
 ﻿
+/*
+字体处理管理
 
+
+2026/8/19 创建
+
+*/
 #include <fontconfig/fontconfig.h> 
 #include <map>
 #include <string>
@@ -149,6 +155,7 @@ struct vg_text_run_t {
 	hb_glyph_position_t* glyphs; /* HarfBuzz computed glyph positions array */
 
 };
+typedef struct vg_text_run_t* vgText;
 typedef vg_font_context* vgContext;
 struct vg_font_context {
 	int status;
@@ -164,7 +171,6 @@ struct vg_font_context {
 	//vg_direction_t       textDirection;
 	_font_cache_t* fontCache;
 };
-typedef struct vg_text_run_t* vgText;
 
 // Create font cache.
 void _fonts_cache_create(vgContext ctx);
@@ -896,6 +902,36 @@ static hb_font_t* load_font(const char* family, const char* style)
 	return hb_font;
 }
 
+struct vg_font_extents_t {
+	float ascent;
+	float descent;
+	float height;
+	float max_x_advance;
+	float max_y_advance;
+};
+struct vg_text_extents_t {
+	float x_bearing;
+	float y_bearing;
+	float width;
+	float height;
+	float x_advance;
+	float y_advance;
+};
+struct vg_text_run_t {
+	vg_text_extents_t extents;
+	const char* text;
+	unsigned int glyph_count;
+	hb_glyph_position_t* glyphs;
+	hb_font_t* font;
+	hb_buffer_t* hbBuf;
+};
+typedef struct vg_text_run_t* vgText;
+
+struct font_familys_t {
+	hb_font_t** familys;
+	int count;
+};
+
 class font_cache_cx
 {
 public:
@@ -910,12 +946,37 @@ public:
 		int index;
 	};
 	std::map<std::string, std::vector<FontStyle*>> _familys;
+	// 自定义加载的字体
+	std::map<std::string, std::vector<FontStyle*>> _familys_name;
 	std::vector<FontStyle*> _emojis;
 	std::vector<FontStyle*> _temp;
+	FcConfig* cfg = 0;
 public:
 	font_cache_cx();
 	~font_cache_cx();
 	hb_font_t* get_font(const char* family, const char* style, int weight, int slant);
+	// familys多个字体时用小写逗号分隔，style逗号分隔字体的风格(可空) 比如(char*)u8"Consolas,新宋体,Segoe UI Emoji
+	font_familys_t* new_font_family(const char* familys, const char* style = nullptr);
+	void delete_font_family(font_familys_t* p);
+	void select_font_face(const char* family, const char* style, int weight, int slant);
+	// name自定义名称，可空
+	bool load_font_from_path(const char* path, const char* name);
+	bool add_font_dir(const char* dir);
+	bool load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name);
+	//void set_font_size(int size);
+	//void show_text(const char* utf8);
+	//void text_path(const char* utf8);
+	//void text_extents(const char* utf8, vg_text_extents_t* extents);
+	//void font_extents(vg_font_extents_t* extents);
+	//vgText text_run_create(const char* text);
+	//vgText text_run_create_with_length(const char* text, uint32_t length);
+	//void text_run_destroy(vgText textRun);
+	//void show_text_run(vgText textRun);
+	//void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
+	//uint32_t text_run_get_glyph_count(vgText textRun);
+	//void text_run_get_glyph_position(vgText textRun, uint32_t index, hb_glyph_info_t* pGlyphInfo);
+	const char* weight_to_string(int w);
+	const char* slant_to_string(int s);
 private:
 	void get_family_to_styles();
 	size_t mk_font(const char* family, const char* style, int weight, int slant);
@@ -928,6 +989,9 @@ font_cache_cx::font_cache_cx()
 
 font_cache_cx::~font_cache_cx()
 {
+	if (cfg)
+		FcConfigDestroy(cfg);
+	cfg = 0;
 	for (auto& [k, v] : _familys) {
 		for (auto it : v) {
 			if (it) {
@@ -1010,10 +1074,11 @@ void get_pat_strs(FcPattern* font, const char* o, std::set<std::string>& rv)
 	} while (1);
 	return;
 }
+
 void font_cache_cx::get_family_to_styles()
 {
 	std::map<std::string, std::vector<FontStyle*>> result;
-	FcConfig* cfg = FcInitLoadConfigAndFonts();
+	cfg = FcInitLoadConfigAndFonts();
 	FcPattern* pat = FcPatternCreate();
 	FcObjectSet* os = FcObjectSetBuild(
 		FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE, FC_FULLNAME, FC_INDEX, NULL);
@@ -1057,7 +1122,6 @@ void font_cache_cx::get_family_to_styles()
 	FcObjectSetDestroy(os);
 	FcPatternDestroy(pat);
 
-	FcConfigDestroy(cfg);
 	_familys.swap(result);
 }
 hb_font_t* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
@@ -1069,6 +1133,40 @@ hb_font_t* font_cache_cx::get_font(const char* family, const char* style, int we
 	}
 	return nullptr;
 }
+
+font_familys_t* font_cache_cx::new_font_family(const char* familys, const char* style)
+{
+	return nullptr;
+}
+
+void font_cache_cx::delete_font_family(font_familys_t* p)
+{}
+
+void font_cache_cx::select_font_face(const char* family, const char* style, int weight, int slant)
+{}
+
+bool font_cache_cx::load_font_from_path(const char* path, const char* name)
+{
+	if (!path || !*path)return false;
+	bool hr = FcConfigAppFontAddFile(cfg, (FcChar8*)path);
+	if (hr)
+	{
+
+	}
+	return hr;
+}
+
+bool font_cache_cx::add_font_dir(const char* dir)
+{
+	if (!dir || !*dir)return false;
+	return FcConfigAppFontAddDir(cfg, (FcChar8*)dir);
+}
+
+bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name)
+{
+	return false;
+}
+
 
 size_t font_cache_cx::mk_font(const char* family, const char* style, int weight, int slant)
 {
@@ -1302,4 +1400,24 @@ int testfont()
 
 	printf("\nDone.\n");
 	return 0;
+}
+
+const char* font_cache_cx::weight_to_string(int w) {
+	if (w <= FC_WEIGHT_THIN)      return "Thin";
+	if (w <= FC_WEIGHT_EXTRALIGHT) return "ExtraLight";
+	if (w <= FC_WEIGHT_LIGHT)     return "Light";
+	if (w <= FC_WEIGHT_REGULAR)   return "Regular";
+	if (w <= FC_WEIGHT_MEDIUM)    return "Medium";
+	if (w <= FC_WEIGHT_SEMIBOLD)  return "SemiBold";
+	if (w <= FC_WEIGHT_BOLD)      return "Bold";
+	if (w <= FC_WEIGHT_EXTRABOLD) return "ExtraBold";
+	return "Black";
+}
+
+const char* font_cache_cx::slant_to_string(int s) {
+	switch (s) {
+	case FC_SLANT_ITALIC:  return "Italic";
+	case FC_SLANT_OBLIQUE: return "Oblique";
+	default:               return "Regular";
+	}
 }
