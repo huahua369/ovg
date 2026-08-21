@@ -3,6 +3,7 @@
 #include <fontconfig/fontconfig.h> 
 #include <map>
 #include <string>
+#include <set>
 #include <unordered_map>
 #include <SDL3/SDL.h>
 #include <vector>
@@ -899,7 +900,8 @@ class font_mg
 {
 public:
 	struct FontStyle {
-		std::string family, fullname, namecn;
+		std::string family;
+		std::set<std::string> fullname;
 		std::string style;
 		std::string file;
 		hb_font_t* font;
@@ -957,6 +959,41 @@ std::string get_pat_str(FcPattern* font, const char* o, int n)
 	}
 	return r;
 }
+std::set<std::string> get_pat_strs(FcPattern* font, const char* o)
+{
+	std::set<std::string> rv;
+	FcChar8* s = nullptr;
+	int n = 0;
+	do {
+		if (o && ::FcPatternGetString(font, o, n, &s) == FcResultMatch)
+		{
+			if (s)
+			{
+				rv.insert((char*)s);
+			}
+		}
+		else { break; }
+		n++;
+	} while (1);
+	return rv;
+}
+void get_pat_strs(FcPattern* font, const char* o, std::set<std::string>& rv)
+{
+	FcChar8* s = nullptr;
+	int n = 0;
+	do {
+		if (o && ::FcPatternGetString(font, o, n, &s) == FcResultMatch)
+		{
+			if (s)
+			{
+				rv.insert((char*)s);
+			}
+		}
+		else { break; }
+		n++;
+	} while (1);
+	return;
+}
 void font_mg::get_family_to_styles()
 {
 	std::map<std::string, std::vector<FontStyle>> result;
@@ -964,7 +1001,7 @@ void font_mg::get_family_to_styles()
 	FcConfig* cfg = FcInitLoadConfigAndFonts();
 	FcPattern* pat = FcPatternCreate();
 	FcObjectSet* os = FcObjectSetBuild(
-		FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE, FC_INDEX, NULL);
+		FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE, FC_FULLNAME, FC_INDEX, NULL);
 	FcFontSet* fs = FcFontList(cfg, pat, os);
 
 	for (int i = 0; i < fs->nfont; i++) {
@@ -982,10 +1019,11 @@ void font_mg::get_family_to_styles()
 		if (!style)style = (FcChar8*)"";
 		if (!file || !family || !(*file) || !(*family))continue;
 		hb_font_t* font = 0;
-		auto fullname = get_pat_str(p, FC_FULLNAME, 0);
+		auto familys = get_pat_strs(p, FC_FAMILY);
+		get_pat_strs(p, FC_FULLNAME, familys);
 		//auto font = load_font((char*)file, index);
 		//if (font)
-		result[(char*)family].push_back({ (char*)family,fullname,"",(char*)style,  file,font,weight, slant, index });
+		result[(char*)family].push_back({ (char*)family,familys,(char*)style,  file,font,weight, slant, index });
 	}
 	FcFontSetDestroy(fs);
 	FcObjectSetDestroy(os);

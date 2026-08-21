@@ -13,7 +13,7 @@ set(SRC
     ${OVG_SOURCES}
 )
 set(SRC_TEXT
-    ../ovg/ovgfonts.cpp  
+    ../ovg/ovg_fonts.cpp  
 )
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})

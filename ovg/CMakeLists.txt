@@ -6,7 +6,7 @@ set(OVG_SOURCES
     ovg.cpp
     ovg_renderer_sdl3.cpp
     ${TESS2_SRC}
-    ovgfonts.cpp
+    ovg_fonts.cpp
     mapView.cpp
 )
 
