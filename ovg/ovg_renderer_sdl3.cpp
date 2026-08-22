@@ -1367,7 +1367,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 	dsState.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
 	dsState.enable_stencil_test = (info->flags & (uint8_t)depth_stencil_State::d_stenciltest_enable) != 0;
 	dsState.compare_mask = 0xFF;
-	dsState.write_mask = 0xFF;
+	dsState.write_mask = 0;
 	dsState.front_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 	dsState.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
 	dsState.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
