@@ -2059,17 +2059,15 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 {
 	push_constants_t pc = {};
 	auto t = c->state;
+	fbo->ctx->gpubuf->bindVBO(pass, 0);
+	fbo->ctx->gpubuf->bindIBO(pass, 0);
+	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
+	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 	if (t) {
-		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
-
 		int smax = std::max(fbo->width, fbo->height);
 		pc = t->pushConsts;
 		pc.size = { fbo->width,fbo->height };
 		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)t->curOperator);
-		fbo->ctx->gpubuf->bindVBO(pass, 0);
-		fbo->ctx->gpubuf->bindIBO(pass, 0);
-		SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
-		SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 		if (t->pattern && t->pattern->type != vg_pattern_type_t::VG_PATTERN_TYPE_SOLID) {
 			pc.source = { smax,smax,0,0 };
 		}
@@ -2082,6 +2080,14 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat);
 			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
+		glm::mat3x3 inv = pc.mat;
+		pc.matInv = glm::inverse(inv);
+		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
+	}
+	else {
+		pc.mat = glm::mat3x2(1.0);
+		glm::mat3x3 inv = pc.mat;
+		pc.matInv = glm::inverse(inv);
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	}
 	switch (c->type) {

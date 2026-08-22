@@ -47,6 +47,7 @@ public:
 		int weight;
 		int slant;
 		int index;
+		bool slnt_applied = false;       // 是否已设置变量 slnt
 	};
 	std::map<std::string, std::vector<FontStyle*>> _familys;
 	// 自定义加载的字体
@@ -58,6 +59,9 @@ public:
 public:
 	font_cache_cx();
 	~font_cache_cx();
+	void get_sys_family();
+	void clear_sys();
+	void clear_load();
 	hb_font_t* get_font(const char* family, const char* style, int weight, int slant);
 
 	void select_font_face(const char* family, const char* style, int weight, int slant);
@@ -80,6 +84,6 @@ public:
 	const char* weight_to_string(int w);
 	const char* slant_to_string(int s);
 private:
-	void get_family_to_styles();
+
 	size_t mk_font(std::map<std::string, std::vector<FontStyle*>>* p, const char* family, const char* style, int weight, int slant);
 };

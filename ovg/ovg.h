@@ -8,6 +8,7 @@
 extern "C" {
 #endif
 	typedef struct hb_font_t hb_font_t;
+	typedef struct hb_set_t hb_set_t;
 
 # ifdef __cplusplus 
 }
@@ -219,13 +220,7 @@ struct node_dt
 	size_t line_count = 0;	// out 行数量
 };
 
-struct flex_ctx;
-flex_ctx* new_flex_ctx();
-void free_flex_ctx(flex_ctx* p);
-void* flex_ctx_ac(flex_ctx* p);
-void flex_ctx_set_ac(flex_ctx* p, mem_resource_t* a);
-// 输入样式数据，根节点指针，所有节点数量 
-glm::vec4 flex_layout_calc(flex_data* fd, size_t count, node_dt* p, size_t node_count, flex_ctx* ctx);
+struct flex_run;
 #endif // 1
 
 // 渲染命令
@@ -251,8 +246,15 @@ struct vg_gradient_t {
 // 纹理表面，由后端提供
 struct vg_surface_t;
 
+
+struct font_family_t {
+	hb_font_t* font;
+	hb_set_t* coverage;  // hb_face_collect_unicodes
+	glm::ivec2 scale = {};
+	float ascent;        // 从 hb_font_extents
+};
 struct font_familys_t {
-	hb_font_t** familys;
+	font_family_t* familys;
 	int count;
 };
 
@@ -563,7 +565,7 @@ struct ovg_canvas_cb {
 struct ovg_ctx_cb {
 	mem_resource_t* ac;	// 内存分配器，由new_ctx_cb自己创建 	
 	// 渲染操作，rvg_t可以多次执行fill或stroke/clip
-	rvg_t* (*new_rvg)(mem_resource_t* ctx);
+	rvg_t* (*new_rvg)(mem_resource_t* ac);
 	void (*destroy_rvg)(rvg_t* p);
 	void(*clear)(rvg_t* v);			// 清空画布 
 	// 路径操作
@@ -673,9 +675,18 @@ void free_ctx_cb(ovg_ctx_cb*);
 ovg_draw_data_t get_draw_list(rvg_t* p);
 
 void draw_grid_fill(rvg_t* vg, glm::vec2 size, glm::ivec2 cols, int width);
+
+flex_run* new_flex_run(mem_resource_t* a);
+void free_flex_run(flex_run* p);
+mem_resource_t* flex_run_ac(flex_run* p);
+// 输入样式数据，根节点指针，所有节点数量 
+glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
+
 // 字体相关
 class font_cache_cx;
 font_cache_cx* new_font_cache();
 void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
+void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
+

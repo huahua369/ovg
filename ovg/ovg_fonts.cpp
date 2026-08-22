@@ -6,15 +6,13 @@
 2026/8/19 创建
 
 */
-#include <fontconfig/fontconfig.h> 
+
 #include <map>
 #include <string>
 #include <set>
 #include <unordered_map>
 #include <SDL3/SDL.h>
 #include <vector>
-#include <harfbuzz/hb.h> 
-#include <harfbuzz/hb-raster.h> 
 
 #include <locale.h>
 #include <string.h>
@@ -54,27 +52,18 @@
 #include <unicode/ustring.h>
 #include <unicode/utext.h>
 
-/* FreeType */
-#include <ft2build.h>
-#include FT_FREETYPE_H
-
 /* HarfBuzz */
 #include <harfbuzz/hb.h>
-#include <harfbuzz/hb-ot.h>
+#include <harfbuzz/hb-ot.h> 
+#include <harfbuzz/hb-raster.h> 
 #include "ovg_fonts.h"
-/* ─────────────────────────────────────────────
- * 工具函数：UTF-8 → UTF-16（ICU 用）
- * ───────────────────────────────────────────── */
+
 static int utf8_to_utf16(const char* utf8, UChar* out16, int cap16, UErrorCode* st)
 {
 	int32_t len = 0;
 	u_strFromUTF8(out16, cap16, &len, utf8, -1, st);
 	return len;
 }
-
-/* ─────────────────────────────────────────────
- * 工具函数：UTF-16 切片 → UTF-8（打印用）
- * ───────────────────────────────────────────── */
 static void utf16_slice_to_utf8(const UChar* u16, int32_t start, int32_t len, char* out, int cap)
 {
 	UErrorCode st = U_ZERO_ERROR;
@@ -142,18 +131,24 @@ static hb_font_t* load_font(const char* family, const char* style)
 	FcConfigDestroy(cfg);
 	return hb_font;
 }
-
-
 font_cache_cx::font_cache_cx()
 {
-	get_family_to_styles();
+	get_sys_family();
 }
 
 font_cache_cx::~font_cache_cx()
 {
+	clear_load();
+	clear_sys();
 	if (cfg)
 		FcConfigDestroy(cfg);
 	cfg = 0;
+	_emojis.clear();
+}
+
+void font_cache_cx::clear_sys()
+{
+	_temp.clear();
 	for (auto& [k, v] : _familys) {
 		for (auto it : v) {
 			if (it) {
@@ -164,7 +159,21 @@ font_cache_cx::~font_cache_cx()
 		}
 	}
 	_familys.clear();
-	_emojis.clear();
+}
+
+void font_cache_cx::clear_load()
+{
+	_temp.clear();
+	for (auto& [k, v] : _familys_name) {
+		for (auto it : v) {
+			if (it) {
+				if (it->font)
+					hb_font_destroy(it->font);
+				delete it;
+			}
+		}
+	}
+	_familys_name.clear();
 }
 
 hb_font_t* load_font(const char* file, int idx) {
@@ -237,10 +246,44 @@ void get_pat_strs(FcPattern* font, const char* o, std::set<std::string>& rv)
 	return;
 }
 
-void font_cache_cx::get_family_to_styles()
+inline float font_get_slant_angle(hb_font_t* font) {
+	return hb_style_get_value(font, HB_STYLE_TAG_SLANT_ANGLE);
+}
+
+inline float font_get_italic_value(hb_font_t* font) {
+	return hb_style_get_value(font, HB_STYLE_TAG_ITALIC);
+}
+// Fontconfig slant → 期望的 slnt 角度（右倾为负）
+inline float fc_slant_to_slant_angle(int fc_slant) noexcept {
+	switch (fc_slant) {
+	case FC_SLANT_ITALIC:
+		return -12.0f;   // 典型 italic 倾斜
+	case FC_SLANT_OBLIQUE:
+		return -10.0f;   // oblique 通常略小于 italic
+	case FC_SLANT_ROMAN:
+	default:
+		return 0.0f;
+	}
+}
+//SLANT_ANGLE：OpenType slnt 轴值
+//ITALIC：0 = Roman，1 = Italic（COLRv1 / STAT 表）
+//四、关键逻辑：是否设置 slnt（变量字体才设）
+bool font_supports_slnt_axis(hb_font_t* font) {
+	hb_face_t* face = hb_font_get_face(font);
+	unsigned int axis_count = hb_ot_var_get_axis_count(face);
+	auto axc = axis_count;
+	for (unsigned i = 0; i < axis_count; i++) {
+		hb_ot_var_axis_info_t info;
+		hb_ot_var_get_axis_infos(face, i, &axc, &info);
+		if (info.tag == HB_STYLE_TAG_SLANT_ANGLE)
+			return true;
+	}
+	return false;
+}
+void font_cache_cx::get_sys_family()
 {
-	std::map<std::string, std::vector<FontStyle*>> result;
-	cfg = FcInitLoadConfigAndFonts();
+	if (!cfg)
+		cfg = FcInitLoadConfigAndFonts();
 	FcPattern* pat = FcPatternCreate();
 	FcObjectSet* os = FcObjectSetBuild(
 		FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE, FC_FULLNAME, FC_INDEX, NULL);
@@ -277,14 +320,14 @@ void font_cache_cx::get_family_to_styles()
 			it->weight = weight;
 			it->slant = slant;
 			it->index = index;
-			result[(char*)family].push_back(it);
+
+			_familys[(char*)family].push_back(it);
 		}
 	}
 	FcFontSetDestroy(fs);
 	FcObjectSetDestroy(os);
 	FcPatternDestroy(pat);
 
-	_familys.swap(result);
 }
 hb_font_t* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
 {
@@ -337,7 +380,7 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 			for (auto& vt : v)
 			{
 				bool bst = !style || !(*style);
-				if (bst) {
+				if (!bst) {
 					bst = (style && *style && vt->style == style);
 				}
 				bool bw = vt->weight == weight || weight < 1;
@@ -349,11 +392,21 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		}
 	}
 	if (_temp.empty()) {
-		for (auto& [k, v] : _familys) {
-			for (auto it : v) {
-				if (it) {
-					if (it->alias.find(family) != it->alias.end())
-						_temp.push_back(it);
+		for (auto& [k, v] : *pt) {
+			for (auto vt : v) {
+				if (vt) {
+					if (vt->alias.find(family) != vt->alias.end())
+					{
+						bool bst = !style || !(*style);
+						if (!bst) {
+							bst = (style && *style && vt->style == style);
+						}
+						bool bw = vt->weight == weight || weight < 1;
+						bool bsl = vt->slant == slant || slant < 1;
+						if (bst && bw && bsl) {
+							_temp.push_back(vt);
+						}
+					}
 				}
 			}
 		}
@@ -365,6 +418,11 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		}
 		if (it->font)
 		{
+			if (font_supports_slnt_axis(it->font)) {
+				//float desired = fc_slant_to_slant_angle(slant);
+				//hb_font_set_variation(font, HB_OT_TAG_VAR_AXIS_SLANT, desired);
+				it->slnt_applied = true;
+			}
 			n++;
 		}
 	}
@@ -480,94 +538,22 @@ hb_font_t* find_face_for_codepoint(hb_font_t* font, uint32_t cp, uint32_t variat
 	}
 	return 0;
 }
-int testfont()
-{
-	/* 原始 UTF-8 文本：中英阿 + 数字混排 */
-	const char* text = "Hello 世界 مرحبا 123";
-
-	printf("Input: %s\n\n", text);
-	font_cache_cx fmg;
-	auto emj = fmg.get_font("Segoe UI Emoji", 0, 0, 0);
-	auto ns = fmg.get_font("NSimSun", 0, 0, 0);
-
-
-	UErrorCode st = U_ZERO_ERROR;
-
-	/* ── ICU：UTF-8 → UTF-16 ── */
-	UChar u16[256];
-	int32_t len16 = utf8_to_utf16(text, u16, 256, &st);
-	if (U_FAILURE(st)) {
-		fprintf(stderr, "UTF-8 → UTF-16 failed: %s\n", u_errorName(st));
-		return 1;
-	}
-
-	/* ── ICU：断行 ── */
-	UBreakIterator* bi = ubrk_open(UBRK_LINE, "en", u16, len16, &st);
-	if (U_FAILURE(st)) {
-		fprintf(stderr, "ubrk_open failed: %s\n", u_errorName(st));
-		return 1;
-	}
-
-
-	hb_font_t* hb_font = load_font("Noto Sans", NULL);
-	if (!hb_font) {
-		/* 备选：用系统默认 sans */
-		hb_font = load_font("Sans", NULL);
-	}
-	if (!hb_font) {
-		fprintf(stderr, "无法加载任何字体\n");
-		return 1;
-	}
-
-	/* ── 逐行：断行 → Bidi → 整形 ── */
-	int32_t start = ubrk_first(bi);
-	int32_t end = ubrk_next(bi);
-	int line_no = 0;
-
-	while (end != UBRK_DONE) {
-		int32_t line_len = end - start;
-		const UChar* line_text = u16 + start;
-
-		/* 打印当前行（逻辑序） */
-		char line_utf8[256];
-		utf16_slice_to_utf8(u16, start, line_len, line_utf8, 256);
-		printf("Line %d (logical): \"%s\"\n", line_no, line_utf8);
-
-		/* 检测段落方向（看首个强方向字符） */
-		UBiDiDirection dir = (UBiDiDirection)UBIDI_DEFAULT_LTR;
-		for (int32_t i = 0; i < line_len; i++) {
-			if (u_charDirection(line_text[i]) == U_RIGHT_TO_LEFT ||
-				u_charDirection(line_text[i]) == U_ARABIC_NUMBER) {
-				dir = UBIDI_RTL;
-				break;
-			}
-		}
-
-		/* Bidi + HarfBuzz */
-		shape_line(hb_font, line_text, line_len, dir);
-
-		line_no++;
-		start = end;
-		end = ubrk_next(bi);
-	}
-
-	/* ── 清理（顺序：hb → ICU） ── */
-	hb_font_destroy(hb_font);
-	ubrk_close(bi);
-
-	printf("\nDone.\n");
-	return 0;
-}
 
 const char* font_cache_cx::weight_to_string(int w) {
-	if (w <= FC_WEIGHT_THIN)      return "Thin";
-	if (w <= FC_WEIGHT_EXTRALIGHT) return "ExtraLight";
-	if (w <= FC_WEIGHT_LIGHT)     return "Light";
-	if (w <= FC_WEIGHT_REGULAR)   return "Regular";
-	if (w <= FC_WEIGHT_MEDIUM)    return "Medium";
-	if (w <= FC_WEIGHT_SEMIBOLD)  return "SemiBold";
-	if (w <= FC_WEIGHT_BOLD)      return "Bold";
-	if (w <= FC_WEIGHT_EXTRABOLD) return "ExtraBold";
+	switch (w) {
+	case FC_WEIGHT_THIN:		return "Thin";
+	case FC_WEIGHT_EXTRALIGHT:	return "ExtraLight";
+	case FC_WEIGHT_LIGHT:		return "Light";
+	case FC_WEIGHT_DEMILIGHT:	return "DemiLight";
+	case FC_WEIGHT_BOOK:		return "Book";
+	case FC_WEIGHT_REGULAR:		return "Regular";
+	case FC_WEIGHT_MEDIUM:		return "Medium";
+	case FC_WEIGHT_DEMIBOLD:	return "DemiBold";
+	case FC_WEIGHT_BOLD:		return "Bold";
+	case FC_WEIGHT_EXTRABOLD:	return "ExtraBold";
+	case FC_WEIGHT_BLACK:		return "Black";
+	case FC_WEIGHT_EXTRABLACK:	return "ExtraBlack";
+	}
 	return "Black";
 }
 
@@ -575,6 +561,265 @@ const char* font_cache_cx::slant_to_string(int s) {
 	switch (s) {
 	case FC_SLANT_ITALIC:  return "Italic";
 	case FC_SLANT_OBLIQUE: return "Oblique";
-	default:               return "Regular";
+	default:               return "Roman";
 	}
 }
+struct draw_ctx {
+	ovg_ctx_cb* ovg = 0;
+	rvg_t* vg = 0;
+	float x = 0.0f, y = 0.0f;
+	float scale = 1.0f;      // 字体像素大小
+	float ascent = 0.0f;     // 用于 baseline
+};
+static void ovg_move_to(hb_draw_funcs_t*, void* data,
+	hb_draw_state_t*, float to_x, float to_y, void*) {
+	auto* c = static_cast<draw_ctx*>(data);
+	c->ovg->move_to(c->vg,
+		c->x + to_x * c->scale,
+		c->y + (c->ascent - to_y * c->scale));
+}
+
+static void ovg_line_to(hb_draw_funcs_t*, void* data,
+	hb_draw_state_t*, float to_x, float to_y, void*) {
+	auto* c = static_cast<draw_ctx*>(data);
+	c->ovg->line_to(c->vg,
+		c->x + to_x * c->scale,
+		c->y + (c->ascent - to_y * c->scale));
+}
+
+static void ovg_cubic_to(hb_draw_funcs_t*, void* data,
+	hb_draw_state_t*,
+	float cx1, float cy1, float cx2, float cy2,
+	float to_x, float to_y, void*) {
+	auto* c = static_cast<draw_ctx*>(data);
+	c->ovg->curve_to(c->vg,
+		c->x + cx1 * c->scale, c->y + (c->ascent - cy1 * c->scale),
+		c->x + cx2 * c->scale, c->y + (c->ascent - cy2 * c->scale),
+		c->x + to_x * c->scale, c->y + (c->ascent - to_y * c->scale));
+}
+
+
+static void ovg_close_path(hb_draw_funcs_t*,
+	void* data,
+	hb_draw_state_t*,
+	void*) {
+	auto* ctx = static_cast<draw_ctx*>(data);
+	ctx->ovg->close_path(ctx->vg);
+}
+void vctx_move_to(rvg_t* ctx, float x, float y);
+void vctx_line_to(rvg_t* ctx, float x, float y);
+// 文本渲染
+#if 1
+hb_draw_funcs_t* create_ovg_draw_funcs() {
+	hb_draw_funcs_t* funcs = hb_draw_funcs_create();
+	hb_draw_funcs_set_move_to_func(funcs, ovg_move_to, nullptr, nullptr);
+	hb_draw_funcs_set_line_to_func(funcs, ovg_line_to, nullptr, nullptr);
+	hb_draw_funcs_set_cubic_to_func(funcs, ovg_cubic_to, nullptr, nullptr);
+	hb_draw_funcs_set_close_path_func(funcs, ovg_close_path, nullptr, nullptr);
+	return funcs;
+}
+
+const font_family_t* resolve_family(
+	const font_familys_t* ffs,
+	uint32_t cp)
+{
+	for (int i = 0; i < ffs->count; i++) {
+		if (hb_set_has(ffs->familys[i].coverage, cp))
+			return &ffs->familys[i];
+	}
+	return &ffs->familys[0]; // fallback
+}
+
+static uint32_t utf8_next(const uint8_t*& p, const uint8_t* end) {
+	if (p >= end) return 0;
+	uint8_t c = *p++;
+	uint32_t r = 0;
+	if (c < 0x80) return c;
+	if ((c & 0xE0) == 0xC0 && p + 1 <= end)
+		r = ((c & 0x1F) << 6) | (*p++ & 0x3F);
+	if ((c & 0xF0) == 0xE0 && p + 2 <= end)
+		r = ((c & 0x0F) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F), p += 2;
+	if ((c & 0xF8) == 0xF0 && p + 3 <= end)
+		r = ((c & 0x07) << 18) | ((p[0] & 0x3F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F), p += 3;
+	return r ? r : 0xFFFD;
+}
+struct font_family_ta {
+	hb_font_t* font;
+	float ascent;        // 从 hb_font_extents
+	hb_set_t* coverage;  // hb_face_collect_unicodes
+};
+struct font_familys_ta {
+	font_family_t* familys;
+	int count;
+};
+void utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
+{
+	const uint8_t* p = (const uint8_t*)str8;
+	const uint8_t* end = p + len;
+	ot->reserve(len + ot->size());
+	while (p < end)
+		ot->push_back(utf8_next(p, end));
+}
+void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color) {
+	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
+	static std::vector<uint32_t> utf32;
+	utf32.clear();
+	utf8_to_utf32(str8, len, &utf32);
+	hb_font_t* primary = ffs->familys[0].font; // 主字体（可按 script 选）
+	hb_draw_funcs_t* df = create_ovg_draw_funcs();
+	hb_buffer_t* buf = hb_buffer_create();
+	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
+	hb_buffer_guess_segment_properties(buf);
+	hb_shape(primary, buf, nullptr, 0);
+
+	uint32_t n;
+	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+
+	float pen_x = x, pen_y = y;
+	size_t run_start = 0;
+	int h = color.z;
+	while (run_start < utf32.size()) {
+		uint32_t cp = utf32[run_start];
+		const font_family_t* ff = resolve_family(ffs, cp);
+		if (!ff) ff = &ffs->familys[0];
+		float sc = 1.0;
+		if (h > 0)
+		{
+			hb_font_set_scale(ff->font, h, h);
+		}
+		/* 扩展 run */
+		size_t run_end = run_start + 1;
+		while (run_end < utf32.size() &&
+			resolve_family(ffs, utf32[run_end]) == ff)
+			run_end++;
+
+		/* shape run */
+		hb_buffer_t* buf = hb_buffer_create();
+		hb_buffer_add_utf32(buf,
+			utf32.data() + run_start,
+			run_end - run_start,
+			0, -1);
+		hb_buffer_guess_segment_properties(buf);
+
+		/* ✅ UI：可选关闭 kerning */
+		hb_feature_t features[] = {
+			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
+		};
+		hb_shape(ff->font, buf, features, 1);
+
+		unsigned n;
+		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+		hb_glyph_position_t* pos =
+			hb_buffer_get_glyph_positions(buf, nullptr);
+
+		/* 画 run */
+		for (unsigned i = 0; i < n; i++) {
+			draw_ctx ctx{
+				ovg, ovg_ctx,
+				pen_x, pen_y, sc,
+				ff->ascent / ff->scale.x
+			};
+			hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
+			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
+		}
+		hb_buffer_destroy(buf);
+		run_start = run_end;
+	}
+	hb_buffer_destroy(buf);
+	hb_draw_funcs_destroy(df);
+	ovg->set_source_color(ovg_ctx, color.x);
+	ovg->fill_preserve(ovg_ctx);
+	ovg->set_source_color(ovg_ctx, color.y);
+	ovg->stroke(ovg_ctx);
+}
+// todo 渐变色
+struct ovg_paint;
+void txt_paint_push_transform(hb_paint_funcs_t* funcs, void* paint_data, float xx, float yx, float xy, float yy, float dx, float dy, void* user_data);
+void txt_paint_pop_transform(hb_paint_funcs_t* funcs, void* paint_data, void* user_data);
+void txt_paint_fill_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoint_t glyph, hb_font_t* font, hb_bool_t is_foreground, hb_color_t color, void* user_data);
+
+void txt_paint_push_clip_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoint_t glyph, hb_font_t* font, void* user_data);
+void txt_paint_push_clip_rectangle(hb_paint_funcs_t* funcs, void* paint_data, float xmin, float ymin, float xmax, float ymax, void* user_data);
+hb_draw_funcs_t* txt_paint_push_clip_path_start(hb_paint_funcs_t* funcs, void* paint_data, void** draw_data, void* user_data);
+void txt_paint_push_clip_path_end(hb_paint_funcs_t* funcs, void* paint_data, void* user_data);
+void txt_paint_pop_clip(hb_paint_funcs_t* funcs, void* paint_data, void* user_data);
+void txt_paint_color(hb_paint_funcs_t* funcs, void* paint_data, hb_bool_t is_foreground, hb_color_t color, void* user_data);
+void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float x1, float y1, float x2, float y2, void* user_data);
+void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float r0, float x1, float y1, float r1, void* user_data);
+void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float start_angle, float end_angle, void* user_data);
+void txt_paint_push_group(hb_paint_funcs_t* funcs, void* paint_data, void* user_data);
+void txt_paint_push_group_for(hb_paint_funcs_t* funcs, void* paint_data, hb_paint_composite_mode_t mode, void* user_data);
+void txt_paint_pop_group(hb_paint_funcs_t* funcs, void* paint_data, hb_paint_composite_mode_t mode, void* user_data);
+
+void txt_paint_push_transform(hb_paint_funcs_t* funcs, void* paint_data, float xx, float yx, float xy, float yy, float dx, float dy, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+
+}
+void txt_paint_pop_transform(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_fill_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoint_t glyph, hb_font_t* font
+	, hb_bool_t is_foreground, hb_color_t color, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_push_clip_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoint_t glyph, hb_font_t* font, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_push_clip_rectangle(hb_paint_funcs_t* funcs, void* paint_data, float xmin, float ymin, float xmax, float ymax, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+hb_draw_funcs_t* txt_paint_push_clip_path_start(hb_paint_funcs_t* funcs, void* paint_data, void** draw_data, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+
+	return 0;
+}
+void txt_paint_push_clip_path_end(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_pop_clip(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_color(hb_paint_funcs_t* funcs, void* paint_data, hb_bool_t is_foreground, hb_color_t color, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line
+	, float x0, float y0, float x1, float y1, float x2, float y2, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line
+	, float x0, float y0, float r0, float x1, float y1, float r1, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line
+	, float x0, float y0, float start_angle, float end_angle, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_push_group(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_push_group_for(hb_paint_funcs_t* funcs, void* paint_data, hb_paint_composite_mode_t mode, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+void txt_paint_pop_group(hb_paint_funcs_t* funcs, void* paint_data, hb_paint_composite_mode_t mode, void* user_data) {
+	auto dr = (ovg_canvas_cb*)user_data;
+}
+hb_paint_funcs_t* new_hbpaint_cb(ovg_canvas_cb* ccb) {
+	hb_paint_funcs_t* cb = hb_paint_funcs_create();
+	hb_paint_funcs_set_push_transform_func(cb, txt_paint_push_transform, ccb, 0);
+	hb_paint_funcs_set_pop_transform_func(cb, txt_paint_pop_transform, ccb, 0);
+	hb_paint_funcs_set_fill_glyph_func(cb, txt_paint_fill_glyph, ccb, 0);
+	hb_paint_funcs_set_push_clip_glyph_func(cb, txt_paint_push_clip_glyph, ccb, 0);
+	hb_paint_funcs_set_push_clip_rectangle_func(cb, txt_paint_push_clip_rectangle, ccb, 0);
+	hb_paint_funcs_set_push_clip_path_end_func(cb, txt_paint_push_clip_path_end, ccb, 0);
+	hb_paint_funcs_set_pop_clip_func(cb, txt_paint_pop_clip, ccb, 0);
+	hb_paint_funcs_set_color_func(cb, txt_paint_color, ccb, 0);
+	hb_paint_funcs_set_linear_gradient_func(cb, txt_paint_linear_gradient, ccb, 0);
+	hb_paint_funcs_set_radial_gradient_func(cb, txt_paint_radial_gradient, ccb, 0);
+	hb_paint_funcs_set_sweep_gradient_func(cb, txt_paint_sweep_gradient, ccb, 0);
+	hb_paint_funcs_set_push_group_func(cb, txt_paint_push_group, ccb, 0);
+	hb_paint_funcs_set_push_group_for_func(cb, txt_paint_push_group_for, ccb, 0);
+	hb_paint_funcs_set_pop_group_func(cb, txt_paint_pop_group, ccb, 0);
+	return cb;
+}
+#endif // 1

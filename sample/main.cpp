@@ -183,12 +183,7 @@ void draw_clock_scene(ovg_ctx_cb* cb, rvg_t* ctx, int w, int h, int hh, int mm, 
 }
 void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 {
-	cb->clear(vg);
-	cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
-	glm::vec2 sf = surfsize;
-	//sf *= 0.5;
-	draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
-	cb->reset_clip(vg, 0); // 清空模板裁剪值
+
 	cb->rounded_rectangle(vg, 20, 20, 600, 600, 10);
 	cb->clip(vg);
 	cb->set_source_color(vg, 0xff0080ff);
@@ -307,7 +302,6 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 }
 
-int testfont();
 int main()
 {
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
@@ -318,7 +312,8 @@ int main()
 
 	VGState g[1] = {};
 
-	testfont();
+	font_cache_cx* font_ctx = new_font_cache();
+	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
 
 	if (!VG_Init(g, surfsize.x, surfsize.y)) {
 		SDL_Log("Init failed: %s", SDL_GetError());
@@ -333,6 +328,8 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
 	runtime_cx rtc = {};
+	auto str = u8"agyh🍕按钮";
+	auto rst = glm::mat3x2(1.0);
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -341,7 +338,24 @@ int main()
 		if (ovg_get_window_swapchain(ctx, &fbo))
 		{
 			rtc.begin();
+			cb->clear(vg);
+			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
+			glm::vec2 sf = fbo.display_size;
+			//sf *= 0.5;
+			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+			cb->reset_clip(vg, 1); 
 			draw(cb, vg, fbo.display_size);// 录制图元
+			cb->set_matrix(vg, &rst);
+			int y = 120;
+			cb->move_to(vg, 10.5, y+0.5);
+			cb->rel_line_to(vg, 800, 0);
+			cb->set_source_color(vg, 0xff00ff00);
+			cb->set_line_width(vg, 1);
+			cb->stroke(vg);
+			render_text_shaped(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
+			render_text_shaped(familys, str, strlen((char*)str), 120, y, cb, vg, { 0xff121212,0x80000000,12 });
+			cb->set_line_width(vg, 2);
+			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,160 });
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/
@@ -366,6 +380,8 @@ int main()
 	SDL_DestroyWindow(g->window);
 	SDL_Quit();
 
+	delete_font_family(familys);
+	free_font_cache(font_ctx);
 	// 删除vg对象
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
