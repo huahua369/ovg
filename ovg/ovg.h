@@ -696,6 +696,4 @@ font_cache_cx* new_font_cache();
 void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
-void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
-void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color);
 
