@@ -5,9 +5,12 @@
 #include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
-using namespace std;
+using namespace std; 
 
-
+// 渲染普通文本
+void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
+// colrv1文本
+void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color);
 /* ---------- 颜色辅助 ---------- */
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -304,7 +307,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();
@@ -328,7 +331,7 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
 	runtime_cx rtc = {};
-	auto str = u8"agyh🍕按钮";
+	auto str = u8"agyh🍕☂️按钮";
 	auto rst = glm::mat3x2(1.0);
 	auto canvg = can->new_rvg(can->ac);
 	auto path = can->new_path(can->ac);
@@ -358,7 +361,7 @@ int main()
 			cb->set_matrix(vg, &rst);
 			int y = 120;
 			cb->move_to(vg, 10.5, y + 0.5);
-			cb->rel_line_to(vg, 800, 0);
+			cb->rel_line_to(vg, 1800, 0);
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
@@ -367,6 +370,11 @@ int main()
 			cb->set_line_width(vg, 2);
 			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
 
+			cb->move_to(vg, 10.5, 400 + 0.5);
+			cb->rel_line_to(vg, 1800, 0);
+			cb->set_source_color(vg, 0xff00ff00);
+			cb->set_line_width(vg, 1);
+			cb->stroke(vg);
 			render_text_print(familys, str, strlen((char*)str), 190, 400, can, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)

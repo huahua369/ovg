@@ -868,7 +868,7 @@ void txt_paint_fill_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoin
 		hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &extents);
 		hb_font_get_scale(font, &scale.x, &scale.y);
 		ascent = extents.ascender;
-		pdraw_ctx pc = { ctx->can,ctx->cvg->path, ctx->pos.x, ctx->pos.y,  1.0, ascent * ctx->scale };
+		pdraw_ctx pc = { ctx->can,ctx->cvg->path, ctx->pos.x, ctx->pos.y,  1.0, ascent / scale.x };
 		hb_font_draw_glyph(font, glyph, ctx->draw_fill, &pc);
 		ctx->can->fill(ctx->cvg);
 	}
@@ -883,7 +883,7 @@ void txt_paint_push_clip_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_cod
 	hb_font_get_scale(font, &scale.x, &scale.y);
 	ascent = extents.ascender;
 	//auto cvg = ctx->can->new_path(ctx->can->ac);
-	pdraw_ctx pc = { ctx->can, ctx->cvg->path, ctx->pos.x,ctx->pos.y, 1.0, ascent * ctx->scale };
+	pdraw_ctx pc = { ctx->can, ctx->cvg->path, ctx->pos.x,ctx->pos.y, 1.0, ascent / scale.x };
 	hb_font_draw_glyph(font, glyph, ctx->draw_fill, &pc);
 	//auto oldvg = ctx->cvg->path;// 图形路径
 	//if (ctx->clip_vg)
@@ -937,21 +937,7 @@ void txt_paint_color(hb_paint_funcs_t* funcs, void* paint_data, hb_bool_t is_for
 	ctx->cvg->st->pattern = 0;
 	ctx->can->fill(ctx->cvg);
 }
-#define COLOR_STOP_RGBA(color) ((color) >> 24) / 255.0f, (((color) >> 16) & 0xff) / 255.0f, (((color) >> 8) & 0xff) / 255.0f, ((color) & 0xff) / 255.0f
-#define COLOR_STOP_ARGB(color) ((color) & 0xff) / 255.0f, ((color) >> 24) / 255.0f, (((color) >> 16) & 0xff) / 255.0f, (((color) >> 8) & 0xff) / 255.0f
-void set_color_stop(ovg_canvas_cb* cb, vg_pattern_t* pat, hb_color_line_t* color_line)
-{
-	if (pat) {
-		auto len = hb_color_line_get_color_stops(color_line, 0, NULL, NULL);
-		hb_color_stop_t stops[32] = {};
-		assert(len < 33);
-		hb_color_line_get_color_stops(color_line, 0, &len, stops);
-		for (size_t i = 0; i < len; i++)
-		{
-			cb->pattern_add_color_stop(pat, stops[i].offset, COLOR_STOP_RGBA(stops[i].color));
-		}
-	}
-}
+
 void reduce_linear_anchors(float x0, float y0, float x1, float y1, float x2, float y2, glm::vec2* p0, glm::vec2* p1)
 {
 	float q2x = x2 - x0, q2y = y2 - y0;
@@ -968,6 +954,35 @@ void reduce_linear_anchors(float x0, float y0, float x1, float y1, float x2, flo
 	p0->y = y0;
 	p1->x = x1 - k * q2x;
 	p1->y = y1 - k * q2y;
+}
+void paint_normalize_color_line(hb_color_stop_t* stops,
+	unsigned int     len,
+	float* min,
+	float* max)
+{
+	if ((!len))
+	{
+		*min = *max = 0.f;
+		return;
+	}
+
+	qsort(stops, len, sizeof(hb_color_stop_t), [](const void* aa, const void* bb) {
+		auto a = (hb_color_stop_t*)aa; auto b = (hb_color_stop_t*)bb;
+		return (a->offset > b->offset) - (a->offset < b->offset);
+		});
+
+	float mn = stops[0].offset, mx = stops[0].offset;
+	for (unsigned i = 1; i < len; i++)
+	{
+		mn = std::min(mn, stops[i].offset);
+		mx = std::max(mx, stops[i].offset);
+	}
+	if (mn != mx)
+		for (unsigned i = 0; i < len; i++)
+			stops[i].offset = (stops[i].offset - mn) / (mx - mn);
+
+	*min = mn;
+	*max = mx;
 }
 void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float x1, float y1, float x2, float y2, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
@@ -991,41 +1006,20 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 	glm::mat3x3 mat = m;// glm::mat3x2(p[0].x, p[0].y, p[1].x, p[1].y, p[2].x, p[2].y);
 	glm::mat3x2 inv = glm::inverse(mat);
 	ctx->can->pattern_set_matrix(pat, &inv);
-	/* 2. 构造 COLRv1 渐变矩阵 */
-	//float dx = x1 - x0;
-	//float dy = y1 - y0;
-	//float px = x2 - x0;
-	//float py = y2 - y0;
-
-	///* 2x2 矩阵 */
-	//float m[6] = {
-	//	dx, dy,   // a, b
-	//	px, py,   // c, d
-	//	x0, y0    // tx, ty
-	//};
-
-	///* invert */
-	//float det = dx * py - dy * px;
-	//if (fabsf(det) > 1e-6f) {
-	//	float inv[6];
-	//	float inv_det = 1.0f / det;
-
-	//	inv[0] = py * inv_det;
-	//	inv[1] = -dy * inv_det;
-	//	inv[2] = -px * inv_det;
-	//	inv[3] = dx * inv_det;
-	//	inv[4] = (px * y0 - py * x0) * inv_det;
-	//	inv[5] = (dy * x0 - dx * y0) * inv_det;
-
-	//	ctx->can->pattern_set_matrix(pat, inv);
-	//}
-
-	/* 3. 设置 color stops */
 	uint32_t n1 = 0;
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, &n1, NULL);
 	if (n > 0) {
 		hb_color_stop_t stops[32];
 		hb_color_line_get_color_stops(color_line, 0, &n, stops);
+		float mn, mx;
+		paint_normalize_color_line(stops, n, &mn, &mx);
+		auto l0 = p0;
+		auto l1 = p1;
+		/* Apply normalization to endpoints */
+		float gx0 = l0.x + mn * (l1.x - l0.x);
+		float gy0 = l0.y + mn * (l1.y - l0.y);
+		float gx1 = l0.x + mx * (l1.x - l0.x);
+		float gy1 = l0.y + mx * (l1.y - l0.y);
 
 		for (unsigned int i = 0; i < n; ++i) {
 			hb_color_t c = stops[i].color;
@@ -1067,6 +1061,14 @@ void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 	if (n > 0) {
 		hb_color_stop_t stops[32];
 		hb_color_line_get_color_stops(color_line, 0, &n, stops);
+		float mn, mx;
+		paint_normalize_color_line(stops, n, &mn, &mx);
+		float cx0 = x0 + mn * (x1 - x0);
+		float cy0 = y0 + mn * (y1 - y0);
+		float cr0 = r0 + mn * (r1 - r0);
+		float cx1 = x0 + mx * (x1 - x0);
+		float cy1 = y0 + mx * (y1 - y0);
+		float cr1 = r0 + mx * (r1 - r0);
 
 		for (unsigned int i = 0; i < n; ++i) {
 			hb_color_t c = stops[i].color;
@@ -1108,7 +1110,11 @@ void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_colo
 	if (n > 0) {
 		hb_color_stop_t stops[32];
 		hb_color_line_get_color_stops(color_line, 0, &n, stops);
-
+		float mn, mx;
+		paint_normalize_color_line(stops, n, &mn, &mx);
+		float a0 = start_angle + mn * (end_angle - start_angle);
+		float a1 = start_angle + mx * (end_angle - start_angle);
+		float angle_range = a1 - a0;
 		for (unsigned int i = 0; i < n; ++i) {
 			hb_color_t c = stops[i].color;
 			ctx->can->pattern_add_color_stop(
