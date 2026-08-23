@@ -311,7 +311,6 @@ int main()
 	auto vg = cb->new_rvg(cb->ac);
 
 	VGState g[1] = {};
-
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
 
@@ -324,12 +323,17 @@ int main()
 	auto format = SDL_GetGPUSwapchainTextureFormat(g->device, g->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
+	ovg_canvas_cb* can = new_canvas_cb();
 
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str = u8"agyh🍕按钮";
 	auto rst = glm::mat3x2(1.0);
+	auto canvg = can->new_rvg(can->ac);
+	auto path = can->new_path(can->ac);
+	auto st = can->new_state(can->ac);
+	can->set_path(canvg, path, st);
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -339,15 +343,21 @@ int main()
 		{
 			rtc.begin();
 			cb->clear(vg);
+			can->clear(canvg);
+			can->reset_clip(canvg, 1);
+			//can->rectangle(path, 10, 10, 200, 200);
+			//can->set_source_color(st, 0xffff8000);
+			//can->set_path(canvg, path, st);
+			//can->fill(canvg);
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 			glm::vec2 sf = fbo.display_size;
 			//sf *= 0.5;
 			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
-			cb->reset_clip(vg, 1); 
-			draw(cb, vg, fbo.display_size);// 录制图元
+			cb->reset_clip(vg, 1);
+			//draw(cb, vg, fbo.display_size);// 录制图元
 			cb->set_matrix(vg, &rst);
 			int y = 120;
-			cb->move_to(vg, 10.5, y+0.5);
+			cb->move_to(vg, 10.5, y + 0.5);
 			cb->rel_line_to(vg, 800, 0);
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
@@ -355,13 +365,15 @@ int main()
 			render_text_shaped(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
 			render_text_shaped(familys, str, strlen((char*)str), 120, y, cb, vg, { 0xff121212,0x80000000,12 });
 			cb->set_line_width(vg, 2);
-			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,160 });
+			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
+
+			render_text_print(familys, str, strlen((char*)str), 190, 400, can, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/
-			auto dlist = get_draw_list(vg);
+			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(canvg) };
 			rtc.begin();
-			ovg_draw_data(ctx, &fbo, &dlist);// 提交渲染
+			ovg_draw_data(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
 			/*if (ms > 0)
 				printf("submit draw ms: %d\n", ms);*/
@@ -385,5 +397,6 @@ int main()
 	// 删除vg对象
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
+	if (can)free_canvas_cb(can);
 	return 0;
 }

@@ -14,7 +14,10 @@ extern "C" {
 }
 #endif
 // 内存资源分配器
-struct mem_resource_t;
+struct mem_resource_t {
+	size_t _Align;
+	void* ptr;
+};
 
 struct quadratic_v_t
 {
@@ -242,6 +245,7 @@ struct vg_gradient_t {
 	glm::vec2 scale;	// 缩放目标
 	uint32_t count;
 	int extend;
+	int type;
 };
 // 纹理表面，由后端提供
 struct vg_surface_t;
@@ -384,6 +388,7 @@ struct ovg_draw_data_t {
 	size_t v2_count;
 	uint32_t* geom_indices;	// 索引 
 	size_t g_count;
+	glm::uvec2 _offset;
 };
 
 #endif
@@ -457,8 +462,11 @@ struct text_box_rt {
 #endif
 // 路径对象
 struct ovg_path_t;
-// 矢量对象
-struct rvg_t;
+// 矢量对象 
+struct rvg_t {
+	ovg_path_t* path = 0;
+	vg_state_save_t* st = 0;
+};
 // 录制
 struct ovg_recording_t;
 
@@ -467,7 +475,7 @@ struct ovg_canvas_cb {
 	mem_resource_t* ac;
 	// 路径操作
 	ovg_path_t* (*new_path)(mem_resource_t* ac);
-	void(*path_destroy)(ovg_path_t* path);
+	void(*destroy_path)(ovg_path_t* path);
 	void(*clear_path)(ovg_path_t* path);
 	void(*close_path)(ovg_path_t* path);
 	void(*new_sub_path)(ovg_path_t* path);
@@ -689,4 +697,5 @@ void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
 void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
+void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color);
 

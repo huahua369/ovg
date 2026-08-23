@@ -431,7 +431,7 @@ void OvgGpuBuffers::init(SDL_GPUDevice* device)
 
 void OvgGpuBuffers::begin(size_t vcs, size_t ics, size_t ucs)
 {
-	size_t ss = vcs + ics + ucs;
+	size_t ss = align_up(vcs, 64) + align_up(ics, 64) + align_up(ucs, 64);
 	if (_device && ss > _stagingSize)
 	{
 		ss = align_up(ss, 256);
@@ -462,8 +462,10 @@ uint32_t OvgGpuBuffers::add_vbo(const void* data, uint32_t size)
 	if (!mapdt || !size)return 0;
 	auto dst = mapdt + vbo_ps;
 	memcpy(dst, data, size);
+	//auto ss = align_up(size, 64);
+	auto ret = vbo_ps;
 	vbo_ps += size;
-	return vbo_ps;
+	return ret;
 }
 
 uint32_t OvgGpuBuffers::add_ibo(const void* data, uint32_t size)
@@ -472,8 +474,9 @@ uint32_t OvgGpuBuffers::add_ibo(const void* data, uint32_t size)
 	if (!mapdt || !size)return 0;
 	auto dst = mapdt + ibo_ps + _vbo.size;
 	memcpy(dst, data, size);
+	auto ret = ibo_ps;
 	ibo_ps += size;
-	return ibo_ps;
+	return ret;
 }
 
 uint32_t OvgGpuBuffers::add_ssbo(const void* data, uint32_t size)
@@ -482,8 +485,9 @@ uint32_t OvgGpuBuffers::add_ssbo(const void* data, uint32_t size)
 	if (!mapdt || !size)return 0;
 	auto dst = mapdt + ubo_ps + _vbo.size + _ibo.size;
 	memcpy(dst, data, size);
+	auto ret = ubo_ps;
 	ubo_ps += size;
-	return ubo_ps;
+	return ret;
 }
 
 void OvgGpuBuffers::end(SDL_GPUCommandBuffer* cmd)
@@ -1960,6 +1964,18 @@ SDL_Rect set_scissor_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, glm::vec4* sci
 		if (scissor)
 		{
 			r.x = scissor->x; r.y = scissor->y;
+			r.w = scissor->z;
+			if (scissor->x < 0)
+			{
+				r.w += scissor->x;
+				r.x = 0;
+			}
+			r.h = scissor->w;
+			if (scissor->y < 0)
+			{
+				r.h += scissor->y;
+				r.y = 0;
+			}
 			r.w = (uint32_t)glm::max(scissor->z, 1.0f); r.h = (uint32_t)std::max(scissor->w, 1.0f);
 		}
 		SDL_SetGPUScissor(pass, &r);
@@ -2055,12 +2071,12 @@ void draw_ct(SDL_GPURenderPass* pass, vgcmd_t* c)
 		SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
 	}
 }
-void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip)
+void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip, const glm::uvec2& offset)
 {
 	push_constants_t pc = {};
 	auto t = c->state;
-	fbo->ctx->gpubuf->bindVBO(pass, 0);
-	fbo->ctx->gpubuf->bindIBO(pass, 0);
+	fbo->ctx->gpubuf->bindVBO(pass, offset.x);
+	fbo->ctx->gpubuf->bindIBO(pass, offset.y);
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
 	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 	if (t) {
@@ -2080,6 +2096,10 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat);
 			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
+		else {
+			vg_gradient_t gr = {};
+			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
+		}
 		glm::mat3x3 inv = pc.mat;
 		pc.matInv = glm::inverse(inv);
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
@@ -2088,6 +2108,7 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 		pc.mat = glm::mat3x2(1.0);
 		glm::mat3x3 inv = pc.mat;
 		pc.matInv = glm::inverse(inv);
+		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)vg_operator_t::VG_OPERATOR_SOURCE);
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	}
 	switch (c->type) {
@@ -2114,7 +2135,7 @@ void draw_vg_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* 
 			SDL_PopGPUDebugGroup(fbo->cmd);
 #endif
 		}
-		else {
+		else if (c->full_screen_quad >= 0) {
 			SDL_BindGPUGraphicsPipeline(pass, fbo->ctx->pipeStencilClear);
 			SDL_SetGPUStencilReference(pass, c->ref);
 			cmd_draw_full_screen_quad_sdl3(fbo, pass, c, nullptr, 0, pc);
@@ -2179,41 +2200,54 @@ void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 	fbo->cmd = cmd;
 	return cmd;
 }
-void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data)
+void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count)
 {
-	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !data->count)return;
+	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !count)return;
 	if (!fbo->cmd)return;
 	auto cmd = fbo->cmd;
 	int smax = std::max(fbo->width, fbo->height);
 	ctx->currentCmdBuf = fbo->cmd;
-	size_t ress[] = { data->v_count * sizeof(ovgVertex),data->i_count * sizeof(uint32_t)
-		,data->g_count * sizeof(uint32_t)
-		,data->v1_count * sizeof(geomVertex1)
-		,data->v2_count * sizeof(geomVertex2) };
-	ctx->gpubuf->begin(ress[0] + ress[3] + ress[4], ress[1] + ress[2], 0);
-	ctx->gpubuf->add_vbo(data->vg_vertex, ress[0]);
-	ctx->gpubuf->add_ibo(data->vg_indices, ress[1]);
-	ctx->gpubuf->add_vbo(data->vertex1, ress[3]);
-	ctx->gpubuf->add_vbo(data->vertex2, ress[4]);
-	ctx->gpubuf->add_ibo(data->geom_indices, ress[2]);
+	size_t total_vbo = 0;
+	size_t total_ibo = 0;
+	for (size_t i = 0; i < count; i++) {
+		total_vbo += data[i].v_count * sizeof(ovgVertex);
+		total_vbo += data[i].v1_count * sizeof(geomVertex1);
+		total_vbo += data[i].v2_count * sizeof(geomVertex2);
+
+		total_ibo += data[i].i_count * sizeof(uint32_t);
+		total_ibo += data[i].g_count * sizeof(uint32_t);
+	}
+	ctx->gpubuf->begin(total_vbo, total_ibo, 0);
+	for (size_t i = 0; i < count; i++) {
+		auto* kd = &data[i];
+		kd->_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
+		kd->_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
+		ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
+		ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
+		ctx->gpubuf->add_ibo(kd->geom_indices, kd->g_count * sizeof(uint32_t));
+	}
 	ctx->gpubuf->end(cmd);
 	auto cmd0 = ovg_begin_frame(ctx, fbo, true);
 	auto pass = ctx->pass;
 	SDL_Rect cuClip = {};
-	for (size_t i = 0; data && i < data->count; i++)
+	for (size_t d = 0; d < count; d++)
 	{
-		auto& it = data->d[i];
-		switch (it.g.stype) {
-		case 0:
+		auto kd = data + d;
+		for (size_t i = 0; i < kd->count; i++)
 		{
-			draw_vg_sdl3(fbo, pass, &it.vg, &cuClip);
-		}
-		break;
-		case 1:
-		{
+			auto& it = kd->d[i];
+			switch (it.g.stype) {
+			case 0:
+			{
+				draw_vg(fbo, pass, &it.vg, &cuClip, kd->_offset);
+			}
+			break;
+			case 1:
+			{
 
-		}
-		break;
+			}
+			break;
+			}
 		}
 	}
 
