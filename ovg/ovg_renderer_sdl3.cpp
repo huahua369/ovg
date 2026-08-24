@@ -1933,11 +1933,11 @@ void ovg_sort_gradient_stops(vg_gradient_t* grad, float* stops, uint32_t count) 
 		stops[j + 1] = key_stop;
 		colors[j + 1] = key_color;
 	}
-}
-void ovg_mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm::mat3& pat_mat) {
+} 
+void ovg_mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm::mat3& pat_mat, bool hasMatrix) {
 	glm::vec3 cp0[2] = { glm::vec3(grad->cp[0].x, grad->cp[0].y,1.0f) ,glm::vec3(grad->cp[0].z, grad->cp[0].w,1.0f) };
 	glm::vec3 cp1[2] = { glm::vec3(grad->cp[1].x, grad->cp[1].y,1.0f) ,glm::vec3(grad->cp[1].z, grad->cp[1].w,1.0f) };
-	auto m = mat * pat_mat;
+	auto m = mat * glm::inverse(pat_mat);
 	cp0[0] = m * cp0[0];
 	if (type == vg_pattern_type_t::VG_PATTERN_TYPE_LINEAR) {
 		cp0[1] = m * cp0[1];
@@ -2094,13 +2094,12 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 		pc.matInv = glm::inverse(inv);
 		if (t->pattern) {
 			auto gr = *(vg_gradient_t*)t->pattern->data;
-			glm::mat3 patmat = glm::mat3(1.0); 
+			glm::mat3 patmat = glm::mat3(1.0);
 			if (t->pattern->hasMatrix)
 			{
 				patmat = t->pattern->matrix;
-				//patmat = glm::inverse(patmat);
 			}
-			ovg_mul_pat(&gr, t->pattern->type, pc.matInv, patmat);
+			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat, t->pattern->hasMatrix);
 			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
 		else {

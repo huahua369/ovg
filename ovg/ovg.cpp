@@ -2413,7 +2413,12 @@ void rvg_cx::cp_cmdt(vgcmd_t* c, vg_state_save_t* t)
 		else
 			c->state->dashCount = 0;
 	}
-
+	if (t->pattern) {
+		auto pat = (pat_act*)mac.allocate(sizeof(pat_act));
+		memcpy(pat, t->pattern, sizeof(pat_act));
+		pat->data = &pat->g;
+		c->state->pattern = pat;
+	}
 }
 bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve) {
 	Vertex v = {};
@@ -4069,7 +4074,7 @@ void vctx_identity_matrix(rvg_t* ctx) {
 	if (ctx) ovg_identity_matrix(ctx->st);
 }
 
-typedef glm::mat3x2 ovg_matrix_t; 
+typedef glm::mat3x2 ovg_matrix_t;
 // 图案：渐变/图片 
 vg_pattern_t* vctx_new_pattern_linear(rvg_t* v0, float x0, float y0, float x1, float y1) {
 	auto ctx = (rvg_cx*)v0;

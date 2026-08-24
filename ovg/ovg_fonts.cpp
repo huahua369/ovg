@@ -778,6 +778,7 @@ public:
 	ovg_path_t* clip_vg = 0;
 	float scale = 1.0;
 	glm::vec2 pos = {};
+	glm::mat3x2 mat = glm::mat3x2(1.0);
 public:
 	paint_text_cx();
 	~paint_text_cx();
@@ -799,9 +800,6 @@ struct pdraw_ctx {
 	paint_text_cx* ctx = 0;
 	ovg_canvas_cb* ovg = 0;
 	ovg_path_t* vg = 0;
-	float x = 0.0f, y = 0.0f;
-	float scale = 1.0f;      // 字体像素大小
-	float ascent = 0.0f;     // 用于 baseline
 	glm::mat3x2 mat = glm::mat3x2(1.0);
 };
 glm::vec2 transform_point(const glm::mat3x2& mat, float x, float y)
@@ -816,30 +814,28 @@ glm::vec2 transform_point(const glm::mat3x2& mat, glm::vec2* ps)
 	*ps = v;
 	return v;
 }
-#if 0
+
 static void povg_move_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float to_x, float to_y, void*) {
 	auto* c = static_cast<pdraw_ctx*>(data);
 	glm::vec2 p = { to_x,to_y };
-	c->ovg->move_to(c->vg,
-		c->x + p.x * c->scale,
-		c->y + (c->ascent - p.y * c->scale));
+	transform_point(c->ctx->mat, &p);
+	c->ovg->move_to(c->vg, p.x, -p.y);
 }
 
 static void povg_line_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float to_x, float to_y, void*) {
 	auto* c = static_cast<pdraw_ctx*>(data);
 	glm::vec2 p = { to_x,to_y };
-	c->ovg->line_to(c->vg,
-		c->x + p.x * c->scale,
-		c->y + (c->ascent - p.y * c->scale));
+	transform_point(c->ctx->mat, &p);
+	c->ovg->line_to(c->vg, p.x, -p.y);
 }
 
 static void povg_quadratic_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx1, float cy1, float to_x, float to_y, void*) {
 	auto* c = static_cast<pdraw_ctx*>(data);
 	glm::vec2 p = { to_x,to_y };
 	glm::vec2 cp = { cx1,cy1 };
-	c->ovg->quadratic_to(c->vg,
-		c->x + cp.x * c->scale, c->y + (c->ascent - cp.y * c->scale),
-		c->x + p.x * c->scale, c->y + (c->ascent - p.y * c->scale));
+	transform_point(c->ctx->mat, &p);
+	transform_point(c->ctx->mat, &cp);
+	c->ovg->quadratic_to(c->vg, cp.x, -cp.y, p.x, -p.y);
 }
 
 static void povg_cubic_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx1, float cy1, float cx2, float cy2, float to_x, float to_y, void*) {
@@ -847,49 +843,11 @@ static void povg_cubic_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float 
 	glm::vec2 p = { to_x,to_y };
 	glm::vec2 cp = { cx1,cy1 };
 	glm::vec2 cp2 = { cx2,cy2 };
-	c->ovg->curve_to(c->vg,
-		c->x + cp.x * c->scale, c->y + (c->ascent - cp.y * c->scale),
-		c->x + cp2.x * c->scale, c->y + (c->ascent - cp2.y * c->scale),
-		c->x + p.x * c->scale, c->y + (c->ascent - p.y * c->scale));
+	transform_point(c->ctx->mat, &p);
+	transform_point(c->ctx->mat, &cp);
+	transform_point(c->ctx->mat, &cp2);
+	c->ovg->curve_to(c->vg, cp.x, -cp.y, cp2.x, -cp2.y, p.x, -p.y);
 }
-#else
-
-static void povg_move_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float to_x, float to_y, void*) {
-	auto* c = static_cast<pdraw_ctx*>(data);
-	glm::vec2 p = { to_x,to_y };
-	c->ovg->move_to(c->vg,
-		c->x + p.x,
-		c->y + (c->ascent - p.y));
-}
-
-static void povg_line_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float to_x, float to_y, void*) {
-	auto* c = static_cast<pdraw_ctx*>(data);
-	glm::vec2 p = { to_x,to_y };
-	c->ovg->line_to(c->vg,
-		c->x + p.x,
-		c->y + (c->ascent - p.y));
-}
-
-static void povg_quadratic_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx1, float cy1, float to_x, float to_y, void*) {
-	auto* c = static_cast<pdraw_ctx*>(data);
-	glm::vec2 p = { to_x,to_y };
-	glm::vec2 cp = { cx1,cy1 };
-	c->ovg->quadratic_to(c->vg,
-		c->x + cp.x, c->y + (c->ascent - cp.y),
-		c->x + p.x, c->y + (c->ascent - p.y));
-}
-
-static void povg_cubic_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx1, float cy1, float cx2, float cy2, float to_x, float to_y, void*) {
-	auto* c = static_cast<pdraw_ctx*>(data);
-	glm::vec2 p = { to_x,to_y };
-	glm::vec2 cp = { cx1,cy1 };
-	glm::vec2 cp2 = { cx2,cy2 };
-	c->ovg->curve_to(c->vg,
-		c->x + cp.x, c->y + (c->ascent - cp.y),
-		c->x + cp2.x, c->y + (c->ascent - cp2.y),
-		c->x + p.x, c->y + (c->ascent - p.y));
-}
-#endif
 
 static void povg_close_path(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void*) {
 	auto* ctx = static_cast<pdraw_ctx*>(data);
@@ -909,21 +867,19 @@ hb_draw_funcs_t* paint_text_cx::new_draw_funcs() {
 
 void txt_paint_push_transform(hb_paint_funcs_t* funcs, void* paint_data, float xx, float yx, float xy, float yy, float dx, float dy, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
-	auto m = glm::mat3x2(xx, yx, xy, yy, dx, dy);
-	glm::mat3x2 oldm;
-	ctx->can->get_matrix(ctx->cvg->st, &oldm);
+	glm::mat3 m = glm::mat3x2(xx, yx, xy, yy, dx, dy);
+	glm::mat3x3 oldm = ctx->mat;
 	ctx->_skmat.push(oldm);
-	ctx->can->transform(ctx->cvg->st, &m[0][0]);
-	ctx->can->get_matrix(ctx->cvg->st, &oldm);
-	printf("push %lld\t%.03f %.03f %.03f %.03f %.03f %.03f\n", ctx->_skmat.size(), xx, yx, xy, yy, dx, dy);
-	printf("\tcur  %.03f %.03f %.03f %.03f %.03f %.03f\n", oldm[0].x, oldm[0].y, oldm[1].x, oldm[1].y, oldm[2].x, oldm[2].y);
+	ctx->mat = oldm * m;
+	//printf("push %lld\t%.03f %.03f %.03f %.03f %.03f %.03f\n", ctx->_skmat.size(), xx, yx, xy, yy, dx, dy);
+	//printf("\tcur  %.03f %.03f %.03f %.03f %.03f %.03f\n", oldm[0].x, oldm[0].y, oldm[1].x, oldm[1].y, oldm[2].x, oldm[2].y);
 }
 void txt_paint_pop_transform(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 	if (!ctx->_skmat.empty()) {
 		auto& m = ctx->_skmat.top();
-		ctx->can->set_matrix(ctx->cvg->st, &m[0][0]);
-		printf("pop %lld \n", ctx->_skmat.size());
+		ctx->mat = m;
+		//printf("pop %lld scale{%.03f %.03f}\n", ctx->_skmat.size(), m[0].x, m[1].y);
 		ctx->_skmat.pop();
 	}
 }
@@ -931,36 +887,16 @@ void txt_paint_fill_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoin
 	auto ctx = (paint_text_cx*)paint_data;
 	if (ctx && ctx->draw_fill) {
 		ctx->can->set_source_color(ctx->cvg->st, color);
-		float x = 0.0f, y = 0.0f;
-		glm::ivec2 scale = {   };      // 字体像素大小
-		float ascent = 0.0f;     // 用于 baseline
-		hb_font_extents_t extents = {};
-		hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &extents);
-		hb_font_get_scale(font, &scale.x, &scale.y);
-		ascent = extents.ascender;// 翻转ascent / scale.x 
-		pdraw_ctx pc = { ctx,ctx->can,ctx->cvg->path, ctx->pos.x, ctx->pos.y,  1.0, ascent / scale.x };
-		//if (ctx->_skmat.size()) {
-		//	pc.mat = ctx->_skmat.top();
-		//}
+		pdraw_ctx pc = { };
+		pc.ctx = ctx; pc.ovg = ctx->can; pc.vg = ctx->cvg->path;
 		hb_font_draw_glyph(font, glyph, ctx->draw_fill, &pc);
 		ctx->can->fill(ctx->cvg);
 	}
 }
 void txt_paint_push_clip_glyph(hb_paint_funcs_t* funcs, void* paint_data, hb_codepoint_t glyph, hb_font_t* font, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
-	float x = 0.0f, y = 0.0f;
-	glm::ivec2 scale = { };      // 字体像素大小
-	float ascent = 0.0f;     // 用于 baseline
-	hb_font_extents_t extents = {};
-	hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &extents);
-	hb_font_get_scale(font, &scale.x, &scale.y);
-	ascent = extents.ascender;
-	double upem = hb_face_get_upem(hb_font_get_face(font));
-	pdraw_ctx pc = { ctx,ctx->can, ctx->cvg->path, ctx->pos.x,ctx->pos.y, 1.0, ascent / scale.x };
-	//if (ctx->_skmat.size()) {
-	//	pc.mat = ctx->_skmat.top();
-	//}
-	printf("draw\n");
+	pdraw_ctx pc = { };
+	pc.ctx = ctx; pc.ovg = ctx->can; pc.vg = ctx->cvg->path;
 	hb_font_draw_glyph(font, glyph, ctx->draw_fill, &pc);
 }
 hb_draw_funcs_t* txt_paint_push_clip_path_start(hb_paint_funcs_t* funcs, void* paint_data, void** draw_data, void* user_data) {
@@ -970,15 +906,14 @@ hb_draw_funcs_t* txt_paint_push_clip_path_start(hb_paint_funcs_t* funcs, void* p
 void txt_paint_push_clip_path_end(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 }
-glm::vec2 m3x2xv2(const glm::mat3x2& m, const glm::vec2& v) {
-	glm::vec3 p = { v,1.0 };
-	return m * p;
-}
+
 void txt_paint_push_clip_rectangle(hb_paint_funcs_t* funcs, void* paint_data, float xmin, float ymin, float xmax, float ymax, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
-	glm::mat3x2 m = ctx->_skmat.top();
-	auto v = m3x2xv2(m, glm::vec2(xmin, ymin));
-	auto v1 = m3x2xv2(m, glm::vec2(xmax - xmin, ymax - ymin));
+	glm::mat3x2 m = ctx->mat;
+	auto v = glm::vec2(xmin, ymin);
+	auto v1 = glm::vec2(xmax - xmin, ymax - ymin);
+	transform_point(ctx->mat, &v);
+	transform_point(ctx->mat, &v1);
 	glm::ivec4 c = { v,v1 };
 	ctx->_skclip.push(ctx->clip);
 	ctx->clip = c;
@@ -1045,17 +980,26 @@ void paint_normalize_color_line(hb_color_stop_t* stops,
 	*min = mn;
 	*max = mx;
 }
-void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float x1, float y1, float x2, float y2, void* user_data) {
+
+void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line
+	, float x0, float y0, float x1, float y1, float x2, float y2, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 	if (!ctx || !ctx->can || !ctx->can->ac)return;
-	glm::vec2 p[] = { glm::vec2(x0, y0), glm::vec2(x1, y1),glm::vec2(x2, y2) };
-	glm::mat3x2 m = ctx->_skmat.top();
+	glm::vec2 p[] = { glm::vec2(x0, y0) , glm::vec2(x1, y1) ,glm::vec2(x2, y2) };
 	glm::vec2 p0, p1;
 	reduce_linear_anchors(p[0].x, p[0].y, p[1].x, p[1].y, p[2].x, p[2].y, &p0, &p1);
+	//vg_pattern_t* pat = ctx->can->new_pattern_linear(ctx->can->ac, p0.x, p0.y, p1.x, p1.y);
+	//if (!pat) return;   
+	//ctx->can->pattern_set_matrix(pat, &ctx->mat);
+	//glm::vec2 p0(x0, y0);
+	//glm::vec2 p1(x1, y1);
+	//glm::vec2 p2(x2, y2);
+	//p0 *= ;
+	//p1 *= ctx->scale;
+	//p2 *= ctx->scale;
 
-	vg_pattern_t* pat = ctx->can->new_pattern_linear(ctx->can->ac, p0.x, p0.y, p1.x, p1.y);
-	if (!pat) return;
 	uint32_t n1 = 0;
+	vg_pattern_t* pat = 0;
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, &n1, NULL);
 	if (n > 0) {
 		hb_color_stop_t stops[32];
@@ -1069,6 +1013,9 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 		float gy0 = l0.y + mn * (l1.y - l0.y);
 		float gx1 = l0.x + mx * (l1.x - l0.x);
 		float gy1 = l0.y + mx * (l1.y - l0.y);
+		pat = ctx->can->new_pattern_linear(ctx->can->ac, gx0, gy0, gx1, gy1);
+		if (!pat) return;
+		ctx->can->pattern_set_matrix(pat, &ctx->mat);
 
 		for (unsigned int i = 0; i < n; ++i) {
 			hb_color_t c = stops[i].color;
@@ -1081,26 +1028,30 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 				hb_color_get_alpha(c) / 255.0f
 			);
 		}
-	}
 
-	/* 4. extend mode */
-	hb_paint_extend_t extend = hb_color_line_get_extend(color_line);
-	int vg_extend =
-		(extend == HB_PAINT_EXTEND_REPEAT) ? 2 : // 按 Cairo 惯例
-		(extend == HB_PAINT_EXTEND_REFLECT) ? 1 :
-		0; // PAD
-	ctx->can->pattern_set_extend(pat, vg_extend);
-	ctx->cvg->st->pattern = pat;
+		/* 4. extend mode */
+		hb_paint_extend_t extend = hb_color_line_get_extend(color_line);
+		int vg_extend =
+			(extend == HB_PAINT_EXTEND_REPEAT) ? 2 : // 按 Cairo 惯例
+			(extend == HB_PAINT_EXTEND_REFLECT) ? 1 :
+			0; // PAD
+		ctx->can->pattern_set_extend(pat, vg_extend);
+		ctx->cvg->st->pattern = pat;
+	}
+	else {
+		ctx->cvg->st->pattern = 0;
+	}
 	ctx->can->fill(ctx->cvg);
-	printf("fill linear\n");
+	ctx->can->pattern_destroy(pat);
+	//printf("fill linear\n");
 }
 void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float r0, float x1, float y1, float r1, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 	glm::vec3 p0 = { x0,y0,r0 }, p1 = { x1,y1,r1 };
-	glm::mat3x2 m = ctx->_skmat.top();
-	glm::vec2 p[2] = {};
-	vg_pattern_t* pat = ctx->can->new_pattern_radial(ctx->can->ac, p[0].x, p[0].y, p0.z, p[1].x, p[1].y, p1.z, false);
+	glm::vec2 p[3] = { p0 * ctx->scale,p1 * ctx->scale, glm::vec2(r0 * ctx->scale, r1 * ctx->scale) };
+	vg_pattern_t* pat = ctx->can->new_pattern_radial(ctx->can->ac, p[0].x, p[0].y, p[2].x, p[1].x, p[1].y, p[2].y, false);
 	if (!pat) return;
+	ctx->can->pattern_set_matrix(pat, &ctx->mat);
 	/* color stops */
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, 0, NULL);
 	if (n > 0) {
@@ -1126,25 +1077,28 @@ void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 				hb_color_get_alpha(c) / 255.0f
 			);
 		}
+		/* extend */
+		hb_paint_extend_t extend = hb_color_line_get_extend(color_line);
+		int vg_extend =
+			(extend == HB_PAINT_EXTEND_REPEAT) ? 2 :
+			(extend == HB_PAINT_EXTEND_REFLECT) ? 1 :
+			0;
+		ctx->can->pattern_set_extend(pat, vg_extend);
+		ctx->cvg->st->pattern = pat;
 	}
-
-	/* extend */
-	hb_paint_extend_t extend = hb_color_line_get_extend(color_line);
-	int vg_extend =
-		(extend == HB_PAINT_EXTEND_REPEAT) ? 2 :
-		(extend == HB_PAINT_EXTEND_REFLECT) ? 1 :
-		0;
-	ctx->can->pattern_set_extend(pat, vg_extend);
-	ctx->cvg->st->pattern = pat;
+	else {
+		ctx->cvg->st->pattern = 0;
+	}
 	ctx->can->fill(ctx->cvg);
-	printf("fill radial\n");
+	ctx->can->pattern_destroy(pat);
+	//printf("fill radial\n");
 }
 void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float start_angle, float end_angle, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
-	glm::mat3x2 m = ctx->_skmat.top();
-	glm::vec2 p = glm::vec2(x0, y0);
+	glm::vec2 p = glm::vec2(x0, y0) * ctx->scale;
 	vg_pattern_t* pat = ctx->can->new_pattern_sweep(ctx->can->ac, p.x, p.y, start_angle, end_angle);
 	if (!pat) return;
+	ctx->can->pattern_set_matrix(pat, &ctx->mat);
 	/* color stops */
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, 0, NULL);
 	if (n > 0) {
@@ -1175,7 +1129,8 @@ void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_colo
 	ctx->can->pattern_set_extend(pat, vg_extend);
 	ctx->cvg->st->pattern = pat;
 	ctx->can->fill(ctx->cvg);
-	printf("fill sweep\n");
+	ctx->can->pattern_destroy(pat);
+	//printf("fill sweep\n");
 }
 void txt_paint_push_group(hb_paint_funcs_t* funcs, void* paint_data, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
@@ -1206,7 +1161,7 @@ hb_paint_funcs_t* new_hbpaint_cb() {
 	hb_paint_funcs_set_pop_transform_func(cb, txt_paint_pop_transform, 0, 0);
 	hb_paint_funcs_set_fill_glyph_func(cb, txt_paint_fill_glyph, 0, 0);
 	hb_paint_funcs_set_push_clip_glyph_func(cb, txt_paint_push_clip_glyph, 0, 0);
-	//hb_paint_funcs_set_push_clip_rectangle_func(cb, txt_paint_push_clip_rectangle, 0, 0);
+	hb_paint_funcs_set_push_clip_rectangle_func(cb, txt_paint_push_clip_rectangle, 0, 0);
 	hb_paint_funcs_set_pop_clip_func(cb, txt_paint_pop_clip, 0, 0);
 	hb_paint_funcs_set_color_func(cb, txt_paint_color, 0, 0);
 	hb_paint_funcs_set_linear_gradient_func(cb, txt_paint_linear_gradient, 0, 0);
@@ -1252,7 +1207,7 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 		glm::ivec2 sss = {};
 		hb_font_get_scale(ff->font, &sss.x, &sss.y);
 		sc1 = h;
-		float fixed_scale = upem / h;
+		float fixed_scale = h / upem;
 		pactx->scale = sc1 / upem;
 		auto sc = pactx->scale;
 		/* 扩展 run */
@@ -1284,7 +1239,7 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 		for (unsigned i = 0; i < n; i++) {
 			pactx->pos = { };
 			ovg->identity_matrix(vg->st);
-			ovg->scale(vg->st, fixed_scale, fixed_scale);
+			//ovg->scale(vg->st, fixed_scale, fixed_scale);
 			ovg->translate(vg->st, pen_x, pen_y);
 			ovg->get_matrix(vg->st, &m);
 			hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);

@@ -332,7 +332,7 @@ int main()
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
-	auto str = u8"➗🍕☂️";
+	auto str = u8"➗🍕☂️6g";
 	auto rst = glm::mat3x2(1.0);
 	auto canvg = can->new_rvg(can->ac);
 	auto path = can->new_path(can->ac);
@@ -358,7 +358,7 @@ int main()
 			//sf *= 0.5;
 			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 			cb->reset_clip(vg, 1);
-			//draw(cb, vg, fbo.display_size);// 录制图元
+			draw(cb, vg, fbo.display_size);// 录制图元
 			cb->set_matrix(vg, &rst);
 			int y = 120;
 			cb->move_to(vg, 10.5, y + 0.5);
