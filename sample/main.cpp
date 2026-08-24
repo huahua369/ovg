@@ -331,7 +331,8 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
 	runtime_cx rtc = {};
-	auto str = u8"agyh🍕☂️按钮";
+	auto str1 = u8"agyh🍕☂️按钮";
+	auto str = u8"➗🍕☂️";
 	auto rst = glm::mat3x2(1.0);
 	auto canvg = can->new_rvg(can->ac);
 	auto path = can->new_path(can->ac);
@@ -375,7 +376,9 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
-			render_text_print(familys, str, strlen((char*)str), 190, 400, can, canvg, { 0xff821212,0xff0000f0,120 });
+			static int xx = 190;
+			static int yy = 400;
+			render_text_print(familys, str, strlen((char*)str), xx, yy, can, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/

@@ -2089,19 +2089,24 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 		}
 		if (t->pattern)
 			pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) + t->pattern->type;
-		//glm::transpose(pc.mat);
+
+		glm::mat3x3 inv = pc.mat;
+		pc.matInv = glm::inverse(inv);
 		if (t->pattern) {
 			auto gr = *(vg_gradient_t*)t->pattern->data;
-			glm::mat3 patmat = t->pattern->matrix;
-			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat);
+			glm::mat3 patmat = glm::mat3(1.0); 
+			if (t->pattern->hasMatrix)
+			{
+				patmat = t->pattern->matrix;
+				//patmat = glm::inverse(patmat);
+			}
+			ovg_mul_pat(&gr, t->pattern->type, pc.matInv, patmat);
 			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
 		else {
 			vg_gradient_t gr = {};
 			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
-		glm::mat3x3 inv = pc.mat;
-		pc.matInv = glm::inverse(inv);
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	}
 	else {

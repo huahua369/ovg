@@ -1261,6 +1261,7 @@ vg_pattern_t* ovg_pattern_create_for_surface(usp_ac_cx* ac, void* surf) {
 	if (!pat) {
 		return 0;
 	}
+	*pat = {};
 	pat->ac = ac;
 	pat->type = vg_pattern_type_t::VG_PATTERN_TYPE_SURFACE;
 	pat->extend = vg_extend_t::VG_EXTEND_NONE;
@@ -4068,18 +4069,16 @@ void vctx_identity_matrix(rvg_t* ctx) {
 	if (ctx) ovg_identity_matrix(ctx->st);
 }
 
-typedef glm::mat3x2 ovg_matrix_t;
-struct pat_act0 :public  vg_pattern_t {
-	vg_gradient_t g = {};
-};
+typedef glm::mat3x2 ovg_matrix_t; 
 // 图案：渐变/图片 
 vg_pattern_t* vctx_new_pattern_linear(rvg_t* v0, float x0, float y0, float x1, float y1) {
 	auto ctx = (rvg_cx*)v0;
 	if (!ctx)return 0;
-	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act0));
+	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act));
 	if (!pat) {
 		return 0;
 	}
+	*pat = {};
 	pat->type = vg_pattern_type_t::VG_PATTERN_TYPE_LINEAR;
 	pat->extend = vg_extend_t::VG_EXTEND_NONE;
 	pat->data = &pat->g;
@@ -4091,10 +4090,11 @@ vg_pattern_t* vctx_new_pattern_linear(rvg_t* v0, float x0, float y0, float x1, f
 vg_pattern_t* vctx_new_pattern_radial(rvg_t* v0, float cx0, float cy0, float radius0, float cx1, float cy1, float radius1, bool is_ellipse) {
 	auto ctx = (rvg_cx*)v0;
 	if (!ctx)return 0;
-	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act0));
+	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act));
 	if (!pat) {
 		return 0;
 	}
+	*pat = {};
 	pat->type = vg_pattern_type_t::VG_PATTERN_TYPE_RADIAL;
 	pat->extend = vg_extend_t::VG_EXTEND_NONE;
 	pat->data = &pat->g;
@@ -4106,10 +4106,11 @@ vg_pattern_t* vctx_new_pattern_radial(rvg_t* v0, float cx0, float cy0, float rad
 vg_pattern_t* vctx_new_pattern_sweep(rvg_t* v0, float cx, float cy, float start_angle, float end_angle) {
 	auto ctx = (rvg_cx*)v0;
 	if (!ctx)return 0;
-	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act0));
+	auto pat = (pat_act*)ctx->mac.allocate(sizeof(pat_act));
 	if (!pat) {
 		return 0;
 	}
+	*pat = {};
 	pat->type = vg_pattern_type_t::VG_PATTERN_TYPE_SWEEP;
 	pat->extend = vg_extend_t::VG_EXTEND_NONE;
 	pat->data = &pat->g;
