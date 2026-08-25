@@ -5272,7 +5272,7 @@ glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p
 #endif // !NO_FLEX_IMP 
 
 struct font_familys_cx :public font_familys_t {
-	std::pmr::vector<font_family_t> v;
+	std::pmr::vector<font_family_t*> v;
 	usp_ac_cx* ac = 0;
 };
 void vg_split(std::string str, const std::string& pattern, std::vector<std::string>& result)
@@ -5340,14 +5340,7 @@ font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const c
 			ix++;
 			if (font)
 			{
-				hb_font_extents_t extents;
-				hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &extents);
-				font_family_t ff = {};
-				ff.font = font;
-				ff.ascent = extents.ascender;
-				ff.coverage = hb_set_create();
-				hb_face_collect_unicodes(hb_font_get_face(font), ff.coverage);
-				hb_font_get_scale(font, &ff.scale.x, &ff.scale.y);
+				auto ff = (font_family_t*)font;
 				p->v.push_back(ff);
 			}
 		}

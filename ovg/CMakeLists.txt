@@ -11,10 +11,12 @@ set(OVG_SOURCES
 )
 
 find_package(glm CONFIG REQUIRED)
+find_package(harfbuzz CONFIG REQUIRED) 
+find_package(Fontconfig REQUIRED)
+pkg_check_modules(HARFBUZZ_RASTER REQUIRED IMPORTED_TARGET harfbuzz-raster)
+
 add_library(libovg STATIC ${OVG_SOURCES})
-target_link_libraries(libovg
-  PUBLIC glm::glm-header-only
-)
+target_link_libraries(libovg PUBLIC glm::glm-header-only harfbuzz::harfbuzz PkgConfig::HARFBUZZ_RASTER Fontconfig::Fontconfig)
 
 target_include_directories(libovg PRIVATE "tess2/Include"})
 

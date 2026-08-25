@@ -77,8 +77,9 @@ struct sdl3gpu_texture {
 	SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
 	int                  width = 0;
 	int                  height = 0;
-	bool                 hasStencil = false;
 	uint32_t             references = 0;
+	void* user_ptr = 0;
+	bool                 hasStencil = false;
 };
 
 struct shadermodule_vf {
@@ -551,14 +552,8 @@ static void destroy_buffer(sdl3gpu_buffer* buf) {
 // ========================================================================
 // 纹理管理
 // ========================================================================
-static sdl3gpu_texture* create_texture(
-	ovg_device_t* dev,
-	SDL_GPUTextureFormat  format,
-	int                   width,
-	int                   height,
-	SDL_GPUTextureUsageFlags extraUsage = 0)
+static sdl3gpu_texture* new_texture(sdl3gpu_texture* tex, ovg_device_t* dev, SDL_GPUTextureFormat  format, int width, int height, SDL_GPUTextureUsageFlags extraUsage = 0)
 {
-	sdl3gpu_texture* tex = new sdl3gpu_texture();
 	//tex->device = dev->gpuDevice;
 	tex->format = format;
 	tex->width = width;
@@ -581,15 +576,8 @@ static sdl3gpu_texture* create_texture(
 	return tex;
 }
 
-static sdl3gpu_texture* create_msaa_texture(
-	ovg_device_t* dev,
-	SDL_GPUTextureFormat format,
-	int                  width,
-	int                  height,
-	SDL_GPUSampleCount   samples)
+static sdl3gpu_texture* new_msaa_texture(sdl3gpu_texture* tex, ovg_device_t* dev, SDL_GPUTextureFormat format, int width, int height, SDL_GPUSampleCount samples)
 {
-	sdl3gpu_texture* tex = new sdl3gpu_texture();
-	//tex->device = dev->gpuDevice;
 	tex->format = format;
 	tex->width = width;
 	tex->height = height;
@@ -611,15 +599,8 @@ static sdl3gpu_texture* create_msaa_texture(
 	return tex;
 }
 
-static sdl3gpu_texture* create_depth_stencil_texture(
-	ovg_device_t* dev,
-	SDL_GPUTextureFormat format,
-	int                  width,
-	int                  height,
-	SDL_GPUSampleCount   samples)
+static sdl3gpu_texture* new_depth_stencil_texture(sdl3gpu_texture* tex, ovg_device_t* dev, SDL_GPUTextureFormat format, int width, int height, SDL_GPUSampleCount samples)
 {
-	sdl3gpu_texture* tex = new sdl3gpu_texture();
-	//tex->device = dev->gpuDevice;
 	tex->format = format;
 	tex->width = width;
 	tex->height = height;
@@ -639,6 +620,33 @@ static sdl3gpu_texture* create_depth_stencil_texture(
 	assert(tex->texture && "Failed to create depth/stencil texture");
 
 	return tex;
+}
+sdl3gpu_texture* new_texture(ovg_device_t* dev, SDL_GPUTextureFormat  format, int width, int height, SDL_GPUTextureUsageFlags extraUsage = 0)
+{
+	auto p = new sdl3gpu_texture();
+	if (p)
+	{
+		new_texture(p, dev, format, width, height, extraUsage);
+	}
+	return p;
+}
+static sdl3gpu_texture* new_msaa_texture(ovg_device_t* dev, SDL_GPUTextureFormat format, int width, int height, SDL_GPUSampleCount samples)
+{
+	auto p = new sdl3gpu_texture();
+	if (p)
+	{
+		new_msaa_texture(p, dev, format, width, height, samples);
+	}
+	return p;
+}
+static sdl3gpu_texture* new_depth_stencil_texture(ovg_device_t* dev, SDL_GPUTextureFormat format, int width, int height, SDL_GPUSampleCount samples)
+{
+	auto p = new sdl3gpu_texture();
+	if (p)
+	{
+		new_depth_stencil_texture(p, dev, format, width, height, samples);
+	}
+	return p;
 }
 
 static void create_sampler(
@@ -1532,7 +1540,7 @@ ovg_device_t* new_sdl3gpu_device(SDL_GPUDevice* gpuDevice) {
 	init_shader_modules(dev);
 
 	// 创建默认空纹理
-	dev->emptyTexture = create_texture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 16, 16,
+	dev->emptyTexture = new_texture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 16, 16,
 		SDL_GPU_TEXTUREUSAGE_SAMPLER |
 		SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
 	create_sampler(dev->emptyTexture,
@@ -1650,15 +1658,15 @@ vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* windo
 	if (window)
 		fbo.window = window;
 	else
-		fbo.colorTex = create_texture(dev, ctx->colorFormat, width, height,
+		fbo.colorTex = new_texture(dev, ctx->colorFormat, width, height,
 			SDL_GPU_TEXTUREUSAGE_SAMPLER |
 			SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
 
 	if (ctx->samples > SDL_GPU_SAMPLECOUNT_1) {
-		fbo.colorTexMS = create_msaa_texture(dev, ctx->colorFormat, width, height, ctx->samples);
+		fbo.colorTexMS = new_msaa_texture(dev, ctx->colorFormat, width, height, ctx->samples);
 	}
 
-	fbo.depthStencilTex = create_depth_stencil_texture(dev, ctx->depthFormat, width, height, ctx->samples);
+	fbo.depthStencilTex = new_depth_stencil_texture(dev, ctx->depthFormat, width, height, ctx->samples);
 	fbo.hasStencil = true;
 
 	return fbo;
@@ -1933,7 +1941,7 @@ void ovg_sort_gradient_stops(vg_gradient_t* grad, float* stops, uint32_t count) 
 		stops[j + 1] = key_stop;
 		colors[j + 1] = key_color;
 	}
-} 
+}
 void ovg_mul_pat(vg_gradient_t* grad, int type, const glm::mat3& mat, const glm::mat3& pat_mat, bool hasMatrix) {
 	glm::vec3 cp0[2] = { glm::vec3(grad->cp[0].x, grad->cp[0].y,1.0f) ,glm::vec3(grad->cp[0].z, grad->cp[0].w,1.0f) };
 	glm::vec3 cp1[2] = { glm::vec3(grad->cp[1].x, grad->cp[1].y,1.0f) ,glm::vec3(grad->cp[1].z, grad->cp[1].w,1.0f) };
@@ -2324,4 +2332,11 @@ bool VG_Init(VGState* g, int width, int height) {
 	SDL_ClaimWindowForGPUDevice(g->device, g->window);
 
 	return true;
+}
+
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, int idx)
+{
+	SDL_GPUTextureFormat f[] = { SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM ,SDL_GPU_TEXTUREFORMAT_A8_UNORM ,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM };
+	auto p = new_texture(ctx->device, f[idx], w, h, 0);
+	return p;
 }

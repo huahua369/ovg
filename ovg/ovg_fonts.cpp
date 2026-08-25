@@ -59,6 +59,27 @@
 #include <harfbuzz/hb-raster.h> 
 #include "ovg_fonts.h"
 
+
+struct vg_font :public font_family_t {
+	hb_buffer_t* hb_buffer;
+	hb_language_t hb_language;
+	hb_raster_draw_t* rdr;
+	hb_raster_paint_t* pnt;
+};
+
+struct FontStyle {
+	std::string family;
+	std::set<std::string> alias;
+	std::string style;
+	std::string file;
+	vg_font font;
+	int weight;
+	int slant;
+	int index;
+	bool slnt_applied = false;       // 是否已设置变量 slnt
+};
+void hb_res_init(vg_font* hp, hb_font_t* font);
+void free_hb_res(vg_font* hp);
 static int utf8_to_utf16(const char* utf8, UChar* out16, int cap16, UErrorCode* st)
 {
 	int32_t len = 0;
@@ -153,8 +174,8 @@ void font_cache_cx::clear_sys()
 	for (auto& [k, v] : _familys) {
 		for (auto it : v) {
 			if (it) {
-				if (it->font)
-					hb_font_destroy(it->font);
+				if (it->font.font)
+					free_hb_res(&it->font);
 				delete it;
 			}
 		}
@@ -168,8 +189,8 @@ void font_cache_cx::clear_load()
 	for (auto& [k, v] : _familys_name) {
 		for (auto it : v) {
 			if (it) {
-				if (it->font)
-					hb_font_destroy(it->font);
+				if (it->font.font)
+					free_hb_res(&it->font);
 				delete it;
 			}
 		}
@@ -330,15 +351,15 @@ void font_cache_cx::get_sys_family()
 	FcPatternDestroy(pat);
 
 }
-hb_font_t* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
+vg_font* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
 {
 	bool mb = mk_font(&_familys_name, family, style, weight, slant);
 	if (_temp.size()) {
-		return _temp[0]->font;
+		return &_temp[0]->font;
 	}
 	bool ab = mk_font(&_familys, family, style, weight, slant);
 	if (_temp.size()) {
-		return _temp[0]->font;
+		return &_temp[0]->font;
 	}
 	return nullptr;
 }
@@ -413,13 +434,14 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		}
 	}
 	for (auto it : _temp) {
-		if (!it->font)
+		if (!it->font.font)
 		{
-			it->font = load_font(it->file.c_str(), it->index);
+			it->font.font = load_font(it->file.c_str(), it->index);
 		}
-		if (it->font)
+		if (it->font.font)
 		{
-			if (font_supports_slnt_axis(it->font)) {
+			hb_res_init(&it->font, 0);
+			if (font_supports_slnt_axis(it->font.font)) {
 				//float desired = fc_slant_to_slant_angle(slant);
 				//hb_font_set_variation(font, HB_OT_TAG_VAR_AXIS_SLANT, desired);
 				it->slnt_applied = true;
@@ -572,6 +594,7 @@ struct draw_ctx {
 	float scale = 1.0f;      // 字体像素大小
 	float ascent = 0.0f;     // 用于 baseline
 };
+#if 0
 static void ovg_move_to(hb_draw_funcs_t*, void* data,
 	hb_draw_state_t*, float to_x, float to_y, void*) {
 	auto* c = static_cast<draw_ctx*>(data);
@@ -608,12 +631,10 @@ static void ovg_cubic_to(hb_draw_funcs_t*, void* data,
 		c->x + cx2 * c->scale, c->y + (c->ascent - cy2 * c->scale),
 		c->x + to_x * c->scale, c->y + (c->ascent - to_y * c->scale));
 }
+#else
+#endif
 
-
-static void ovg_close_path(hb_draw_funcs_t*,
-	void* data,
-	hb_draw_state_t*,
-	void*) {
+void ovg_close_path(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void*) {
 	auto* ctx = static_cast<draw_ctx*>(data);
 	ctx->ovg->close_path(ctx->vg);
 }
@@ -621,23 +642,21 @@ static void ovg_close_path(hb_draw_funcs_t*,
 #if 1
 hb_draw_funcs_t* create_ovg_draw_funcs() {
 	hb_draw_funcs_t* funcs = hb_draw_funcs_create();
-	hb_draw_funcs_set_move_to_func(funcs, ovg_move_to, nullptr, nullptr);
-	hb_draw_funcs_set_line_to_func(funcs, ovg_line_to, nullptr, nullptr);
-	hb_draw_funcs_set_quadratic_to_func(funcs, ovg_quadratic_to, nullptr, nullptr);
-	hb_draw_funcs_set_cubic_to_func(funcs, ovg_cubic_to, nullptr, nullptr);
+	//hb_draw_funcs_set_move_to_func(funcs, ovg_move_to, nullptr, nullptr);
+	//hb_draw_funcs_set_line_to_func(funcs, ovg_line_to, nullptr, nullptr);
+	//hb_draw_funcs_set_quadratic_to_func(funcs, ovg_quadratic_to, nullptr, nullptr);
+	//hb_draw_funcs_set_cubic_to_func(funcs, ovg_cubic_to, nullptr, nullptr);
 	hb_draw_funcs_set_close_path_func(funcs, ovg_close_path, nullptr, nullptr);
 	return funcs;
 }
 
-const font_family_t* resolve_family(
-	const font_familys_t* ffs,
-	uint32_t cp)
+const font_family_t* resolve_family(const font_familys_t* ffs, uint32_t cp)
 {
 	for (int i = 0; i < ffs->count; i++) {
-		if (hb_set_has(ffs->familys[i].coverage, cp))
-			return &ffs->familys[i];
+		if (hb_set_has(ffs->familys[i]->coverage, cp))
+			return ffs->familys[i];
 	}
-	return &ffs->familys[0]; // fallback
+	return ffs->familys[0]; // fallback
 }
 
 static uint32_t utf8_next(const uint8_t*& p, const uint8_t* end) {
@@ -675,7 +694,7 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 	static std::vector<uint32_t> utf32;
 	utf32.clear();
 	utf8_to_utf32(str8, len, &utf32);
-	hb_font_t* primary = ffs->familys[0].font; // 主字体（可按 script 选）
+	hb_font_t* primary = ffs->familys[0]->font; // 主字体（可按 script 选）
 	hb_draw_funcs_t* df = create_ovg_draw_funcs();
 	hb_buffer_t* buf = hb_buffer_create();
 	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
@@ -692,7 +711,7 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 	while (run_start < utf32.size()) {
 		uint32_t cp = utf32[run_start];
 		const font_family_t* ff = resolve_family(ffs, cp);
-		if (!ff) ff = &ffs->familys[0];
+		if (!ff) ff = ffs->familys[0];
 		float sc = 1.0;
 		if (h > 0)
 		{
@@ -728,7 +747,7 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 			draw_ctx ctx{
 				ovg, ovg_ctx,
 				pen_x, pen_y, sc,
-				ff->ascent / ff->scale.x
+				ff->ascent / ff->upem
 			};
 			hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
@@ -1225,7 +1244,7 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 	static std::vector<uint32_t> utf32;
 	utf32.clear();
 	utf8_to_utf32(str8, len, &utf32);
-	hb_font_t* primary = ffs->familys[0].font; // 主字体（可按 script 选）
+	hb_font_t* primary = ffs->familys[0]->font; // 主字体（可按 script 选）
 	auto pactx = new paint_text_cx();
 	pactx->can = ovg;
 	pactx->cvg = vg;
@@ -1247,7 +1266,7 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 	while (run_start < utf32.size()) {
 		uint32_t cp = utf32[run_start];
 		const font_family_t* ff = resolve_family(ffs, cp);
-		if (!ff) ff = &ffs->familys[0];
+		if (!ff) ff = ffs->familys[0];
 		float sc1 = 1.0;
 		double upem = hb_face_get_upem(hb_font_get_face(ff->font));
 		if (h > 0)
@@ -1297,10 +1316,11 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 			ovg->translate(vg->st, pen_x, pen_y);
 			ovg->get_matrix(vg->st, &m);
 			ovg->set_source_color(vg->st, color.x);
-			//hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);
-			hb_ovg_render_color_glyph(ff->font, info[i].codepoint, pactx, 0);
+			hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);
+			//hb_ovg_render_color_glyph(ff->font, info[i].codepoint, pactx, 0);
 			//hb_ovg_render_glyph(ff->font, info[i].codepoint, pactx, 0);
-
+			glm::ivec4 rc = {};
+			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, 120, &rc);
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
 
 			if (is_draw_debug) {
@@ -1352,75 +1372,42 @@ struct ovg_t {
 	ovg_ctx_cb* cb;
 	rvg_t* cr;
 };
-static void
-hb_ovg_move_to(hb_draw_funcs_t* dfuncs,
-	void* draw_data,
-	hb_draw_state_t* st,
-	float to_x, float to_y,
-	void* user_data)
+void hb_ovg_move_to(hb_draw_funcs_t* dfuncs, void* draw_data, hb_draw_state_t* st, float to_x, float to_y, void* user_data)
 {
 	auto ctx = (ovg_t*)draw_data;
 	ctx->cb->move_to(ctx->cr, (double)to_x, (double)to_y);
 }
 
-static void
-hb_ovg_line_to(hb_draw_funcs_t* dfuncs,
-	void* draw_data,
-	hb_draw_state_t* st,
-	float to_x, float to_y,
-	void* user_data)
+void hb_ovg_line_to(hb_draw_funcs_t* dfuncs, void* draw_data, hb_draw_state_t* st, float to_x, float to_y, void* user_data)
 {
 	auto ctx = (ovg_t*)draw_data;
-
 	ctx->cb->line_to(ctx->cr, (double)to_x, (double)to_y);
 }
 
-static void
-hb_ovg_cubic_to(hb_draw_funcs_t* dfuncs,
-	void* draw_data,
-	hb_draw_state_t* st,
-	float control1_x, float control1_y,
-	float control2_x, float control2_y,
-	float to_x, float to_y,
-	void* user_data)
+void hb_ovg_cubic_to(hb_draw_funcs_t* dfuncs, void* draw_data, hb_draw_state_t* st, float control1_x, float control1_y, float control2_x, float control2_y, float to_x, float to_y, void* user_data)
 {
 	auto ctx = (ovg_t*)draw_data;
-
-	ctx->cb->curve_to(ctx->cr,
-		(double)control1_x, (double)control1_y,
-		(double)control2_x, (double)control2_y,
-		(double)to_x, (double)to_y);
+	ctx->cb->curve_to(ctx->cr, (double)control1_x, (double)control1_y, (double)control2_x, (double)control2_y, (double)to_x, (double)to_y);
 }
 
-static void
-hb_ovg_close_path(hb_draw_funcs_t* dfuncs,
-	void* draw_data,
-	hb_draw_state_t* st,
-	void* user_data)
+void hb_ovg_close_path(hb_draw_funcs_t* dfuncs, void* draw_data, hb_draw_state_t* st, void* user_data)
 {
 	auto ctx = (ovg_t*)draw_data;
-
 	ctx->cb->close_path(ctx->cr);
 }
 
 static hb_draw_funcs_t* create_df()
 {
 	hb_draw_funcs_t* funcs = hb_draw_funcs_create();
-
 	hb_draw_funcs_set_move_to_func(funcs, hb_ovg_move_to, nullptr, nullptr);
 	hb_draw_funcs_set_line_to_func(funcs, hb_ovg_line_to, nullptr, nullptr);
 	hb_draw_funcs_set_cubic_to_func(funcs, hb_ovg_cubic_to, nullptr, nullptr);
 	hb_draw_funcs_set_close_path_func(funcs, hb_ovg_close_path, nullptr, nullptr);
-
 	hb_draw_funcs_make_immutable(funcs);
-
-
 	return funcs;
 }
 
-
-static hb_draw_funcs_t*
-hb_ovg_draw_get_funcs()
+static hb_draw_funcs_t* hb_ovg_draw_get_funcs()
 {
 	static hb_draw_funcs_t* df = create_df();
 	return df;
@@ -1610,28 +1597,14 @@ hb_ovg_pop_group(hb_paint_funcs_t* pfuncs,
 	ctx->cb->restore(ctx->cr);
 }
 
-static void
-hb_ovg_paint_color(hb_paint_funcs_t* pfuncs,
-	void* paint_data,
-	hb_bool_t use_foreground,
-	hb_color_t color,
-	void* user_data)
+void hb_ovg_paint_color(hb_paint_funcs_t* pfuncs, void* paint_data, hb_bool_t use_foreground, hb_color_t color, void* user_data)
 {
 	paint_text_cx* ctx = (paint_text_cx*)paint_data;
 	//_hb_ovg_set_source_color(c, use_foreground, color);
 	ctx->cb->paint(ctx->cr);
 }
 
-static hb_bool_t
-hb_ovg_paint_image(hb_paint_funcs_t* pfuncs,
-	void* paint_data,
-	hb_blob_t* blob,
-	unsigned width,
-	unsigned height,
-	hb_tag_t format,
-	float slant,
-	hb_glyph_extents_t* extents,
-	void* user_data)
+hb_bool_t hb_ovg_paint_image(hb_paint_funcs_t* pfuncs, void* paint_data, hb_blob_t* blob, unsigned width, unsigned height, hb_tag_t format, float slant, hb_glyph_extents_t* extents, void* user_data)
 {
 	paint_text_cx* ctx = (paint_text_cx*)paint_data;
 	return 0;
@@ -1642,24 +1615,18 @@ hb_ovg_paint_image(hb_paint_funcs_t* pfuncs,
 #define unlikely(expr) (expr)
 #endif
 
-static inline void*
-hb_malloc2vg(size_t nmemb, size_t size)
+inline void* hb_malloc2vg(size_t nmemb, size_t size)
 {
 	if (size && nmemb > SIZE_MAX / size) return nullptr;
 	return hb_malloc(nmemb * size);
 }
-static inline void*
-hb_realloc2vg(void* ptr, size_t nmemb, size_t size)
+inline void* hb_realloc2vg(void* ptr, size_t nmemb, size_t size)
 {
 	if (size && nmemb > SIZE_MAX / size) return nullptr;
 	return hb_realloc(ptr, nmemb * size);
 }
 
-static bool
-_hb_ovg_get_color_stops(paint_text_cx* c,
-	hb_color_line_t* color_line,
-	unsigned* count,
-	hb_color_stop_t** stops)
+static bool _hb_ovg_get_color_stops(paint_text_cx* c, hb_color_line_t* color_line, unsigned* count, hb_color_stop_t** stops)
 {
 	unsigned len = hb_color_line_get_color_stops(color_line, 0, nullptr, nullptr);
 	bool allocated = false;
@@ -1707,12 +1674,7 @@ int hb_ovg_extend(hb_paint_extend_t extend) {
 	return vg_extend;
 }
 
-void
-_hb_ovg_paint_linear_gradient(paint_text_cx* c,
-	hb_color_line_t* color_line,
-	float x0, float y0,
-	float x1, float y1,
-	float x2, float y2)
+void _hb_ovg_paint_linear_gradient(paint_text_cx* c, hb_color_line_t* color_line, float x0, float y0, float x1, float y1, float x2, float y2)
 {
 	auto cr = c->cr;
 
@@ -1977,3 +1939,172 @@ int hb_ovg_render_color_glyph(hb_font_t* font, uint32_t glyph, paint_text_cx* ct
 #endif 
 
 #endif 
+
+
+void hb_res_init(vg_font* hp, hb_font_t* font) {
+	if (!hp)return;
+	hp->font = font;
+	if (!hp->hb_language)
+		hp->hb_language = hb_language_from_string("", -1);
+	if (!hp->hb_buffer)
+		hp->hb_buffer = hb_buffer_create();
+	auto face = hb_font_get_face(hp->font);
+	bool has_color = hb_ot_color_has_paint(face) || hb_ot_color_has_layers(face) || hb_ot_color_has_svg(face);
+	auto bp = hb_ot_color_has_png(face);
+	if (hp->rdr)
+		hp->rdr = hb_raster_draw_create_or_fail();
+	if (!hp->pnt)
+		hp->pnt = has_color ? hb_raster_paint_create_or_fail() : nullptr;
+
+	hb_font_extents_t extents;
+	hb_font_get_extents_for_direction(hp->font, HB_DIRECTION_LTR, &extents);
+	hp->ascent = extents.ascender;
+	hp->coverage = hb_set_create();
+	hb_face_collect_unicodes(hb_font_get_face(font), hp->coverage);
+	hp->upem = hb_face_get_upem(face);
+}
+void free_hb_res(vg_font* hp) {
+	if (hp->hb_buffer)
+		hb_buffer_destroy(hp->hb_buffer);
+
+	if (hp->pnt)
+		hb_raster_paint_destroy(hp->pnt);
+	if (hp->rdr)
+		hb_raster_draw_destroy(hp->rdr);
+	hb_set_destroy(hp->coverage);
+	if (hp->font) {
+		//hb_face_t* face = hb_font_get_face(hp->hb_font);
+		//if (face)hb_face_destroy(face);
+		hb_font_destroy(hp->font);
+	}
+	hp->font = 0;
+	hp->coverage = 0;
+	hp->hb_language = 0;
+	hp->hb_buffer = 0;
+	hp->rdr = 0;
+	hp->pnt = 0;
+}
+
+void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot)
+{
+	hb_raster_image_t* img = nullptr;
+	hb_glyph_extents_t gext = {};
+	hb_font_extents_t extents[2] = {};
+	auto rdr = hp->rdr;
+	auto font = hp->font;
+	auto pnt = hp->pnt;
+	do {
+		hb_font_set_scale(font, font_size, font_size);
+		hb_raster_draw_reset(rdr);
+		hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
+		hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
+		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
+		if (pnt)
+		{
+			hb_raster_paint_set_foreground(pnt, HB_COLOR(255, 255, 255, 255));
+			if (bext && hb_raster_paint_set_glyph_extents(pnt, &gext))
+			{
+				hb_raster_paint_set_transform(pnt, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+				hb_raster_paint_glyph(pnt, font, gid);	// 光栅化颜色字形
+				img = hb_raster_paint_render(pnt);
+			}
+			if (img)
+			{
+				hb_raster_paint_recycle_image(pnt, img);
+				break;
+			}
+		}
+		{
+			hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+			hb_raster_draw_glyph(rdr, font, gid);	// 单色
+			img = hb_raster_draw_render(rdr);
+			if (img) { hb_raster_draw_recycle_image(rdr, img); }
+		}
+	} while (0);
+	hb_raster_extents_t ext = {};
+	if (img) {
+		hb_raster_image_get_extents(img, &ext);
+		if (!ext.width || !ext.height) { img = 0; return img; }
+		if (ot)
+		{
+			ot->x = ext.x_origin;
+			ot->y = -(ext.height + ext.y_origin);
+			ot->z = ext.width;
+			ot->w = ext.height;
+		}
+	}
+	return img;
+}
+
+void rgba_copy2gray(image_ptr_t* dst, int x, int y, int w, int h, uint32_t c, const uint8_t* dt, int stride, bool fy)
+{
+	if (stride < 1)stride = w;
+	if (!dst || !dt || w <= 0 || h <= 0 || stride < w) return;
+	// 计算实际绘制区域（处理边界裁剪）
+	int dst_x = std::max(0, x);
+	int dst_y = std::max(0, y);
+	int src_x = dst_x - x;
+	int src_y = dst_y - y;
+	int copy_w = std::min(w - src_x, dst->width - dst_x);
+	int copy_h = std::min(h - src_y, dst->height - dst_y);
+	c = (c & 0x00FFFFFF);
+	for (int iy = 0; iy < copy_h; ++iy) {
+		const uint8_t* src_row = fy ? dt + (h - 1 - (src_y + iy)) * stride : dt + (src_y + iy) * stride + src_x;
+		uint32_t* dst_row = dst->data + ((dst_y + iy) * dst->width + dst_x);
+		for (int ix = 0; ix < copy_w; ++ix) {
+			uint8_t gray = src_row[ix];
+			if (gray > 0)
+			{
+				auto cc = (uint32_t)(gray << 24) | (gray << 16) | (gray << 8) | gray;
+				dst_row[ix] = cc;
+			}
+		}
+	}
+}
+
+void rgba_copy_bgra(image_ptr_t* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
+{
+	if (!dst || !dt || w <= 0 || h <= 0) return;
+	if (stride < 1)
+		stride = w * sizeof(int);
+	int dst_x = std::max(0, x), dst_y = std::max(0, y);
+	int src_x = dst_x - x;
+	int src_y = dst_y - y;
+	int src_w = w - (dst_x - x), src_h = h - (dst_y - y);
+	int copy_w = std::min(src_w, dst->width - dst_x);
+	int copy_h = std::min(src_h, dst->height - dst_y);
+	auto t = (uint8_t*)dt;
+	for (int iy = 0; iy < copy_h; ++iy) {
+		const uint8_t* src_row = fy ? t + (h - 1 - (src_y + iy)) * stride : t + (src_y + iy) * stride + src_x;
+		auto dstp = dst->data + ((dst_y + iy) * dst->width + dst_x);
+		memcpy(dstp, src_row, copy_w * sizeof(uint32_t));
+		for (size_t i = 0; i < copy_w; i++)
+		{
+			auto it = (uint8_t*)&dstp[i];
+			std::swap(it[0], it[2]);
+		}
+	}
+}
+
+bool gfont_copy_image(image_ptr_t* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src)
+{
+	bool has_color = false;
+	hb_raster_extents_t ext = {};
+	hb_raster_image_get_extents(img_src, &ext);
+	hb_raster_format_t fmt = hb_raster_image_get_format(img_src);
+	if (fmt == HB_RASTER_FORMAT_A8)
+		rgba_copy2gray(dst, rx, ry, ext.width, ext.height, color, hb_raster_image_get_buffer(img_src), ext.stride, true);
+	else if (fmt == HB_RASTER_FORMAT_BGRA32)
+	{
+		has_color = true;
+		rgba_copy_bgra(dst, rx, ry, ext.width, ext.height, (uint32_t*)hb_raster_image_get_buffer(img_src), ext.stride, true);
+	}
+	return has_color;
+}
+void set_hb_fontsize(vg_font* hp, int font_size)
+{
+	assert(hp);
+	if (!hp)return;
+	auto font = hp->font;
+	hb_font_set_scale(font, font_size, font_size);
+}

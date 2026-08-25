@@ -254,11 +254,11 @@ struct vg_surface_t;
 struct font_family_t {
 	hb_font_t* font;
 	hb_set_t* coverage;  // hb_face_collect_unicodes
-	glm::ivec2 scale = {};
+	float upem;
 	float ascent;        // 从 hb_font_extents
 };
 struct font_familys_t {
-	font_family_t* familys;
+	font_family_t** familys;
 	int count;
 };
 
@@ -660,6 +660,7 @@ struct ovg_ctx_cb {
 	void (*add_text)(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box);
 	// 普通图片，支持九宫格、混合颜色
 	void (*add_image)(rvg_t* dc, ovg_image_r* r);
+
 	// 原始三角形，输入0则不修改
 	void (*set_geom_state)(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t

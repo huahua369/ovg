@@ -20,11 +20,12 @@ struct VSOutput
 
 struct PushConsts
 {
-	float4x4 mvp; 
+	float4x4 mvp;
 };
 
 struct fragubo
-{ 
+{
+	float color_a8;
 	float masktime;
 };
 //[[vk::push_constant]] PushConsts pc;
@@ -71,7 +72,9 @@ float4 fragMain(VSOutput input, bool FrontFacing : SV_IsFrontFace) : SV_TARGET
 #ifdef DOUBLESIDEDCOLOR
 	color = FrontFacing ? input.color : input.color1;
 #endif
-	color *= samplerColor.Sample(input.uv);
+	float c = samplerColor.Sample(input.uv);
+	if (color_a8 > 0) { c = float4(1,1,1,c.a); }
+	color *= c;
 #ifdef COLOR_MASK
 	color *= 1.0 - step(pu.masktime, samplerMask.Sample(input.uv).r);
 #endif

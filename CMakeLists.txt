@@ -18,6 +18,9 @@ set(LIBRARY_OUTPUT_PATH ${EXECUTABLE_OUTPUT_PATH})
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 LINK_DIRECTORIES(${EXECUTABLE_OUTPUT_PATH})
 include_directories("ovg")
+
+find_package(PkgConfig REQUIRED)
+
 # 包含子项目。
 add_subdirectory ("ovg")
 add_subdirectory ("sample")

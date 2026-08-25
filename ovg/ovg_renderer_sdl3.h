@@ -84,6 +84,9 @@ void        free_ovgctx_sdl3(ovg_ctx_t* ctx);
 // FBO 管理
 vg_fbo_t    new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
 void        free_vgfbo_sdl3(vg_fbo_t* fbo);
+// 创建纹理,idx 0=rgba, 1=a, 2=bgra
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, int idx);
+
 
 void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
 // 绘制入口 
