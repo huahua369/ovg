@@ -1401,6 +1401,12 @@ void ovg_identity_matrix(vg_state_save_t* ctx) {
 	ctx->pushConsts.matInv = glm::inverse(inv);
 }
 
+void ovg_matrix_init(void* mat, float xx, float yx, float xy, float yy, float x0, float y0)
+{
+	if (!mat)return;
+	*((glm::mat3x2*)mat) = glm::mat3x2(xx, yx, xy, yy, x0, y0);
+}
+
 int  ovg_pattern_add_color_stop(vg_pattern_t* pat, float o, float r, float g, float b, float a) {
 	if (pat->type == vg_pattern_type_t::VG_PATTERN_TYPE_SURFACE || pat->type == vg_pattern_type_t::VG_PATTERN_TYPE_SOLID)
 		return -1;
@@ -2116,6 +2122,7 @@ void rvg_cx::save()
 }
 void rvg_cx::restore()
 {
+	if (_cst.empty())return;
 	auto c = _cst.top();
 	swap_state(st, c);
 	free_state(c);
@@ -2131,17 +2138,22 @@ void rvg_cx::paint()
 {
 	auto ph = path;
 	o_finish_path(ph);
-	if (!path || !path->pathPtr || !st)return;
-	if (ph->pathPtr) {
+	if (path && ph->pathPtr && st) {
 		fill();
 		return;
 	}
 	vgcmd_t c = {};
 	c.type = 3;
 	c.full_screen_quad = _vertex.size();
+
 	Vertex v = {};
+	if (st) {
+		if (st->pattern)
+			gCount++;
+		cp_cmdt(&c, st);
+	}
 	v.pos = { -1,-1 };
-	v.color = st->color;
+	v.color = st ? st->color : -1;
 	_vertex.push_back(v);
 	v.pos = { 3,-1 };
 	_vertex.push_back(v);
@@ -2939,6 +2951,7 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 	cb->set_matrix = ovg_set_matrix;
 	cb->get_matrix = ovg_get_matrix;
 	cb->identity_matrix = ovg_identity_matrix;
+	cb->matrix_init = ovg_matrix_init;
 
 	cb->new_pattern_linear = ovg_new_pattern_linear;
 	cb->new_pattern_radial = ovg_new_pattern_radial;
@@ -3759,6 +3772,7 @@ void vctx_transform(rvg_t* ctx, const void* matrix);
 void vctx_set_matrix(rvg_t* ctx, const void* matrix);
 void vctx_get_matrix(rvg_t* ctx, void* matrix);
 void vctx_identity_matrix(rvg_t* ctx);
+void vctx_matrix_init(void* mat, float xx, float yx, float xy, float yy, float x0, float y0);
 
 // 图案：渐变/图片 
 vg_pattern_t* vctx_new_pattern_linear(rvg_t* ctx, float x0, float y0, float x1, float y1);
@@ -4073,7 +4087,9 @@ void vctx_get_matrix(rvg_t* ctx, void* matrix) {
 void vctx_identity_matrix(rvg_t* ctx) {
 	if (ctx) ovg_identity_matrix(ctx->st);
 }
-
+void vctx_matrix_init(void* mat, float xx, float yx, float xy, float yy, float x0, float y0) {
+	if (mat) { ovg_matrix_init(mat, xx, yx, xy, yy, x0, y0); }
+}
 typedef glm::mat3x2 ovg_matrix_t;
 // 图案：渐变/图片 
 vg_pattern_t* vctx_new_pattern_linear(rvg_t* v0, float x0, float y0, float x1, float y1) {
@@ -4331,6 +4347,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->set_matrix = vctx_set_matrix;
 	cb->get_matrix = vctx_get_matrix;
 	cb->identity_matrix = vctx_identity_matrix;
+	cb->matrix_init = vctx_matrix_init;
 	cb->new_pattern_linear = vctx_new_pattern_linear;
 	cb->new_pattern_radial = vctx_new_pattern_radial;
 	cb->new_pattern_sweep = vctx_new_pattern_sweep;

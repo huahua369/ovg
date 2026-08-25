@@ -528,6 +528,7 @@ struct ovg_canvas_cb {
 	void(*set_matrix)(vg_state_save_t* ctx, const void* matrix);
 	void(*get_matrix)(vg_state_save_t* ctx, void* matrix);
 	void(*identity_matrix)(vg_state_save_t* ctx);
+	void(*matrix_init)(void* mat, float xx, float yx, float xy, float yy, float x0, float y0);
 
 	// 图案：渐变/图片 
 	vg_pattern_t* (*new_pattern_linear)(mem_resource_t* ac, float x0, float y0, float x1, float y1);
@@ -629,6 +630,7 @@ struct ovg_ctx_cb {
 	void(*set_matrix)(rvg_t* ctx, const void* matrix);
 	void(*get_matrix)(rvg_t* ctx, void* matrix);
 	void(*identity_matrix)(rvg_t* ctx);
+	void(*matrix_init)(void* mat, float xx, float yx, float xy, float yy, float x0, float y0);
 
 	// 图案：渐变/图片 
 	vg_pattern_t* (*new_pattern_linear)(rvg_t* ctx, float x0, float y0, float x1, float y1);

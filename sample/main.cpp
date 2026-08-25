@@ -10,7 +10,7 @@ using namespace std;
 // 渲染普通文本
 void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
 // colrv1文本
-void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color);
+void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
 /* ---------- 颜色辅助 ---------- */
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -293,7 +293,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	//cb->clip(vg, vg);// 圆角矩形裁剪
 	//cb->clip_rect(vg, 20, 150, 300, 500);// 矩形裁剪会接受当前矩阵影响
 	{
-		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false);
+		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false); 
 		cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0);// 蓝
 		cb->pattern_add_color_stop(pat, 0.5, 0, 1, 0, 1);
 		cb->pattern_add_color_stop(pat, 1, 1, 0, 0, 1);// 红
@@ -381,7 +381,7 @@ int main()
 			static int xx = 190;
 			static int yy = 400;
 			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
-			render_text_print(familys, str, strlen((char*)str), xx, yy, can, canvg, { 0xff821212,0xff0000f0,120 });
+			render_text_print(familys, str, strlen((char*)str), xx, yy, can, cb, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/

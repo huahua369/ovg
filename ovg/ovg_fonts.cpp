@@ -766,6 +766,8 @@ void txt_paint_pop_group(hb_paint_funcs_t* funcs, void* paint_data, hb_paint_com
 class paint_text_cx
 {
 public:
+	ovg_ctx_cb* cb = 0;
+	rvg_t* cr = 0;
 	ovg_canvas_cb* can = 0;
 	hb_draw_funcs_t* draw_fill = 0;
 	std::stack<glm::mat3x2> _skmat;
@@ -1214,7 +1216,10 @@ glm::mat3 orthoYDown(float w, float h)
 	);
 	return r;
 }
-void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color)
+int hb_ovg_render_glyph(hb_font_t* font, unsigned long glyph, paint_text_cx* ctx, vg_text_extents_t* extents);
+int hb_ovg_render_color_glyph(hb_font_t* font, uint32_t glyph, paint_text_cx* ctx, vg_text_extents_t* extents);
+
+void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color)
 {
 	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
 	static std::vector<uint32_t> utf32;
@@ -1224,6 +1229,8 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 	auto pactx = new paint_text_cx();
 	pactx->can = ovg;
 	pactx->cvg = vg;
+	pactx->cb = ctx;
+	pactx->cr = vg;
 	hb_paint_funcs_t* df = new_hbpaint_cb();
 	hb_buffer_t* buf = hb_buffer_create();
 	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
@@ -1289,7 +1296,11 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 			ovg->identity_matrix(vg->st);
 			ovg->translate(vg->st, pen_x, pen_y);
 			ovg->get_matrix(vg->st, &m);
-			hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);
+			ovg->set_source_color(vg->st, color.x);
+			//hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);
+			hb_ovg_render_color_glyph(ff->font, info[i].codepoint, pactx, 0);
+			//hb_ovg_render_glyph(ff->font, info[i].codepoint, pactx, 0);
+
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
 
 			if (is_draw_debug) {
@@ -1333,3 +1344,636 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 
 
 #endif // 1
+
+
+#ifndef NOT_HAVE_OVG
+
+struct ovg_t {
+	ovg_ctx_cb* cb;
+	rvg_t* cr;
+};
+static void
+hb_ovg_move_to(hb_draw_funcs_t* dfuncs,
+	void* draw_data,
+	hb_draw_state_t* st,
+	float to_x, float to_y,
+	void* user_data)
+{
+	auto ctx = (ovg_t*)draw_data;
+	ctx->cb->move_to(ctx->cr, (double)to_x, (double)to_y);
+}
+
+static void
+hb_ovg_line_to(hb_draw_funcs_t* dfuncs,
+	void* draw_data,
+	hb_draw_state_t* st,
+	float to_x, float to_y,
+	void* user_data)
+{
+	auto ctx = (ovg_t*)draw_data;
+
+	ctx->cb->line_to(ctx->cr, (double)to_x, (double)to_y);
+}
+
+static void
+hb_ovg_cubic_to(hb_draw_funcs_t* dfuncs,
+	void* draw_data,
+	hb_draw_state_t* st,
+	float control1_x, float control1_y,
+	float control2_x, float control2_y,
+	float to_x, float to_y,
+	void* user_data)
+{
+	auto ctx = (ovg_t*)draw_data;
+
+	ctx->cb->curve_to(ctx->cr,
+		(double)control1_x, (double)control1_y,
+		(double)control2_x, (double)control2_y,
+		(double)to_x, (double)to_y);
+}
+
+static void
+hb_ovg_close_path(hb_draw_funcs_t* dfuncs,
+	void* draw_data,
+	hb_draw_state_t* st,
+	void* user_data)
+{
+	auto ctx = (ovg_t*)draw_data;
+
+	ctx->cb->close_path(ctx->cr);
+}
+
+static hb_draw_funcs_t* create_df()
+{
+	hb_draw_funcs_t* funcs = hb_draw_funcs_create();
+
+	hb_draw_funcs_set_move_to_func(funcs, hb_ovg_move_to, nullptr, nullptr);
+	hb_draw_funcs_set_line_to_func(funcs, hb_ovg_line_to, nullptr, nullptr);
+	hb_draw_funcs_set_cubic_to_func(funcs, hb_ovg_cubic_to, nullptr, nullptr);
+	hb_draw_funcs_set_close_path_func(funcs, hb_ovg_close_path, nullptr, nullptr);
+
+	hb_draw_funcs_make_immutable(funcs);
+
+
+	return funcs;
+}
+
+
+static hb_draw_funcs_t*
+hb_ovg_draw_get_funcs()
+{
+	static hb_draw_funcs_t* df = create_df();
+	return df;
+}
+
+
+#ifndef NOT_HAVE_OVG_USER_FONT_FACE_SET_RENDER_COLOR_GLYPH_FUNC
+
+static void
+hb_ovg_push_transform(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	float xx, float yx,
+	float xy, float yy,
+	float dx, float dy,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	glm::mat3x2 m;
+	ctx->cb->save(ctx->cr);
+	ctx->cb->matrix_init(&m, (double)xx, (double)yx,
+		(double)xy, (double)yy,
+		(double)dx, (double)dy);
+	ctx->cb->transform(ctx->cr, &m);
+}
+
+static void
+hb_ovg_pop_transform(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+
+	ctx->cb->restore(ctx->cr);
+}
+
+static void
+hb_ovg_fill_glyph(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_codepoint_t glyph,
+	hb_font_t* font,
+	hb_bool_t use_foreground,
+	hb_color_t color,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+
+	ovg_t o = {};
+	o.cb = ctx->cb;
+	o.cr = ctx->cr;
+	ctx->cb->save(ctx->cr);
+
+	ctx->cb->new_path(ctx->cr);
+	hb_font_draw_glyph(font, glyph, hb_ovg_draw_get_funcs(), &o);
+	ctx->cb->close_path(ctx->cr);
+	if (use_foreground) {}
+	else {
+		ctx->cb->set_source_rgba(ctx->cr,
+			hb_color_get_red(color) / 255.,
+			hb_color_get_green(color) / 255.,
+			hb_color_get_blue(color) / 255.,
+			hb_color_get_alpha(color) / 255.);
+	}
+	ctx->cb->fill(ctx->cr);
+
+	ctx->cb->restore(ctx->cr);
+}
+
+static hb_bool_t
+hb_ovg_paint_color_glyph(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_codepoint_t glyph,
+	hb_font_t* font,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+
+	ctx->cb->save(ctx->cr);
+
+	hb_position_t x_scale, y_scale;
+	hb_font_get_scale(font, &x_scale, &y_scale);
+	ctx->cb->scale(ctx->cr, x_scale, -y_scale);
+
+	//cairo_glyph_t cairo_glyph = { glyph, 0, 0 };
+	//ctx->cb->set_scaled_font(ctx->cr, c->scaled_font);
+	//ctx->cb->set_font_size(ctx->cr, 1);
+	//ctx->cb->show_glyphs(ctx->cr, &cairo_glyph, 1);
+
+	ctx->cb->restore(ctx->cr);
+
+	return true;
+}
+
+static void
+hb_ovg_push_clip_glyph(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_codepoint_t glyph,
+	hb_font_t* font,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+
+	ctx->cb->save(ctx->cr);
+	ctx->cb->new_path(ctx->cr);
+	ovg_t o = {};
+	o.cb = ctx->cb;
+	o.cr = ctx->cr;
+	hb_font_draw_glyph(font, glyph, hb_ovg_draw_get_funcs(), &o);
+
+	ctx->cb->close_path(ctx->cr);
+	//ctx->cb->clip(ctx->cr);
+}
+
+static void
+hb_ovg_push_clip_rectangle(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	float xmin, float ymin, float xmax, float ymax,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+	ctx->cb->save(ctx->cr);
+	ctx->cb->rectangle(ctx->cr,
+		(double)xmin, (double)ymin,
+		(double)(xmax - xmin), (double)(ymax - ymin));
+	ctx->cb->clip(ctx->cr);
+}
+
+static hb_draw_funcs_t*
+hb_ovg_push_clip_path_start(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	void** draw_data,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+
+	ctx->cb->save(ctx->cr);
+	ctx->cb->new_path(ctx->cr);
+	*draw_data = ctx->cr;
+	return hb_ovg_draw_get_funcs();
+}
+
+static void
+hb_ovg_push_clip_path_end(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	ctx->cb->close_path(ctx->cr);
+	ctx->cb->clip(ctx->cr);
+}
+
+static void
+hb_ovg_pop_clip(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	ctx->cb->restore(ctx->cr);
+}
+
+static void
+hb_ovg_push_group(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	ctx->cb->save(ctx->cr);
+	//ctx->cb->push_group(ctx->cr);
+}
+
+static void
+hb_ovg_pop_group(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_paint_composite_mode_t mode,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	//ctx->cb->pop_group_to_source(ctx->cr);
+	//ctx->cb->set_operator(ctx->cr, _hb_paint_composite_mode_to_cairo(mode));
+	//ctx->cb->paint(ctx->cr);
+
+	ctx->cb->restore(ctx->cr);
+}
+
+static void
+hb_ovg_paint_color(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_bool_t use_foreground,
+	hb_color_t color,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	//_hb_ovg_set_source_color(c, use_foreground, color);
+	ctx->cb->paint(ctx->cr);
+}
+
+static hb_bool_t
+hb_ovg_paint_image(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_blob_t* blob,
+	unsigned width,
+	unsigned height,
+	hb_tag_t format,
+	float slant,
+	hb_glyph_extents_t* extents,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+	return 0;
+	//return _hb_ovg_paint_glyph_image(c, blob, width, height, format, slant, extents);
+}
+#ifndef likely
+#define likely(expr) (expr)
+#define unlikely(expr) (expr)
+#endif
+
+static inline void*
+hb_malloc2vg(size_t nmemb, size_t size)
+{
+	if (size && nmemb > SIZE_MAX / size) return nullptr;
+	return hb_malloc(nmemb * size);
+}
+static inline void*
+hb_realloc2vg(void* ptr, size_t nmemb, size_t size)
+{
+	if (size && nmemb > SIZE_MAX / size) return nullptr;
+	return hb_realloc(ptr, nmemb * size);
+}
+
+static bool
+_hb_ovg_get_color_stops(paint_text_cx* c,
+	hb_color_line_t* color_line,
+	unsigned* count,
+	hb_color_stop_t** stops)
+{
+	unsigned len = hb_color_line_get_color_stops(color_line, 0, nullptr, nullptr);
+	bool allocated = false;
+	if (unlikely(!len))
+		return false;
+	if (len > *count)
+	{
+		*stops = (hb_color_stop_t*)hb_malloc2vg(len, sizeof(hb_color_stop_t));
+		if (unlikely(!*stops))
+			return false;
+		allocated = true;
+	}
+	hb_color_line_get_color_stops(color_line, 0, &len, *stops);
+	if (unlikely(!len))
+	{
+		if (allocated)
+		{
+			hb_free(*stops);
+			*stops = nullptr;
+		}
+		return false;
+	}
+	for (unsigned i = 0; i < len; i++)
+		if ((*stops)[i].is_foreground)
+		{
+#ifdef HAVE_OVG_USER_SCALED_FONT_GET_FOREGROUND_SOURCE
+			double r, g, b, a;
+			vg_pattern_t* foreground = cairo_user_scaled_font_get_foreground_source(c->scaled_font);
+			if (cairo_pattern_get_rgba(foreground, &r, &g, &b, &a) == CAIRO_STATUS_SUCCESS)
+				(*stops)[i].color = HB_COLOR(round(b * 255.), round(g * 255.), round(r * 255.),
+					round(a * hb_color_get_alpha((*stops)[i].color)));
+			else
+#endif
+				(*stops)[i].color = HB_COLOR(0, 0, 0, hb_color_get_alpha((*stops)[i].color));
+		}
+
+	*count = len;
+	return true;
+}
+int hb_ovg_extend(hb_paint_extend_t extend) {
+	int vg_extend =
+		(extend == HB_PAINT_EXTEND_REPEAT) ? 2 : // 按 Cairo 惯例
+		(extend == HB_PAINT_EXTEND_REFLECT) ? 1 :
+		0; // PAD
+	return vg_extend;
+}
+
+void
+_hb_ovg_paint_linear_gradient(paint_text_cx* c,
+	hb_color_line_t* color_line,
+	float x0, float y0,
+	float x1, float y1,
+	float x2, float y2)
+{
+	auto cr = c->cr;
+
+	unsigned int len = 32;
+	hb_color_stop_t stops_[32];
+	hb_color_stop_t* stops = stops_;
+	float xx0, yy0, xx1, yy1;
+	float xxx0, yyy0, xxx1, yyy1;
+	float min, max;
+	vg_pattern_t* pattern = 0;
+
+	if (unlikely(!_hb_ovg_get_color_stops(c, color_line, &len, &stops)))
+		return;
+	hb_paint_normalize_color_line(stops, len, &min, &max);
+
+	hb_paint_reduce_linear_anchors(x0, y0, x1, y1, x2, y2, &xx0, &yy0, &xx1, &yy1);
+
+	xxx0 = xx0 + min * (xx1 - xx0);
+	yyy0 = yy0 + min * (yy1 - yy0);
+	xxx1 = xx0 + max * (xx1 - xx0);
+	yyy1 = yy0 + max * (yy1 - yy0);
+
+	pattern = c->cb->new_pattern_linear(cr, (double)xxx0, (double)yyy0, (double)xxx1, (double)yyy1);
+	c->cb->pattern_set_extend(pattern, hb_ovg_extend(hb_color_line_get_extend(color_line)));
+	for (unsigned int i = 0; i < len; i++)
+	{
+		double r, g, b, a;
+		r = hb_color_get_red(stops[i].color) / 255.;
+		g = hb_color_get_green(stops[i].color) / 255.;
+		b = hb_color_get_blue(stops[i].color) / 255.;
+		a = hb_color_get_alpha(stops[i].color) / 255.;
+		c->cb->pattern_add_color_stop(pattern, (double)stops[i].offset, r, g, b, a);
+	}
+
+	c->cb->set_source(cr, pattern);
+	c->cb->set_source_rgb(cr, 1, 1, 0);
+	c->cb->paint(cr);
+
+	//c->cb->pattern_destroy(pattern);
+
+	if (stops != stops_)
+		hb_free(stops);
+}
+
+void
+_hb_ovg_paint_radial_gradient(paint_text_cx* c,
+	hb_color_line_t* color_line,
+	float x0, float y0, float r0,
+	float x1, float y1, float r1)
+{
+	auto cr = c->cr;
+
+	unsigned int len = 32;
+	hb_color_stop_t stops_[32];
+	hb_color_stop_t* stops = stops_;
+	float min, max;
+	float xx0, yy0, xx1, yy1;
+	float rr0, rr1;
+	vg_pattern_t* pattern;
+
+	if (unlikely(!_hb_ovg_get_color_stops(c, color_line, &len, &stops)))
+		return;
+	hb_paint_normalize_color_line(stops, len, &min, &max);
+
+	xx0 = x0 + min * (x1 - x0);
+	yy0 = y0 + min * (y1 - y0);
+	xx1 = x0 + max * (x1 - x0);
+	yy1 = y0 + max * (y1 - y0);
+	rr0 = r0 + min * (r1 - r0);
+	rr1 = r0 + max * (r1 - r0);
+
+	pattern = c->cb->new_pattern_radial(cr, (double)xx0, (double)yy0, (double)rr0, (double)xx1, (double)yy1, (double)rr1, false);
+	c->cb->pattern_set_extend(pattern, hb_ovg_extend(hb_color_line_get_extend(color_line)));
+
+	for (unsigned int i = 0; i < len; i++)
+	{
+		double r, g, b, a;
+		r = hb_color_get_red(stops[i].color) / 255.;
+		g = hb_color_get_green(stops[i].color) / 255.;
+		b = hb_color_get_blue(stops[i].color) / 255.;
+		a = hb_color_get_alpha(stops[i].color) / 255.;
+		c->cb->pattern_add_color_stop(pattern, (double)stops[i].offset, r, g, b, a);
+	}
+
+	c->cb->set_source(cr, pattern);
+	c->cb->set_source_rgb(cr, 1, 0, 0);
+	c->cb->paint(cr);
+
+	//c->cb->pattern_destroy(pattern);
+
+	if (stops != stops_)
+		hb_free(stops);
+}
+
+void
+_hb_ovg_paint_sweep_gradient(paint_text_cx* c,
+	hb_color_line_t* color_line,
+	float cx, float cy,
+	float start_angle,
+	float end_angle)
+{
+	auto cr = c->cr;
+
+	unsigned int len = 32;
+	hb_color_stop_t stops_[32];
+	hb_color_stop_t* stops = stops_;
+	vg_extend_t extend;
+	double x1, y1, x2, y2;
+	float max_x, max_y, radius;
+	vg_pattern_t* pattern;
+
+	if (unlikely(!_hb_ovg_get_color_stops(c, color_line, &len, &stops)))
+		return;
+
+	//hb_array_t<hb_color_stop_t>(stops, len)
+	//	.qsort([](const hb_color_stop_t& a, const hb_color_stop_t& b) {
+	//	return (a.offset > b.offset) - (a.offset < b.offset);
+	//		});
+	qsort(stops, len, sizeof(hb_color_stop_t), [](const void* aa, const void* bb) {
+		auto a = (hb_color_stop_t*)aa; auto b = (hb_color_stop_t*)bb;
+		return (a->offset > b->offset) - (a->offset < b->offset);
+		});
+	int crt[4] = {};
+	c->cb->get_clip_rect(cr, crt);
+	//c->cb->clip_extents(cr, &x1, &y1, &x2, &y2);
+	max_x = (float)std::max((x1 - (double)cx) * (x1 - (double)cx), (x2 - (double)cx) * (x2 - (double)cx));
+	max_y = (float)std::max((y1 - (double)cy) * (y1 - (double)cy), (y2 - (double)cy) * (y2 - (double)cy));
+	radius = sqrtf(max_x + max_y);
+
+	extend = (vg_extend_t)hb_ovg_extend(hb_color_line_get_extend(color_line));
+	//pattern = cairo_pattern_create_mesh();
+	//_hb_cairo_add_sweep_gradient_patches(stops, len, extend, cx, cy, radius, start_angle, end_angle, pattern);
+	c->cb->set_source(cr, pattern);
+	c->cb->paint(cr);
+
+	//c->cb->pattern_destroy(pattern);
+
+	if (stops != stops_)
+		hb_free(stops);
+}
+
+static void
+hb_ovg_paint_linear_gradient(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_color_line_t* color_line,
+	float x0, float y0,
+	float x1, float y1,
+	float x2, float y2,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+	_hb_ovg_paint_linear_gradient(ctx, color_line, x0, y0, x1, y1, x2, y2);
+}
+
+static void
+hb_ovg_paint_radial_gradient(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_color_line_t* color_line,
+	float x0, float y0, float r0,
+	float x1, float y1, float r1,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+	_hb_ovg_paint_radial_gradient(ctx, color_line, x0, y0, r0, x1, y1, r1);
+}
+
+static void
+hb_ovg_paint_sweep_gradient(hb_paint_funcs_t* pfuncs,
+	void* paint_data,
+	hb_color_line_t* color_line,
+	float x0, float y0,
+	float start_angle, float end_angle,
+	void* user_data)
+{
+	paint_text_cx* ctx = (paint_text_cx*)paint_data;
+
+	_hb_ovg_paint_sweep_gradient(ctx, color_line, x0, y0, start_angle, end_angle);
+}
+
+//static const cairo_user_data_key_t color_cache_key = { 0 };
+
+static void
+_hb_ovg_destroy_map(void* p)
+{
+	hb_map_destroy((hb_map_t*)p);
+}
+
+static hb_bool_t
+hb_ovg_paint_custom_palette_color(hb_paint_funcs_t* funcs,
+	void* paint_data,
+	unsigned int color_index,
+	hb_color_t* color,
+	void* user_data)
+{
+	return false;
+}
+
+static hb_paint_funcs_t* hb_ovg_paint_get_funcs()
+{
+	static hb_paint_funcs_t* funcs = hb_paint_funcs_create();
+
+	hb_paint_funcs_set_push_transform_func(funcs, hb_ovg_push_transform, nullptr, nullptr);
+	hb_paint_funcs_set_pop_transform_func(funcs, hb_ovg_pop_transform, nullptr, nullptr);
+	hb_paint_funcs_set_fill_glyph_func(funcs, hb_ovg_fill_glyph, nullptr, nullptr);
+	hb_paint_funcs_set_color_glyph_func(funcs, hb_ovg_paint_color_glyph, nullptr, nullptr);
+	hb_paint_funcs_set_push_clip_glyph_func(funcs, hb_ovg_push_clip_glyph, nullptr, nullptr);
+	//hb_paint_funcs_set_push_clip_rectangle_func(funcs, hb_ovg_push_clip_rectangle, nullptr, nullptr);
+	hb_paint_funcs_set_push_clip_path_start_func(funcs, hb_ovg_push_clip_path_start, nullptr, nullptr);
+	hb_paint_funcs_set_push_clip_path_end_func(funcs, hb_ovg_push_clip_path_end, nullptr, nullptr);
+	hb_paint_funcs_set_pop_clip_func(funcs, hb_ovg_pop_clip, nullptr, nullptr);
+	hb_paint_funcs_set_push_group_func(funcs, hb_ovg_push_group, nullptr, nullptr);
+	hb_paint_funcs_set_pop_group_func(funcs, hb_ovg_pop_group, nullptr, nullptr);
+	hb_paint_funcs_set_color_func(funcs, hb_ovg_paint_color, nullptr, nullptr);
+	hb_paint_funcs_set_image_func(funcs, hb_ovg_paint_image, nullptr, nullptr);
+	hb_paint_funcs_set_linear_gradient_func(funcs, hb_ovg_paint_linear_gradient, nullptr, nullptr);
+	hb_paint_funcs_set_radial_gradient_func(funcs, hb_ovg_paint_radial_gradient, nullptr, nullptr);
+	hb_paint_funcs_set_sweep_gradient_func(funcs, hb_ovg_paint_sweep_gradient, nullptr, nullptr);
+	hb_paint_funcs_set_custom_palette_color_func(funcs, hb_ovg_paint_custom_palette_color, nullptr, nullptr);
+
+	hb_paint_funcs_make_immutable(funcs);
+
+	//hb_atexit(free_static_cairo_paint_funcs);
+
+	return funcs;
+}
+#endif
+
+static int hb_ovg_render_glyph(hb_font_t* font, unsigned long glyph, paint_text_cx* ctx, vg_text_extents_t* extents)
+{
+	hb_position_t x_scale = 1, y_scale = 1;
+	//hb_font_get_scale(font, &x_scale, &y_scale);
+
+	ovg_t o = {};
+	o.cb = ctx->cb;
+	o.cr = ctx->cr;
+	ctx->cb->scale(ctx->cr, +1. / (x_scale ? x_scale : 1), -1. / (y_scale ? y_scale : 1));
+	if (hb_font_draw_glyph_or_fail(font, glyph, hb_ovg_draw_get_funcs(), &o))
+		ctx->cb->fill(ctx->cr);
+
+	return 0;
+}
+
+#ifndef NOT_USER_FONT_FACE_SET_RENDER_COLOR_GLYPH_FUNC
+
+int hb_ovg_render_color_glyph(hb_font_t* font, uint32_t glyph, paint_text_cx* ctx, vg_text_extents_t* extents)
+{
+	unsigned int palette = 0;
+	hb_color_t color = HB_COLOR(0, 0, 0, 255);
+	hb_position_t x_scale = 0, y_scale = 0;
+	//hb_font_get_scale(font, &x_scale, &y_scale);
+	double sx = 0.05, sy = 0.05;
+	ctx->cb->scale(ctx->cr, +1. / (sx > 0. ? sx : 1), -1. / (sy > 0. ? sy : 1));
+
+	hb_font_paint_glyph(font, glyph, hb_ovg_paint_get_funcs(), ctx, palette, color);
+
+	return 0;
+}
+
+
+#endif 
+
+#endif 
