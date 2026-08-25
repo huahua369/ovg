@@ -5,7 +5,7 @@
 #include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
-using namespace std; 
+using namespace std;
 
 // 渲染普通文本
 void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
@@ -338,6 +338,7 @@ int main()
 	auto path = can->new_path(can->ac);
 	auto st = can->new_state(can->ac);
 	can->set_path(canvg, path, st);
+	bool testvg = false;
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -358,7 +359,8 @@ int main()
 			//sf *= 0.5;
 			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 			cb->reset_clip(vg, 1);
-			draw(cb, vg, fbo.display_size);// 录制图元
+			if (testvg)
+				draw(cb, vg, fbo.display_size);// 录制图元
 			cb->set_matrix(vg, &rst);
 			int y = 120;
 			cb->move_to(vg, 10.5, y + 0.5);
@@ -378,6 +380,7 @@ int main()
 			cb->stroke(vg);
 			static int xx = 190;
 			static int yy = 400;
+			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
 			render_text_print(familys, str, strlen((char*)str), xx, yy, can, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)

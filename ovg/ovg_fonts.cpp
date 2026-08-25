@@ -779,6 +779,8 @@ public:
 	float scale = 1.0;
 	glm::vec2 pos = {};
 	glm::mat3x2 mat = glm::mat3x2(1.0);
+	// 测试
+	std::vector<glm::vec4> debugs;
 public:
 	paint_text_cx();
 	~paint_text_cx();
@@ -910,11 +912,27 @@ void txt_paint_push_clip_path_end(hb_paint_funcs_t* funcs, void* paint_data, voi
 void txt_paint_push_clip_rectangle(hb_paint_funcs_t* funcs, void* paint_data, float xmin, float ymin, float xmax, float ymax, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 	glm::mat3x2 m = ctx->mat;
-	auto v = glm::vec2(xmin, ymin);
-	auto v1 = glm::vec2(xmax - xmin, ymax - ymin);
-	transform_point(ctx->mat, &v);
-	transform_point(ctx->mat, &v1);
-	glm::ivec4 c = { v,v1 };
+	glm::vec2 v[4] = { glm::vec2(xmin, ymin),glm::vec2(xmax, ymin)
+		,glm::vec2(xmax, ymax),glm::vec2(xmin, ymax) };
+	for (int i = 0; i < 4; i++)
+	{
+		transform_point(ctx->mat, &v[i]);
+		v[i].y *= -1;
+	}
+
+	float fmin_x = v[0].x, fmin_y = v[0].y, fmax_x = v[0].x, fmax_y = v[0].y;
+	for (unsigned i = 1; i < 4; i++)
+	{
+		fmin_x = std::min(fmin_x, v[i].x); fmin_y = std::min(fmin_y, v[i].y);
+		fmax_x = std::max(fmax_x, v[i].x); fmax_y = std::max(fmax_y, v[i].y);
+	}
+
+	int px0 = floorf(fmin_x);
+	int py0 = floorf(fmin_y);
+	int px1 = ceilf(fmax_x);
+	int py1 = ceilf(fmax_y);
+
+	glm::ivec4 c = { px0, py0, px1 - px0, py1 - py0 };
 	ctx->_skclip.push(ctx->clip);
 	ctx->clip = c;
 	ctx->can->set_clip_rect(ctx->cvg, &c);
@@ -988,16 +1006,14 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 	glm::vec2 p[] = { glm::vec2(x0, y0) , glm::vec2(x1, y1) ,glm::vec2(x2, y2) };
 	glm::vec2 p0, p1;
 	reduce_linear_anchors(p[0].x, p[0].y, p[1].x, p[1].y, p[2].x, p[2].y, &p0, &p1);
-	//vg_pattern_t* pat = ctx->can->new_pattern_linear(ctx->can->ac, p0.x, p0.y, p1.x, p1.y);
-	//if (!pat) return;   
-	//ctx->can->pattern_set_matrix(pat, &ctx->mat);
-	//glm::vec2 p0(x0, y0);
-	//glm::vec2 p1(x1, y1);
-	//glm::vec2 p2(x2, y2);
-	//p0 *= ;
-	//p1 *= ctx->scale;
-	//p2 *= ctx->scale;
 
+	glm::vec4 cp[2] = { {p0,p1},{} };
+	transform_point(ctx->mat, &p0);
+	transform_point(ctx->mat, &p1);
+	float gx0 = 0.0f;
+	float gy0 = 0.0f;
+	float gx1 = 0.0f;
+	float gy1 = 0.0f;
 	uint32_t n1 = 0;
 	vg_pattern_t* pat = 0;
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, &n1, NULL);
@@ -1009,13 +1025,13 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 		auto l0 = p0;
 		auto l1 = p1;
 		/* Apply normalization to endpoints */
-		float gx0 = l0.x + mn * (l1.x - l0.x);
-		float gy0 = l0.y + mn * (l1.y - l0.y);
-		float gx1 = l0.x + mx * (l1.x - l0.x);
-		float gy1 = l0.y + mx * (l1.y - l0.y);
-		pat = ctx->can->new_pattern_linear(ctx->can->ac, gx0, gy0, gx1, gy1);
+		gx0 = l0.x + mn * (l1.x - l0.x);
+		gy0 = l0.y + mn * (l1.y - l0.y);
+		gx1 = l0.x + mx * (l1.x - l0.x);
+		gy1 = l0.y + mx * (l1.y - l0.y);
+		pat = ctx->can->new_pattern_linear(ctx->can->ac, gx0, -gy0, gx1, -gy1);
 		if (!pat) return;
-		ctx->can->pattern_set_matrix(pat, &ctx->mat);
+		//ctx->can->pattern_set_matrix(pat, &ctx->mat);
 
 		for (unsigned int i = 0; i < n; ++i) {
 			hb_color_t c = stops[i].color;
@@ -1043,15 +1059,23 @@ void txt_paint_linear_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 	}
 	ctx->can->fill(ctx->cvg);
 	ctx->can->pattern_destroy(pat);
+#ifdef _DEBUG
+	ctx->debugs.push_back({ p0.x, -p0.y, abs(p1.x - p0.x), abs(p1.y - p0.y) });
+
+#endif // _DEBUG
+
 	//printf("fill linear\n");
 }
 void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float r0, float x1, float y1, float r1, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
-	glm::vec3 p0 = { x0,y0,r0 }, p1 = { x1,y1,r1 };
-	glm::vec2 p[3] = { p0 * ctx->scale,p1 * ctx->scale, glm::vec2(r0 * ctx->scale, r1 * ctx->scale) };
-	vg_pattern_t* pat = ctx->can->new_pattern_radial(ctx->can->ac, p[0].x, p[0].y, p[2].x, p[1].x, p[1].y, p[2].y, false);
+	glm::vec3 p0 = { x0,y0,r0 * ctx->scale }, p1 = { x1,y1,r1 * ctx->scale };
+	glm::vec2 p[3] = { p0,p1, glm::vec2(r0 * ctx->scale, r1 * ctx->scale) };
+	glm::vec4 cp[2] = { {x0,y0,r0,0 },{x1,y1,r1 ,0} };
+	transform_point(ctx->mat, &p[0]);
+	transform_point(ctx->mat, &p[1]);
+	vg_pattern_t* pat = ctx->can->new_pattern_radial(ctx->can->ac, p[0].x, -p[0].y, p[2].x, p[1].x, -p[1].y, p[2].y, false);
 	if (!pat) return;
-	ctx->can->pattern_set_matrix(pat, &ctx->mat);
+	//ctx->can->pattern_set_matrix(pat, &ctx->mat);
 	/* color stops */
 	unsigned int n = hb_color_line_get_color_stops(color_line, 0, 0, NULL);
 	if (n > 0) {
@@ -1092,11 +1116,13 @@ void txt_paint_radial_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_col
 	ctx->can->fill(ctx->cvg);
 	ctx->can->pattern_destroy(pat);
 	//printf("fill radial\n");
+	ctx->debugs.push_back({ p[0].x, -p[0].y,0,0 });
+	ctx->debugs.push_back({ p[1].x, -p[1].y,0,0 });
 }
 void txt_paint_sweep_gradient(hb_paint_funcs_t* funcs, void* paint_data, hb_color_line_t* color_line, float x0, float y0, float start_angle, float end_angle, void* user_data) {
 	auto ctx = (paint_text_cx*)paint_data;
 	glm::vec2 p = glm::vec2(x0, y0) * ctx->scale;
-	vg_pattern_t* pat = ctx->can->new_pattern_sweep(ctx->can->ac, p.x, p.y, start_angle, end_angle);
+	vg_pattern_t* pat = ctx->can->new_pattern_sweep(ctx->can->ac, p.x, -p.y, start_angle, end_angle);
 	if (!pat) return;
 	ctx->can->pattern_set_matrix(pat, &ctx->mat);
 	/* color stops */
@@ -1161,7 +1187,7 @@ hb_paint_funcs_t* new_hbpaint_cb() {
 	hb_paint_funcs_set_pop_transform_func(cb, txt_paint_pop_transform, 0, 0);
 	hb_paint_funcs_set_fill_glyph_func(cb, txt_paint_fill_glyph, 0, 0);
 	hb_paint_funcs_set_push_clip_glyph_func(cb, txt_paint_push_clip_glyph, 0, 0);
-	hb_paint_funcs_set_push_clip_rectangle_func(cb, txt_paint_push_clip_rectangle, 0, 0);
+	//hb_paint_funcs_set_push_clip_rectangle_func(cb, txt_paint_push_clip_rectangle, 0, 0);
 	hb_paint_funcs_set_pop_clip_func(cb, txt_paint_pop_clip, 0, 0);
 	hb_paint_funcs_set_color_func(cb, txt_paint_color, 0, 0);
 	hb_paint_funcs_set_linear_gradient_func(cb, txt_paint_linear_gradient, 0, 0);
@@ -1170,6 +1196,23 @@ hb_paint_funcs_t* new_hbpaint_cb() {
 	hb_paint_funcs_set_push_group_func(cb, txt_paint_push_group, 0, 0);
 	hb_paint_funcs_set_pop_group_func(cb, txt_paint_pop_group, 0, 0);
 	return cb;
+}
+glm::mat3x2 flipY(float surfaceHeight)
+{
+	return glm::mat3x2(
+		1.0f, 0.0f,   // col 0: (sx, shx)
+		0.0f, -1.0f,   // col 1: (shy, sy)
+		0.0f, surfaceHeight // col 2: (tx, ty)
+	);
+}
+glm::mat3 orthoYDown(float w, float h)
+{
+	auto r = glm::mat3x2(
+		2.0f / w, 0.0f,
+		0.0f, -2.0f / h,
+		-1.0f, 1.0f
+	);
+	return r;
 }
 void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, rvg_t* vg, const glm::uvec3& color)
 {
@@ -1229,21 +1272,51 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
 		};
 		hb_shape(ff->font, buf, features, 1);
-
-		unsigned n;
+		static bool is_draw_debug = false;
+		unsigned int n;
 		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
 		hb_glyph_position_t* pos =
 			hb_buffer_get_glyph_positions(buf, nullptr);
 		glm::mat3x2 m = {};
-		/* 画 run */
+		int subpixel_bits = 6;
+		float sx = scalbnf(1.f, -(int)subpixel_bits);
+		float sy = scalbnf(1.f, -(int)subpixel_bits);
+		float scale_factor = scalbnf(1.f, (int)subpixel_bits);
+		glm::mat3 flip = flipY(vg->height);
+		glm::mat3x2 yd = flip * orthoYDown(vg->width, vg->height);
 		for (unsigned i = 0; i < n; i++) {
 			pactx->pos = { };
 			ovg->identity_matrix(vg->st);
-			//ovg->scale(vg->st, fixed_scale, fixed_scale);
 			ovg->translate(vg->st, pen_x, pen_y);
 			ovg->get_matrix(vg->st, &m);
 			hb_font_paint_glyph(ff->font, info[i].codepoint, df, pactx, 0, color.x);
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
+
+			if (is_draw_debug) {
+				ovg->set_line_width(vg->st, 2);
+				for (auto& c : pactx->debugs)
+				{
+					if (c.z > 0)
+					{
+					}
+					else
+					{
+						ovg->circle(vg->path, c.x, c.y, 6);
+					}
+				}
+				ovg->set_source_rgb(vg->st, 0, 0, 0);
+				ovg->stroke(vg);
+				for (auto& c : pactx->debugs)
+				{
+					if (c.z > 0)
+					{
+						ovg->rectangle(vg->path, c.x, c.y, std::max(4.0f, c.z), std::max(4.0f, c.w));
+					}
+				}
+				ovg->set_source_rgb(vg->st, 1, 0, 0);
+				ovg->stroke(vg);
+			}
+			pactx->debugs.clear();
 		}
 		hb_buffer_destroy(buf);
 		run_start = run_end;

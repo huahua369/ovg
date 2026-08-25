@@ -1134,9 +1134,9 @@ void ovg_rectangle(ovg_path_t* path, float x, float y, float w, float h)
 	o_finish_path(path);
 	if (w <= 0 || h <= 0)
 		return;
-	_add_point(path, x, y);
-	_add_point(path, x + w, y);
-	_add_point(path, x + w, y + h);
+	ovg_move_to(path, x, y);
+	ovg_line_to(path, x + w, y);
+	ovg_line_to(path, x + w, y + h);
 	_add_point(path, x, y + h);
 	assert(path->pathPtr < path->pathes.size());
 	path->pathes[path->pathPtr] |= (PATH_CLOSED_BIT | PATH_IS_CONVEX_BIT);
@@ -1207,7 +1207,7 @@ void ovg_ellipse(ovg_path_t* path, float radiusX, float radiusY, float x, float 
 	float bottomLeftY = bottomCenterY - dy2;
 
 	o_finish_path(path);
-	_add_point(path, bottomCenterX, bottomCenterY);
+	ovg_move_to(path, bottomCenterX, bottomCenterY);
 
 	ovg_curve_to(path, bottomRightX, bottomRightY, topRightX, topRightY, topCenterX, topCenterY);
 	ovg_curve_to(path, topLeftX, topLeftY, bottomLeftX, bottomLeftY, bottomCenterX, bottomCenterY);
@@ -1231,8 +1231,8 @@ void ovg_rel_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_
 	_elliptic_arc(path, cp.x, cp.y, x + cp.x, y + cp.y, large_arc_flag, sweep_flag, rx, ry, phi);
 }
 void ovg_circle(ovg_path_t* path, float x, float y, float radius) {
-	ovg_arc(path, x, y, radius, 0, 2.0 * glm::pi<float>());
-
+	//ovg_arc(path, x, y, radius, 0, 2.0 * glm::pi<float>());
+	ovg_ellipse(path, radius, radius, x, y, 0.0f);
 }
 
 #ifdef CreateRgbaf

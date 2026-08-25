@@ -464,6 +464,7 @@ struct text_box_rt {
 struct ovg_path_t;
 // 矢量对象 
 struct rvg_t {
+	int width = 0, height = 0;
 	ovg_path_t* path = 0;
 	vg_state_save_t* st = 0;
 };
