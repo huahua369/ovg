@@ -338,7 +338,7 @@ int main()
 	auto path = can->new_path(can->ac);
 	auto st = can->new_state(can->ac);
 	can->set_path(canvg, path, st);
-	bool testvg = false;
+	bool testvg = true;
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -369,7 +369,7 @@ int main()
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
 			render_text_shaped(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
-			render_text_shaped(familys, str, strlen((char*)str), 120, y, cb, vg, { 0xff121212,0x80000000,12 });
+			render_text_shaped(familys, str, strlen((char*)str), 150, y, cb, vg, { 0xff121212,0x80000000,12 });
 			cb->set_line_width(vg, 2);
 			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
 
@@ -381,7 +381,7 @@ int main()
 			static int xx = 190;
 			static int yy = 400;
 			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
-			render_text_print(familys, str, strlen((char*)str), xx, yy, can, cb, canvg, { 0xff821212,0xff0000f0,120 });
+			//render_text_print(familys, str, strlen((char*)str), xx, yy, can, cb, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)
 				printf("draw build ms: %d\n", ms);*/

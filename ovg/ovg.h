@@ -422,6 +422,7 @@ struct ovg_image_s {
 	int stride;			// 像素宽度
 	uint32_t* data;
 	bool multiply;		// 是否预乘
+	bool valid = false;			// 是否更新到纹理
 };
 
 struct ovg_image_r

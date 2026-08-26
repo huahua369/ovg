@@ -7,6 +7,14 @@
 
 */
 #include <set>
+#ifdef __cplusplus 
+extern "C" {
+#endif
+	typedef struct hb_raster_image_t hb_raster_image_t;
+
+#ifdef __cplusplus 
+}
+#endif
 struct vg_font_extents_t {
 	float ascent;
 	float descent;
@@ -32,8 +40,51 @@ struct vg_text_run_t {
 	vg_font* font;
 };
 typedef struct vg_text_run_t* vgText;
-
 class usp_ac_cx;
+
+// 纹理图像打包器接口
+class packer_base
+{
+public:
+	int width = 0, height = 0;
+public:
+	packer_base();
+	virtual ~packer_base();
+	virtual void init_target(int width, int height, int heuristic);
+	virtual void clear();
+	virtual size_t push_rect(glm::ivec4* rc, int n, size_t stride);
+	virtual bool push_rect(const glm::ivec2& rc, glm::ivec2* pos);
+};
+// 创建空装箱对象
+packer_base* new_packer(int width, int height);
+void free_packer(packer_base* p);
+
+class stb_packer;
+
+class image_cache_cx
+{
+public:
+	std::vector<stb_packer*> _packer;
+	std::vector<ovg_image_s*> _data;
+	int width = 1024;					// 纹理宽高
+	int height = 1024;
+public:
+	image_cache_cx();
+	~image_cache_cx();
+	// 重置大小，会清空原有内容
+	void resize(int w, int h);
+	// 装箱矩形并填充颜色
+	glm::ivec2 fill_color(int w, int h, uint32_t color);
+	// 装箱一个矩形，返回坐标/图像
+	ovg_image_s* push_cache_size(const glm::ivec2& ss, glm::ivec2* pos, int linegap = 0);
+	// 复制像素到装箱，从pos返回坐标
+	ovg_image_s* push_cache_bitmap(hb_raster_image_t* img, glm::ivec2* pos, int linegap = 0);
+	// 清空所有缓存
+	void clear();
+private:
+	stb_packer* get_last_packer(bool isnew);
+
+};
 
 class font_cache_cx
 {
