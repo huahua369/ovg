@@ -59,6 +59,8 @@
 #include <harfbuzz/hb-raster.h> 
 #include "ovg_fonts.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 struct vg_font :public font_family_t {
 	hb_buffer_t* hb_buffer;
@@ -1238,6 +1240,8 @@ glm::mat3 orthoYDown(float w, float h)
 int hb_ovg_render_glyph(hb_font_t* font, unsigned long glyph, paint_text_cx* ctx, vg_text_extents_t* extents);
 int hb_ovg_render_color_glyph(hb_font_t* font, uint32_t glyph, paint_text_cx* ctx, vg_text_extents_t* extents);
 
+bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src);
+
 void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color)
 {
 	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
@@ -1259,6 +1263,14 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 	uint32_t n;
 	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
 	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+
+	ovg_image_s imgbuf = {};
+	imgbuf.width = vg->width;
+	imgbuf.height = vg->height;
+	imgbuf.stride = imgbuf.width * 4;
+	std::vector<uint32_t> idd;
+	idd.resize(imgbuf.width * imgbuf.height);
+	imgbuf.data = idd.data();
 
 	float pen_x = x, pen_y = y;
 	size_t run_start = 0;
@@ -1321,6 +1333,7 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 			//hb_ovg_render_glyph(ff->font, info[i].codepoint, pactx, 0);
 			glm::ivec4 rc = {};
 			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, 120, &rc);
+			gfont_copy_image(&imgbuf, pen_x - x, pen_y, 0xff0000ff, (hb_raster_image_t*)img);
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
 
 			if (is_draw_debug) {
@@ -1352,6 +1365,9 @@ void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, 
 		hb_buffer_destroy(buf);
 		run_start = run_end;
 	}
+	std::string fn = "temp/font_test_0826.png";
+	stbi_write_png(fn.c_str(), imgbuf.width, imgbuf.height, 4, imgbuf.data, imgbuf.stride);
+
 	delete pactx;
 	hb_buffer_destroy(buf);
 	hb_paint_funcs_destroy(df);
@@ -1943,7 +1959,8 @@ int hb_ovg_render_color_glyph(hb_font_t* font, uint32_t glyph, paint_text_cx* ct
 
 void hb_res_init(vg_font* hp, hb_font_t* font) {
 	if (!hp)return;
-	hp->font = font;
+	if (font)
+		hp->font = font;
 	if (!hp->hb_language)
 		hp->hb_language = hb_language_from_string("", -1);
 	if (!hp->hb_buffer)
@@ -1951,7 +1968,7 @@ void hb_res_init(vg_font* hp, hb_font_t* font) {
 	auto face = hb_font_get_face(hp->font);
 	bool has_color = hb_ot_color_has_paint(face) || hb_ot_color_has_layers(face) || hb_ot_color_has_svg(face);
 	auto bp = hb_ot_color_has_png(face);
-	if (hp->rdr)
+	if (!hp->rdr)
 		hp->rdr = hb_raster_draw_create_or_fail();
 	if (!hp->pnt)
 		hp->pnt = has_color ? hb_raster_paint_create_or_fail() : nullptr;
@@ -1960,7 +1977,7 @@ void hb_res_init(vg_font* hp, hb_font_t* font) {
 	hb_font_get_extents_for_direction(hp->font, HB_DIRECTION_LTR, &extents);
 	hp->ascent = extents.ascender;
 	hp->coverage = hb_set_create();
-	hb_face_collect_unicodes(hb_font_get_face(font), hp->coverage);
+	hb_face_collect_unicodes(hb_font_get_face(hp->font), hp->coverage);
 	hp->upem = hb_face_get_upem(face);
 }
 void free_hb_res(vg_font* hp) {
@@ -1993,12 +2010,17 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	auto rdr = hp->rdr;
 	auto font = hp->font;
 	auto pnt = hp->pnt;
+	hb_font_set_scale(font, font_size, font_size);
+	hb_raster_draw_reset(rdr);
+	hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
+	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
 	do {
-		hb_font_set_scale(font, font_size, font_size);
-		hb_raster_draw_reset(rdr);
-		hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
-		hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
+		int pad = abs(font_size + gext.height);
+		gext.x_bearing -= pad;
+		gext.y_bearing += pad;       // 顶部扩大
+		gext.width += 2 * pad;
+		gext.height -= 2 * pad;      // height 为负，向下也扩大
 		if (pnt)
 		{
 			hb_raster_paint_set_foreground(pnt, HB_COLOR(255, 255, 255, 255));
@@ -2015,7 +2037,8 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 			}
 		}
 		{
-			hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+			hb_raster_draw_set_glyph_extents(rdr, &gext);
+			hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, 1.f, 0.0f, 0.0f);
 			hb_raster_draw_glyph(rdr, font, gid);	// 单色
 			img = hb_raster_draw_render(rdr);
 			if (img) { hb_raster_draw_recycle_image(rdr, img); }
@@ -2036,7 +2059,7 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	return img;
 }
 
-void rgba_copy2gray(image_ptr_t* dst, int x, int y, int w, int h, uint32_t c, const uint8_t* dt, int stride, bool fy)
+void rgba_copy2gray(ovg_image_s* dst, int x, int y, int w, int h, uint32_t c, const uint8_t* dt, int stride, bool fy)
 {
 	if (stride < 1)stride = w;
 	if (!dst || !dt || w <= 0 || h <= 0 || stride < w) return;
@@ -2055,14 +2078,15 @@ void rgba_copy2gray(image_ptr_t* dst, int x, int y, int w, int h, uint32_t c, co
 			uint8_t gray = src_row[ix];
 			if (gray > 0)
 			{
-				auto cc = (uint32_t)(gray << 24) | (gray << 16) | (gray << 8) | gray;
+				//auto cc = (uint32_t)(gray << 24) | (gray << 16) | (gray << 8) | gray;
+				uint32_t cc = c | (gray << 24);
 				dst_row[ix] = cc;
 			}
 		}
 	}
 }
 
-void rgba_copy_bgra(image_ptr_t* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
+void rgba_copy_bgra(ovg_image_s* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
 {
 	if (!dst || !dt || w <= 0 || h <= 0) return;
 	if (stride < 1)
@@ -2085,15 +2109,20 @@ void rgba_copy_bgra(image_ptr_t* dst, int x, int y, int w, int h, const uint32_t
 		}
 	}
 }
-
-bool gfont_copy_image(image_ptr_t* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src)
+bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src)
 {
+	auto img = img_src;
 	bool has_color = false;
 	hb_raster_extents_t ext = {};
 	hb_raster_image_get_extents(img_src, &ext);
 	hb_raster_format_t fmt = hb_raster_image_get_format(img_src);
+	dst->format = 0;
+	rx += ext.x_origin;
+	ry += -(ext.height + ext.y_origin);
 	if (fmt == HB_RASTER_FORMAT_A8)
+	{
 		rgba_copy2gray(dst, rx, ry, ext.width, ext.height, color, hb_raster_image_get_buffer(img_src), ext.stride, true);
+	}
 	else if (fmt == HB_RASTER_FORMAT_BGRA32)
 	{
 		has_color = true;

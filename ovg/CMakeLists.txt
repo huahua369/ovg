@@ -5,9 +5,9 @@ FILE(GLOB_RECURSE TESS2_SRC
 set(OVG_SOURCES 
     ovg.cpp
     ovg_renderer_sdl3.cpp
+    mapView.cpp
     ${TESS2_SRC}
     ovg_fonts.cpp
-    mapView.cpp
 )
 
 find_package(glm CONFIG REQUIRED)

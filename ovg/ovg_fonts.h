@@ -82,3 +82,4 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
 
 void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot);
+

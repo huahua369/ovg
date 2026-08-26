@@ -332,7 +332,7 @@ int main()
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
-	auto str = u8"➗🍕☂️6g";
+	auto str = u8"➗🍕☂️6bg太";
 	auto rst = glm::mat3x2(1.0);
 	auto canvg = can->new_rvg(can->ac);
 	auto path = can->new_path(can->ac);

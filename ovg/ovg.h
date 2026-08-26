@@ -415,6 +415,15 @@ struct image_ptr_t
 	bool valid = false;			// 是否更新到纹理
 };
 
+
+struct ovg_image_s {
+	int width, height;
+	int format;			// 0 rgba, 1 bgra
+	int stride;			// 像素宽度
+	uint32_t* data;
+	bool multiply;		// 是否预乘
+};
+
 struct ovg_image_r
 {
 	void* img;
