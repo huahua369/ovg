@@ -255,7 +255,10 @@ struct font_family_t {
 	hb_font_t* font;
 	hb_set_t* coverage;  // hb_face_collect_unicodes
 	float upem;
-	float ascent;        // 从 hb_font_extents
+	// 从 hb_font_extents
+	float ascender;
+	float descender;
+	float line_gap;
 };
 struct font_familys_t {
 	font_family_t** familys;

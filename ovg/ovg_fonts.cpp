@@ -84,6 +84,8 @@ struct FontStyle {
 };
 void hb_res_init(vg_font* hp, hb_font_t* font);
 void free_hb_res(vg_font* hp);
+bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, bool origin);
+
 static int utf8_to_utf16(const char* utf8, UChar* out16, int cap16, UErrorCode* st)
 {
 	int32_t len = 0;
@@ -657,15 +659,7 @@ static uint32_t utf8_next(const uint8_t*& p, const uint8_t* end) {
 		r = ((c & 0x07) << 18) | ((p[0] & 0x3F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F), p += 3;
 	return r ? r : 0xFFFD;
 }
-struct font_family_ta {
-	hb_font_t* font;
-	float ascent;        // 从 hb_font_extents
-	hb_set_t* coverage;  // hb_face_collect_unicodes
-};
-struct font_familys_ta {
-	font_family_t* familys;
-	int count;
-};
+
 void utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
 {
 	const uint8_t* p = (const uint8_t*)str8;
@@ -674,7 +668,67 @@ void utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
 	while (p < end)
 		ot->push_back(utf8_next(p, end));
 }
-void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* vg, const glm::uvec3& color) {
+
+class text_run_cx
+{
+public:
+	std::vector<vg_text_run_t> vrun;
+	std::vector<uint32_t> utf32;
+	const font_familys_t* _familys = 0;
+public:
+	text_run_cx();
+	~text_run_cx();
+	bool init(const font_familys_t* familys, const char* text, uint32_t length);
+private:
+
+};
+
+text_run_cx::text_run_cx()
+{}
+
+text_run_cx::~text_run_cx()
+{}
+bool text_run_cx::init(const font_familys_t* familys, const char* text, uint32_t length)
+{
+	if (!familys || !familys->count || !familys->familys || !text || !*text) {
+		return false;
+	}
+	if (length == -1)length = strlen(text);
+
+	return true;
+}
+vgText text_run_new(const font_familys_t* familys, const char* text) {
+	return text_run_new_with_length(familys, text, -1);
+}
+vgText text_run_new_with_length(const font_familys_t* familys, const char* text, uint32_t length) {
+	auto textRun = new text_run_cx();
+	if (textRun && !textRun->init(familys, text, length)) {
+		delete textRun;
+		textRun = 0;
+	}
+	return textRun;
+}
+void text_run_destroy(vgText textRun) {
+	if (textRun)
+		delete textRun;
+}
+void show_text_run(vgText textRun) {
+
+}
+void show_text_run_path(vgText textRun) {
+
+}
+void text_run_get_extents(vgText textRun, vg_text_extents_t* extents) {
+
+}
+uint32_t text_run_get_glyph_count(vgText textRun) {
+	return .0;
+}
+void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo) {
+
+}
+
+void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* vg, const glm::uvec3& color) {
 	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
 	static std::vector<uint32_t> utf32;
 	utf32.clear();
@@ -689,6 +743,14 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 	uint32_t n;
 	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
 	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+
+	ovg_image_s imgbuf = {};
+	imgbuf.width = vg->width;
+	imgbuf.height = vg->height;
+	imgbuf.stride = imgbuf.width * 4;
+	std::vector<uint32_t> idd;
+	idd.resize(imgbuf.width * imgbuf.height);
+	imgbuf.data = idd.data();
 
 	float pen_x = x, pen_y = y;
 	size_t run_start = 0;
@@ -722,19 +784,39 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 		};
 		hb_shape(ff->font, buf, features, 1);
 
-		unsigned int n;
-		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
-		hb_glyph_position_t* pos =
-			hb_buffer_get_glyph_positions(buf, nullptr);
+		unsigned int glyph_count;
+		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+		vg_text_run_t textRun[1] = {};
+		hb_font_extents_t fextents = {};
+		hb_font_get_extents_for_direction(ff->font, HB_DIRECTION_LTR, &fextents);
+		textRun->glyphs = (vg_glyph_info_t*)pos;
+		textRun->glyph_count = glyph_count;
+		unsigned int string_width_in_pixels = 0;
+		for (uint32_t i = 0; i < textRun->glyph_count; ++i)
+		{
+			string_width_in_pixels += textRun->glyphs[i].x_advance;
+		}
+		textRun->extents.height = fextents.ascender - fextents.descender + fextents.line_gap;
+		textRun->extents.x_advance = (float)string_width_in_pixels;
+		if (textRun->glyph_count > 0) {
+			textRun->extents.y_advance = (float)(textRun->glyphs[textRun->glyph_count - 1].y_advance);
+			textRun->extents.x_bearing = -(float)(textRun->glyphs[0].x_offset);
+			textRun->extents.y_bearing = -(float)(textRun->glyphs[0].y_offset);
+		}
+		textRun->extents.width = textRun->extents.x_advance;
 
 		/* 画 run */
-		for (unsigned i = 0; i < n; i++) {
+		for (unsigned i = 0; i < glyph_count; i++) {
 			draw_ctx_f ctx = { ovg, vg };
 			ovg->identity_matrix(vg);
 			ovg->translate(vg, pen_x, pen_y);
 			ovg->scale(vg, 1.0, -1.0);
 			ovg->set_source_color(vg, color.x);
 			hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
+			glm::ivec4 rc = {};
+			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc);
+			gfont_copy_image(&imgbuf, pen_x - x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
 			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
 			ovg->set_source_color(vg, color.x);
 			ovg->fill_preserve(vg);
@@ -744,6 +826,8 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 		hb_buffer_destroy(buf);
 		run_start = run_end;
 	}
+	std::string fn = "temp/font_test_0827.png";
+	//stbi_write_png(fn.c_str(), imgbuf.width, imgbuf.height, 4, imgbuf.data, imgbuf.stride);
 	hb_buffer_destroy(buf);
 	hb_draw_funcs_destroy(df);
 	ovg->set_source_color(vg, color.x);
@@ -753,6 +837,7 @@ void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len,
 	ovg->identity_matrix(vg);
 
 }
+
 
 
 void hb_res_init(vg_font* hp, hb_font_t* font) {
@@ -773,7 +858,9 @@ void hb_res_init(vg_font* hp, hb_font_t* font) {
 
 	hb_font_extents_t extents;
 	hb_font_get_extents_for_direction(hp->font, HB_DIRECTION_LTR, &extents);
-	hp->ascent = extents.ascender;
+	hp->ascender = extents.ascender;
+	hp->descender = extents.descender;
+	hp->line_gap = extents.line_gap;
 	hp->coverage = hb_set_create();
 	hb_face_collect_unicodes(hb_font_get_face(hp->font), hp->coverage);
 	hp->upem = hb_face_get_upem(face);

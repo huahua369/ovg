@@ -4,6 +4,9 @@
   "builtin-baseline": "478939b61bfc6aa9faf4ab18b5e2495f18ac1fea",
   "dependencies": [
     {
+      "name": "pkgconf"
+    },
+    {
       "name": "sdl3",
       "version>=": "3.4.2#1",
       "features": [ "vulkan" ]
@@ -11,9 +14,6 @@
     {
       "name": "stb",
       "version>=": "2024-07-29#1"
-    },
-    {
-      "name": "pkgconf"
     },
     {
       "name": "glm"

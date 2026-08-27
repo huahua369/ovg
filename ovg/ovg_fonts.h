@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 	typedef struct hb_raster_image_t hb_raster_image_t;
+	typedef struct hb_glyph_position_t hb_glyph_position_t;
 
 #ifdef __cplusplus 
 }
@@ -29,17 +30,27 @@ struct vg_text_extents_t {
 	float height;
 	float x_advance;
 	float y_advance;
+}; 
+struct vg_glyph_info_t {
+	int32_t x_advance;
+	int32_t y_advance;
+	int32_t x_offset;
+	int32_t y_offset;
+	/* private */
+	uint32_t codepoint; // should be named glyphIndex, but for harfbuzz compatibility...
 };
 struct vg_font;
 struct FontStyle;
 struct vg_text_run_t {
 	vg_text_extents_t extents;
 	const char* text;
-	unsigned int glyph_count;
-	hb_glyph_position_t* glyphs;
+	unsigned int glyph_count; 
+	hb_buffer_t* hbBuf;
+	vg_glyph_info_t* glyphs;
 	vg_font* font;
 };
-typedef struct vg_text_run_t* vgText;
+class text_run_cx;
+typedef class text_run_cx* vgText;
 class usp_ac_cx;
 
 // 纹理图像打包器接口
@@ -109,6 +120,9 @@ public:
 	bool load_font_from_path(const char* path, const char* name);
 	bool add_font_dir(const char* dir);
 	bool load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name);
+	const char* weight_to_string(int w);
+	const char* slant_to_string(int s);
+
 	//void set_font_size(int size);
 	//void show_text(const char* utf8);
 	//void text_path(const char* utf8);
@@ -121,16 +135,23 @@ public:
 	//void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
 	//uint32_t text_run_get_glyph_count(vgText textRun);
 	//void text_run_get_glyph_position(vgText textRun, uint32_t index, hb_glyph_info_t* pGlyphInfo);
-	const char* weight_to_string(int w);
-	const char* slant_to_string(int s);
 private:
 
 	size_t mk_font(std::map<std::string, std::vector<FontStyle*>>* p, const char* family, const char* style, int weight, int slant);
 };
 // 渲染普通文本
-void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
+void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
 // colrv1文本
 void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
 
 void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot);
 
+
+vgText text_run_new(const font_familys_t* familys, const char* text);
+vgText text_run_new_with_length(const font_familys_t* familys, const char* text, uint32_t length);
+void text_run_destroy(vgText textRun);
+void show_text_run(vgText textRun);
+void show_text_run_path(vgText textRun);
+void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
+uint32_t text_run_get_glyph_count(vgText textRun);
+void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo);

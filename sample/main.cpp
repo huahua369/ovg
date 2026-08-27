@@ -8,7 +8,7 @@
 using namespace std;
 
 // 渲染普通文本
-void render_text_shaped(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
+void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
 // colrv1文本
 void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
 /* ---------- 颜色辅助 ---------- */
@@ -368,10 +368,12 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
-			render_text_shaped(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
-			render_text_shaped(familys, str, strlen((char*)str), 150, y, cb, vg, { 0xff121212,0x80000000,12 });
+
+			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
+			render_text(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
+			render_text(familys, str, strlen((char*)str), 150, y, cb, vg, { 0xff121212,0x80000000,12 });
 			cb->set_line_width(vg, 2);
-			render_text_shaped(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
+			render_text(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
 
 			cb->move_to(vg, 10.5, 400 + 0.5);
 			cb->rel_line_to(vg, 1800, 0);
