@@ -30,7 +30,7 @@ struct vg_text_extents_t {
 	float height;
 	float x_advance;
 	float y_advance;
-}; 
+};
 struct vg_glyph_info_t {
 	int32_t x_advance;
 	int32_t y_advance;
@@ -44,7 +44,7 @@ struct FontStyle;
 struct vg_text_run_t {
 	vg_text_extents_t extents;
 	const char* text;
-	unsigned int glyph_count; 
+	unsigned int glyph_count;
 	hb_buffer_t* hbBuf;
 	vg_glyph_info_t* glyphs;
 	vg_font* font;
@@ -141,15 +141,17 @@ private:
 };
 // 渲染普通文本
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
-// colrv1文本
-void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
 
 void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot);
 
 
-vgText text_run_new(const font_familys_t* familys, const char* text);
-vgText text_run_new_with_length(const font_familys_t* familys, const char* text, uint32_t length);
+vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);
+vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
 void text_run_destroy(vgText textRun);
+// 设置字体，字号，0则不改
+void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size);
+// 重新设置文本
+void show_text_set(vgText textRun, const char* text, uint32_t length);
 void show_text_run(vgText textRun);
 void show_text_run_path(vgText textRun);
 void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);

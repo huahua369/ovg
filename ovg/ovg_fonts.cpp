@@ -678,7 +678,7 @@ public:
 public:
 	text_run_cx();
 	~text_run_cx();
-	bool init(const font_familys_t* familys, const char* text, uint32_t length);
+	bool init(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
 private:
 
 };
@@ -688,21 +688,101 @@ text_run_cx::text_run_cx()
 
 text_run_cx::~text_run_cx()
 {}
-bool text_run_cx::init(const font_familys_t* familys, const char* text, uint32_t length)
+bool text_run_cx::init(const font_familys_t* familys, int font_size, const char* text, uint32_t length)
 {
 	if (!familys || !familys->count || !familys->familys || !text || !*text) {
 		return false;
 	}
 	if (length == -1)length = strlen(text);
+	utf32.clear();
+	utf8_to_utf32(text, length, &utf32);
+	hb_font_t* primary = familys->familys[0]->font; // 主字体（可按 script 选）
+	hb_draw_funcs_t* df = create_ovg_draw_funcs();
+	hb_buffer_t* buf = hb_buffer_create();
+	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
+	hb_buffer_guess_segment_properties(buf);
+	hb_shape(primary, buf, nullptr, 0);
 
+	uint32_t n;
+	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+
+
+	float pen_x = 0, pen_y = 0;
+	size_t run_start = 0;
+	int h = font_size;
+	while (run_start < utf32.size()) {
+		uint32_t cp = utf32[run_start];
+		const font_family_t* ff = resolve_family(familys, cp);
+		if (!ff) ff = familys->familys[0];
+		float sc = 1.0;
+		if (h > 0)
+		{
+			hb_font_set_scale(ff->font, h, h);
+		}
+		/* 扩展 run */
+		size_t run_end = run_start + 1;
+		while (run_end < utf32.size() &&
+			resolve_family(familys, utf32[run_end]) == ff)
+			run_end++;
+
+		/* shape run */
+		hb_buffer_t* buf = hb_buffer_create();
+		hb_buffer_add_utf32(buf,
+			utf32.data() + run_start,
+			run_end - run_start,
+			0, -1);
+		hb_buffer_guess_segment_properties(buf);
+
+		/* ✅ UI：可选关闭 kerning */
+		hb_feature_t features[] = {
+			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
+		};
+		hb_shape(ff->font, buf, features, 1);
+
+		unsigned int glyph_count;
+		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+		vg_text_run_t textRun[1] = {};
+		hb_font_extents_t fextents = {};
+		hb_font_get_extents_for_direction(ff->font, HB_DIRECTION_LTR, &fextents);
+		textRun->glyphs = (vg_glyph_info_t*)pos;
+		textRun->glyph_count = glyph_count;
+		unsigned int string_width_in_pixels = 0;
+		for (uint32_t i = 0; i < textRun->glyph_count; ++i)
+		{
+			string_width_in_pixels += textRun->glyphs[i].x_advance;
+		}
+		textRun->extents.height = fextents.ascender - fextents.descender + fextents.line_gap;
+		textRun->extents.x_advance = (float)string_width_in_pixels;
+		if (textRun->glyph_count > 0) {
+			textRun->extents.y_advance = (float)(textRun->glyphs[textRun->glyph_count - 1].y_advance);
+			textRun->extents.x_bearing = -(float)(textRun->glyphs[0].x_offset);
+			textRun->extents.y_bearing = -(float)(textRun->glyphs[0].y_offset);
+		}
+		textRun->extents.width = textRun->extents.x_advance;
+
+		/* 画 run */
+		for (unsigned i = 0; i < glyph_count; i++) {
+			//draw_ctx_f ctx = { ovg, vg };
+
+			//hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
+			//glm::ivec4 rc = {};
+			//auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc);
+			//gfont_copy_image(&imgbuf, pen_x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
+			//pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
+
+		}
+		run_start = run_end;
+	}
 	return true;
 }
-vgText text_run_new(const font_familys_t* familys, const char* text) {
-	return text_run_new_with_length(familys, text, -1);
+vgText text_run_new(const font_familys_t* familys, int font_size, const char* text) {
+	return text_run_new_with_length(familys, font_size, text, -1);
 }
-vgText text_run_new_with_length(const font_familys_t* familys, const char* text, uint32_t length) {
+vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length) {
 	auto textRun = new text_run_cx();
-	if (textRun && !textRun->init(familys, text, length)) {
+	if (textRun && !textRun->init(familys, font_size, text, length)) {
 		delete textRun;
 		textRun = 0;
 	}
@@ -711,6 +791,14 @@ vgText text_run_new_with_length(const font_familys_t* familys, const char* text,
 void text_run_destroy(vgText textRun) {
 	if (textRun)
 		delete textRun;
+}
+void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size)
+{
+
+}
+void show_text_set(vgText textRun, const char* text, uint32_t length)
+{
+
 }
 void show_text_run(vgText textRun) {
 
@@ -887,7 +975,7 @@ void free_hb_res(vg_font* hp) {
 	hp->pnt = 0;
 }
 
-void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot)
+void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
 {
 	hb_raster_image_t* img = nullptr;
 	hb_glyph_extents_t gext = {};
@@ -895,13 +983,13 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	auto rdr = hp->rdr;
 	auto font = hp->font;
 	auto pnt = hp->pnt;
-	hb_font_set_scale(font, font_size, font_size);
+	hb_font_set_scale(font, font_size * scale.x, font_size * scale.y);
 	hb_raster_draw_reset(rdr);
 	hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
 	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
-		int pad = abs(font_size + gext.height);
+		int pad = abs(font_size * scale.y + gext.height);
 		gext.x_bearing -= pad;
 		gext.y_bearing += pad;       // 顶部扩大
 		gext.width += 2 * pad;
@@ -1064,14 +1152,104 @@ bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raste
 	}
 	return has_color;
 }
-void set_hb_fontsize(vg_font* hp, int font_size)
-{
-	assert(hp);
-	if (!hp)return;
-	auto font = hp->font;
-	hb_font_set_scale(font, font_size, font_size);
+struct A8Buf {
+	int      w, h;
+	uint8_t* rows; // 行主序，pitch = w
+	A8Buf(int w_, int h_) : w(w_), h(h_), rows(new uint8_t[w_ * h_]()) {}
+	~A8Buf() { delete[] rows; }
+	uint8_t* row(int y) { return rows + y * w; }
+	const uint8_t* row(int y) const { return rows + y * w; }
+};
+/* ==================== 子像素排列（subpixel layout）====================
+* LCD 亚像素渲染必须知道显示器的子像素物理排列，否则彩色边缘会反向/偏色。
+*   RGB  / BGR   ：水平排列，可做三通道着色（最常见）
+*   VRGB / VBGR  ：垂直排列，水平方向无额外分辨率 → 退化为灰阶 AA
+*   NONE         ：非标准/未知排列（PenTile、旋转屏、高 DPI）→ 强制灰阶
+*
+* 取值应与操作系统报告一致：
+*   Windows : GetDeviceCaps(hdc, COLORMGM) / DWM
+*   X11     : xrandr --prop  →  "Subpixel: rgb"
+*   Wayland : wl_output.subpixel
+*   macOS   : 系统内部决定，不暴露，通常按 RGB 处理或默认灰阶 */
+enum class SubpixelLayout {
+	NONE = 0,   // 未知 / 非标准 → 强制灰阶 AA
+	RGB,         // 水平 R-G-B（默认，最常见）
+	BGR,         // 水平 B-G-R（常见于部分笔记本/外接屏）
+	VRGB,        // 垂直 R-G-B
+	VBGR,        // 垂直 B-G-R
+};
+/* ==================== 2. 5-tap FIR 低通（FT_LcdFilter 经典系数）====================
+	对每个颜色分量用相邻 3 个「通道」平滑，抑制 LCD 色边条纹。
+	系数 {0x08, 0x4D, 0x56, 0x4D, 0x08} 与 FreeType 默认一致。
+	水平 5-tap，作用于「3x 宽」的 A8 缓冲（每像素 3 个采样点）。 */
+void fir_horizontal(A8Buf& src, A8Buf& dst) {
+	static const uint8_t FIR[5] = { 0x08, 0x4D, 0x56, 0x4D, 0x08 };
+	static const uint16_t FIR_SUM = 0x08 + 0x4D + 0x56 + 0x4D + 0x08; // = 0x140
+	for (int y = 0; y < src.h; ++y) {
+		uint8_t* s = src.row(y);
+		uint8_t* d = dst.row(y);
+		for (int x = 0; x < src.w; ++x) {
+			int v = 0;
+			for (int k = -2; k <= 2; ++k) {
+				int xi = x + k;
+				if (xi < 0) xi = 0;
+				if (xi >= src.w) xi = src.w - 1;
+				v += FIR[k + 2] * s[xi];
+			}
+			d[x] = uint8_t(v / FIR_SUM); // 归一化
+		}
+	}
 }
+void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, SubpixelLayout layout, uint32_t c) {
+	auto color = *(glm::u8vec4*)&c;
 
+	/* gamma 校正：覆盖度是线性面积，需转 sRGB 观感 */
+	auto gamma = [](int v) -> uint8_t {
+		double n = v / 255.0;
+		n = std::pow(n, 1.0 / 1.8); // 1.8 接近典型 LCD gamma
+		return uint8_t(glm::clamp(n * 255.0, 0.0, 255.0));
+		};
+
+	/* 是否为水平排列（可做真正的三通道 LCD 着色） */
+	const bool horizontal = (layout == SubpixelLayout::RGB || layout == SubpixelLayout::BGR);
+
+	for (int y = 0; y < height; ++y) {
+		const uint8_t* a = filtered.row(y);
+		uint8_t* out = rgba_out + y * out_w * 4;
+		for (int px = 0; px < out_w; ++px) {
+			int c0 = a[px * 3 + 0]; // 左通道
+			int c1 = a[px * 3 + 1]; // 中通道
+			int c2 = a[px * 3 + 2]; // 右通道
+
+			uint8_t r, g, b;
+			uint8_t gray = gamma((c0 + c1 + c2) / 3);
+			if (horizontal) {
+				/* 水平排列：三个采样点 → R/G/B，BGR 时翻转。
+				 * 各通道独立乘颜色 → 产生 LCD 彩色边缘。 */
+				r = gamma(c0); g = gamma(c1); b = gamma(c2);
+				if (layout == SubpixelLayout::BGR) std::swap(r, b);
+				r = uint8_t((r * color.x) >> 8);
+				g = uint8_t((g * color.y) >> 8);
+				b = uint8_t((b * color.z) >> 8);
+			}
+			else {
+				/* 垂直 / 未知排列：退化为灰阶 AA（不产生彩色 fringe）。
+				 * 用三个采样的平均覆盖度，乘上「颜色的亮度」——
+				 * 关键是三通道用同一个系数，保证 r==g==b 仍是灰阶。
+				 * 亮度系数采用 BT.601 (0.299R+0.587G+0.114B)，接近人眼感知。 */
+				uint8_t lum = uint8_t((color.x * 77 + color.y * 150 + color.z * 29) >> 8);
+				r = g = b = gray;// uint8_t((gray * lum) >> 8);
+				r = uint8_t((r * color.x) >> 8);
+				g = uint8_t((g * color.y) >> 8);
+				b = uint8_t((b * color.z) >> 8);
+			}
+			out[px * 4 + 0] = b;   // BGRA
+			out[px * 4 + 1] = g;
+			out[px * 4 + 2] = r;
+			out[px * 4 + 3] = uint8_t((gray * color.w) >> 8);
+		}
+	}
+}
 
 // todo packer
 

@@ -1734,7 +1734,7 @@ SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearA
 	sdl3gpu_texture* colorTexMS = (sdl3gpu_texture*)fbo->colorTexMS;
 	sdl3gpu_texture* depthStencil = (sdl3gpu_texture*)fbo->depthStencilTex;
 
-	auto ct = fbo->color ? fbo->color : colorTex->texture;
+	auto ct = fbo->swapchain ? fbo->swapchain : colorTex->texture;
 	if (!ct || !depthStencil) {
 		SDL_SubmitGPUCommandBuffer(cmdBuf);
 		return nullptr;
@@ -2208,7 +2208,7 @@ void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 		}
 	}
 
-	fbo->color = swapchain;
+	fbo->swapchain = swapchain;
 	fbo->cmd = cmd;
 	return cmd;
 }

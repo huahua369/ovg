@@ -44,7 +44,7 @@ struct vg_fbo_t {
 	glm::ivec2 display_size;
 	ovg_ctx_t* ctx = 0;
 	SDL_Window* window;
-	SDL_GPUTexture* color;				// 窗口主颜色纹理
+	SDL_GPUTexture* swapchain;			// 窗口主颜色纹理
 	sdl3gpu_texture* colorTex;			// 主颜色纹理
 	sdl3gpu_texture* colorTexMS;		// MSAA 解析前纹理（可选）
 	sdl3gpu_texture* depthStencilTex;	// 深度+模板纹理

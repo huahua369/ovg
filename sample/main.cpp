@@ -9,9 +9,7 @@ using namespace std;
 
 // 渲染普通文本
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
-// colrv1文本
-void render_text_print(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_canvas_cb* ovg, ovg_ctx_cb* ctx, rvg_t* vg, const glm::uvec3& color);
-/* ---------- 颜色辅助 ---------- */
+
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
 }
