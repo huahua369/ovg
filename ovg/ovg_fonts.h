@@ -16,6 +16,14 @@ extern "C" {
 #ifdef __cplusplus 
 }
 #endif
+enum class SubpixelLayout {
+	NONE = 0,   // 未知 / 非标准 → 强制灰阶 AA
+	RGB,         // 水平 R-G-B（默认，最常见）
+	BGR,         // 水平 B-G-R（常见于部分笔记本/外接屏）
+	VRGB,        // 垂直 R-G-B
+	VBGR,        // 垂直 B-G-R
+};
+#define MINSUBPIXEL 36
 struct vg_font_extents_t {
 	float ascent;
 	float descent;
@@ -142,7 +150,7 @@ private:
 // 渲染普通文本
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
 
-void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot);
+void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
 
 
 vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);

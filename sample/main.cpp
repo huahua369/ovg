@@ -305,17 +305,17 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 
-	VGState g[1] = {};
+	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
 
-	if (!VG_Init(g, surfsize.x, surfsize.y)) {
+	if (!vg_sdl3_init(g, surfsize.x, surfsize.y,true)) {
 		SDL_Log("Init failed: %s", SDL_GetError());
 		return 1;
 	}
@@ -368,10 +368,10 @@ int main()
 			cb->stroke(vg);
 
 			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
-			render_text(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
 			render_text(familys, str, strlen((char*)str), 150, y, cb, vg, { 0xff121212,0x80000000,12 });
-			cb->set_line_width(vg, 2);
 			render_text(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
+			render_text(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
+			cb->set_line_width(vg, 2);
 
 			cb->move_to(vg, 10.5, 400 + 0.5);
 			cb->rel_line_to(vg, 1800, 0);

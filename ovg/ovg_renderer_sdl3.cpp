@@ -691,67 +691,6 @@ static void destroy_texture(sdl3gpu_texture* tex) {
 // ========================================================================
 // 混合模式转换
 // ========================================================================
-static void set_blend_params(blend_params& bp, blendMode_e mode) {
-	// 默认值（normal）
-	bp.srcColor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-	bp.dstColor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-	bp.colorOp = SDL_GPU_BLENDOP_ADD;
-	bp.srcAlpha = SDL_GPU_BLENDFACTOR_ONE;
-	bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-	bp.alphaOp = SDL_GPU_BLENDOP_ADD;
-	bp.blendEnable = true;
-
-	switch (mode) {
-	case blendMode_e::none:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.colorOp = SDL_GPU_BLENDOP_ADD;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.alphaOp = SDL_GPU_BLENDOP_ADD;
-		bp.blendEnable = false;
-		break;
-	case blendMode_e::normal:
-		// 默认值已是 normal
-		break;
-	case blendMode_e::normal_prem:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-		break;
-	case blendMode_e::additive:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		break;
-	case blendMode_e::additive_prem:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		break;
-	case blendMode_e::multiply:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_DST_COLOR;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		break;
-	case blendMode_e::modulate:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_SRC_COLOR;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ZERO;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		break;
-	case blendMode_e::screen:
-		bp.srcColor = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstColor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
-		bp.srcAlpha = SDL_GPU_BLENDFACTOR_ONE;
-		bp.dstAlpha = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
-		break;
-	default:
-		break;
-	}
-}
 
 #if 1
 #define SDL_BLENDMODE_NONE_FULL(blend) \
@@ -953,7 +892,6 @@ struct vg_pipeline_inputs {
 static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, const vg_pipeline_inputs* inputs, ovg_ctx_t* ctx)
 {
 	blend_params bp = {};
-	set_blend_params(bp, inputs->blendMode);
 	SDL_GPUColorTargetDescription colorTarget = {};
 	colorTarget.format = inputs->colorFormat;
 	colorTarget.blend_state.enable_blend = bp.blendEnable;
@@ -1364,7 +1302,6 @@ static pipelinestate_p_internal create_geom_pipeline(
 		SDL_GPU_COLORCOMPONENT_A;
 
 	blend_params bp = {};
-	set_blend_params(bp, (blendMode_e)info->blendMode);
 	colorTarget.blend_state.enable_blend = bp.blendEnable;
 	colorTarget.blend_state.src_color_blendfactor = bp.srcColor;
 	colorTarget.blend_state.dst_color_blendfactor = bp.dstColor;
@@ -1372,6 +1309,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 	colorTarget.blend_state.src_alpha_blendfactor = bp.srcAlpha;
 	colorTarget.blend_state.dst_alpha_blendfactor = bp.dstAlpha;
 	colorTarget.blend_state.alpha_blend_op = bp.alphaOp;
+	gpu_set_blend(colorTarget.blend_state, (uint32_t)info->blendMode);
 
 	SDL_GPUDepthStencilState dsState = {};
 	dsState.enable_depth_test = (info->flags & (uint8_t)depth_stencil_State::d_depthtest_enable) != 0;
@@ -2186,7 +2124,7 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	}
 }
 
-void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
+SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 
 	if (!ctx || !fbo || !(fbo->window || fbo->colorTex))return 0;
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
@@ -2205,6 +2143,7 @@ void* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 			SDL_WaitForGPUSwapchain(ctx->device->gpuDevice, fbo->window);
 			free_vgfbo_sdl3(fbo);
 			*fbo = new_vgfbo_sdl3(ctx, sw, sh, fbo->window);
+			fbo->display_size = { sw,sh };
 		}
 	}
 
@@ -2269,7 +2208,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 }
 
 
-bool VG_Init(VGState* g, int width, int height) {
+bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 	SDL_Init(SDL_INIT_VIDEO);
 
 	g->window = SDL_CreateWindow("SDL3 GPU Vector Graphics",
@@ -2277,51 +2216,58 @@ bool VG_Init(VGState* g, int width, int height) {
 		SDL_WINDOW_RESIZABLE |
 		SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	if (!g->window) return false;
-	SDL_GPUVulkanOptions vo = {};
-	VkPhysicalDeviceScalarBlockLayoutFeatures scalarFeatures = {
-		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
-		.pNext = NULL,
-		.scalarBlockLayout = VK_TRUE,
-	};
-	VkPhysicalDeviceVulkan12Features enabledFeatures12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+	SDL_PropertiesID props = SDL_CreateProperties();
+	if (is_vulkan)
+	{
+		SDL_GPUVulkanOptions vo = {};
+		VkPhysicalDeviceScalarBlockLayoutFeatures scalarFeatures = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
+			.pNext = NULL,
+			.scalarBlockLayout = VK_TRUE,
+		};
+		VkPhysicalDeviceVulkan12Features enabledFeatures12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
 
-	enabledFeatures12.scalarBlockLayout = VK_TRUE;
-	// 1b. Vulkan 1.1 复合特性（包含 shaderDrawParameters） 
-	VkPhysicalDeviceVulkan11Features vk11Features = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,	   .pNext = &enabledFeatures12, };
-	// 其他 1.1 特性默认由驱动填充，我们只关心 shaderDrawParameters
-	vk11Features.shaderDrawParameters = VK_TRUE;
-	// 以下字段留 0，让 SDL/Vulkan 使用默认值
-	vk11Features.storageBuffer16BitAccess = VK_FALSE;
-	vk11Features.uniformAndStorageBuffer16BitAccess = VK_FALSE;
-	vk11Features.storagePushConstant16 = VK_FALSE;
-	vk11Features.storageInputOutput16 = VK_FALSE;
-	vk11Features.multiview = VK_FALSE;
-	vk11Features.multiviewGeometryShader = VK_FALSE;
-	vk11Features.multiviewTessellationShader = VK_FALSE;
-	vk11Features.variablePointersStorageBuffer = VK_FALSE;
-	vk11Features.variablePointers = VK_FALSE;
-	vk11Features.protectedMemory = VK_FALSE;
-	vk11Features.samplerYcbcrConversion = VK_TRUE;
-	const char* devext[] = { VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
-			VK_KHR_MAINTENANCE_5_EXTENSION_NAME,VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME };
-	const char* insext[] = { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
-	// 2. 填充 SDL_GPUVulkanOptions
-	SDL_GPUVulkanOptions vkOpts = {
-		.vulkan_api_version = VK_API_VERSION_1_2,  // 必须 >= 1.2 才能启用 scalarBlockLayout
-		.feature_list = &vk11Features,             // pNext 链头
-		.vulkan_10_physical_device_features = NULL, // 不需要额外 1.0 特性
-		.device_extension_count = 3,
-		.device_extension_names = devext,
-		.instance_extension_count = 1,
-		.instance_extension_names = insext,
-	};
+		enabledFeatures12.scalarBlockLayout = VK_TRUE;
+		// 1b. Vulkan 1.1 复合特性（包含 shaderDrawParameters） 
+		VkPhysicalDeviceVulkan11Features vk11Features = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,	   .pNext = &enabledFeatures12, };
+		// 其他 1.1 特性默认由驱动填充，我们只关心 shaderDrawParameters
+		vk11Features.shaderDrawParameters = VK_TRUE;
+		// 以下字段留 0，让 SDL/Vulkan 使用默认值
+		vk11Features.storageBuffer16BitAccess = VK_FALSE;
+		vk11Features.uniformAndStorageBuffer16BitAccess = VK_FALSE;
+		vk11Features.storagePushConstant16 = VK_FALSE;
+		vk11Features.storageInputOutput16 = VK_FALSE;
+		vk11Features.multiview = VK_FALSE;
+		vk11Features.multiviewGeometryShader = VK_FALSE;
+		vk11Features.multiviewTessellationShader = VK_FALSE;
+		vk11Features.variablePointersStorageBuffer = VK_FALSE;
+		vk11Features.variablePointers = VK_FALSE;
+		vk11Features.protectedMemory = VK_FALSE;
+		vk11Features.samplerYcbcrConversion = VK_TRUE;
+		const char* devext[] = { VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+				VK_KHR_MAINTENANCE_5_EXTENSION_NAME,VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME };
+		const char* insext[] = { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
+		// 2. 填充 SDL_GPUVulkanOptions
+		SDL_GPUVulkanOptions vkOpts = {
+			.vulkan_api_version = VK_API_VERSION_1_2,  // 必须 >= 1.2 才能启用 scalarBlockLayout
+			.feature_list = &vk11Features,             // pNext 链头
+			.vulkan_10_physical_device_features = NULL, // 不需要额外 1.0 特性
+			.device_extension_count = 3,
+			.device_extension_names = devext,
+			.instance_extension_count = 1,
+			.instance_extension_names = insext,
+		};
+		SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vkOpts);
+		SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
+		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+	}
+	bool debugmode = false;
+#ifdef _DEBUG
+	debugmode = true;
+#endif // _DEBUG
 
 	// 3. 通过属性创建 GPU 设备
-	SDL_PropertiesID props = SDL_CreateProperties();
-	SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vkOpts);
-	SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, true);
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debugmode);
 
 	SDL_GPUDevice* device = g->device = SDL_CreateGPUDeviceWithProperties(props);
 	SDL_DestroyProperties(props);

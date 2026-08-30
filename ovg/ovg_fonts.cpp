@@ -40,7 +40,7 @@
 #include <glm/gtx/matrix_transform_2d.hpp>
 #include <glm/gtx/euler_angles.hpp>
 #endif
-#include "mapView.h"
+//#include "mapView.h"
 
 #include "ovg.h"
 #include <stdio.h>
@@ -84,19 +84,31 @@ struct FontStyle {
 };
 void hb_res_init(vg_font* hp, hb_font_t* font);
 void free_hb_res(vg_font* hp);
-bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, bool origin);
+bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& ow, bool origin, bool type, SubpixelLayout pixelLayout);
+namespace ovg {
+	uint64_t align_up(uint64_t val, uint64_t alignment)
+	{
+		return (val + alignment - (uint64_t)1) & ~(alignment - (uint64_t)1);
+	}
+	// align val to the previous multiple of alignment
+	uint64_t align_down(uint64_t val, uint64_t alignment)
+	{
+		return val & ~(alignment - (uint64_t)1);
+	}
 
-static int utf8_to_utf16(const char* utf8, UChar* out16, int cap16, UErrorCode* st)
-{
-	int32_t len = 0;
-	u_strFromUTF8(out16, cap16, &len, utf8, -1, st);
-	return len;
+	static int utf8_to_utf16(const char* utf8, UChar* out16, int cap16, UErrorCode* st)
+	{
+		int32_t len = 0;
+		u_strFromUTF8(out16, cap16, &len, utf8, -1, st);
+		return len;
+	}
+	static void utf16_slice_to_utf8(const UChar* u16, int32_t start, int32_t len, char* out, int cap)
+	{
+		UErrorCode st = U_ZERO_ERROR;
+		u_strToUTF8(out, cap, NULL, u16 + start, len, &st);
+	}
 }
-static void utf16_slice_to_utf8(const UChar* u16, int32_t start, int32_t len, char* out, int cap)
-{
-	UErrorCode st = U_ZERO_ERROR;
-	u_strToUTF8(out, cap, NULL, u16 + start, len, &st);
-}
+//!ovg
 static hb_font_t* load_font(const char* family, const char* style)
 {
 	/* Fontconfig：只负责“找文件” */
@@ -769,7 +781,7 @@ bool text_run_cx::init(const font_familys_t* familys, int font_size, const char*
 			//hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
 			//glm::ivec4 rc = {};
 			//auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc);
-			//gfont_copy_image(&imgbuf, pen_x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
+			// (&imgbuf, pen_x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
 			//pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
 
 		}
@@ -815,7 +827,20 @@ uint32_t text_run_get_glyph_count(vgText textRun) {
 void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo) {
 
 }
-
+bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h) {
+	std::vector<uint8_t> rgb(size_t(w) * h * 4);
+	for (int y = 0; y < h; ++y) {
+		const uint8_t* src = bgra + y * w * 4;
+		uint8_t* dst = rgb.data() + y * w * 4;
+		for (int x = 0; x < w; ++x) {
+			dst[x * 4 + 0] = src[x * 4 + 2]; // R
+			dst[x * 4 + 1] = src[x * 4 + 1]; // G
+			dst[x * 4 + 2] = src[x * 4 + 0]; // B
+			dst[x * 4 + 3] = src[x * 4 + 3]; // A
+		}
+	}
+	return stbi_write_png(path, w, h, 4, rgb.data(), w * 4) != 0;
+}
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* vg, const glm::uvec3& color) {
 	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
 	static std::vector<uint32_t> utf32;
@@ -836,28 +861,31 @@ void render_text(const font_familys_t* ffs, const void* str8, size_t len, float 
 	imgbuf.width = vg->width;
 	imgbuf.height = vg->height;
 	imgbuf.stride = imgbuf.width * 4;
+	imgbuf.format = 1;
 	std::vector<uint32_t> idd;
 	idd.resize(imgbuf.width * imgbuf.height);
 	imgbuf.data = idd.data();
 
-	float pen_x = x, pen_y = y;
-	size_t run_start = 0;
 	int h = color.z;
+	float pen_x = x, pen_y = y;
+	float ry = h * 2;
+	float rx = x;
+	size_t run_start = 0;
 	while (run_start < utf32.size()) {
 		uint32_t cp = utf32[run_start];
 		const font_family_t* ff = resolve_family(ffs, cp);
 		if (!ff) ff = ffs->familys[0];
 		float sc = 1.0;
-		if (h > 0)
-		{
-			hb_font_set_scale(ff->font, h, h);
-		}
 		/* 扩展 run */
 		size_t run_end = run_start + 1;
 		while (run_end < utf32.size() &&
 			resolve_family(ffs, utf32[run_end]) == ff)
 			run_end++;
 
+		if (h > 0)
+		{
+			hb_font_set_scale(ff->font, h, h);
+		}
 		/* shape run */
 		hb_buffer_t* buf = hb_buffer_create();
 		hb_buffer_add_utf32(buf,
@@ -871,7 +899,12 @@ void render_text(const font_familys_t* ffs, const void* str8, size_t len, float 
 			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
 		};
 		hb_shape(ff->font, buf, features, 1);
-
+		bool hascolor = ff->font;
+		glm::ivec2 fsc = { 1,1 };
+		if (h <= MINSUBPIXEL && !((vg_font*)ff)->pnt)
+		{
+			fsc.x = 3;
+		}
 		unsigned int glyph_count;
 		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
 		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
@@ -901,11 +934,19 @@ void render_text(const font_familys_t* ffs, const void* str8, size_t len, float 
 			ovg->translate(vg, pen_x, pen_y);
 			ovg->scale(vg, 1.0, -1.0);
 			ovg->set_source_color(vg, color.x);
+			if (h > 0)
+			{
+				hb_font_set_scale(ff->font, h, h);
+			}
 			hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
 			glm::ivec4 rc = {};
-			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc);
-			gfont_copy_image(&imgbuf, pen_x - x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
-			pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
+
+			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc, fsc);
+			rc.z = std::max(rc.z, h);
+			gfont_copy_image(&imgbuf, rx, ry, -1, (hb_raster_image_t*)img, rc, true, fsc.x > 1, SubpixelLayout::RGB);
+			pen_x += ceil(pos[i].x_advance); // ✅ 像素对齐
+			rx += (ceil(pos[i].x_advance)) + 4;
+			//ry += textRun->extents.height;
 			ovg->set_source_color(vg, color.x);
 			ovg->fill_preserve(vg);
 			ovg->set_source_color(vg, color.y);
@@ -914,8 +955,13 @@ void render_text(const font_familys_t* ffs, const void* str8, size_t len, float 
 		hb_buffer_destroy(buf);
 		run_start = run_end;
 	}
-	std::string fn = "temp/font_test_0827.png";
-	//stbi_write_png(fn.c_str(), imgbuf.width, imgbuf.height, 4, imgbuf.data, imgbuf.stride);
+	std::string fn = "temp/font_test_08.png";
+	static bool savepng = true;
+	if (savepng)
+	{
+		savepng = false;
+		write_png_bgra(fn.c_str(), (uint8_t*)imgbuf.data, imgbuf.width, imgbuf.height);
+	}
 	hb_buffer_destroy(buf);
 	hb_draw_funcs_destroy(df);
 	ovg->set_source_color(vg, color.x);
@@ -987,9 +1033,10 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	hb_raster_draw_reset(rdr);
 	hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
 	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
+
+	int pad = 4;// ovg::align_up(font_size / 2, 2);
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
-		int pad = abs(font_size * scale.y + gext.height);
 		gext.x_bearing -= pad;
 		gext.y_bearing += pad;       // 顶部扩大
 		gext.width += 2 * pad;
@@ -1023,10 +1070,10 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 		if (!ext.width || !ext.height) { img = 0; return img; }
 		if (ot)
 		{
-			ot->x = ext.x_origin;
-			ot->y = -(ext.height + ext.y_origin);
-			ot->z = ext.width;
-			ot->w = ext.height;
+			ot->x = gext.x_bearing;
+			ot->y = -(gext.y_bearing);
+			ot->z = gext.width;
+			ot->w = abs(gext.height);
 		}
 	}
 	return img;
@@ -1125,40 +1172,37 @@ void rgba_copy_bgra2rgba(ovg_image_s* dst, int x, int y, int w, int h, const uin
 		}
 	}
 }
-bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, bool origin)
-{
-	auto img = img_src;
-	bool has_color = false;
-	hb_raster_extents_t ext = {};
-	hb_raster_image_get_extents(img_src, &ext);
-	hb_raster_format_t fmt = hb_raster_image_get_format(img_src);
-	dst->multiply = 1;
-	if (origin)
-	{
-		rx += ext.x_origin;
-		ry += -(ext.height + ext.y_origin);
-	}
-	if (fmt == HB_RASTER_FORMAT_A8)
-	{
-		rgba_copy2gray(dst, rx, ry, ext.width, ext.height, color, hb_raster_image_get_buffer(img_src), ext.stride, true);
-	}
-	else if (fmt == HB_RASTER_FORMAT_BGRA32)
-	{
-		has_color = true;
-		if (dst->format == 1)
-			rgba_copy_bgra(dst, rx, ry, ext.width, ext.height, (uint32_t*)hb_raster_image_get_buffer(img_src), ext.stride, true);
-		else
-			rgba_copy_bgra2rgba(dst, rx, ry, ext.width, ext.height, (uint32_t*)hb_raster_image_get_buffer(img_src), ext.stride, true);
-	}
-	return has_color;
-}
+
 struct A8Buf {
 	int      w, h;
 	uint8_t* rows; // 行主序，pitch = w
-	A8Buf(int w_, int h_) : w(w_), h(h_), rows(new uint8_t[w_ * h_]()) {}
-	~A8Buf() { delete[] rows; }
+	std::vector<uint8_t> _data;
+	A8Buf(int w_, int h_) : w(w_), h(h_) {
+		_data.resize(w_ * h_); rows = _data.data();
+		memset(rows, 0, w * h);
+	}
+	~A8Buf() { rows = 0; }
 	uint8_t* row(int y) { return rows + y * w; }
 	const uint8_t* row(int y) const { return rows + y * w; }
+};
+struct A8Glyph {
+	uint8_t* coverage = nullptr;   // 长度 = width * height
+	int      width = 0;         // 像素宽度（已含 3x 水平放大）
+	int      height = 0;
+	int      dx = 0;         // 相对字形原点的水平偏移（像素）
+	int      dy = 0;         // 相对字形原点的垂直偏移（像素）
+	std::vector<uint8_t> _data;
+
+	A8Glyph() {}
+	A8Glyph(int w, int h) {
+		if (w > 0 && h > 0) {
+			width = w; height = h; _data.resize(w * h);
+			coverage = _data.data();
+			memset(coverage, 0, w * h);
+		}
+	}
+	~A8Glyph() { coverage = 0; }
+
 };
 /* ==================== 子像素排列（subpixel layout）====================
 * LCD 亚像素渲染必须知道显示器的子像素物理排列，否则彩色边缘会反向/偏色。
@@ -1171,13 +1215,7 @@ struct A8Buf {
 *   X11     : xrandr --prop  →  "Subpixel: rgb"
 *   Wayland : wl_output.subpixel
 *   macOS   : 系统内部决定，不暴露，通常按 RGB 处理或默认灰阶 */
-enum class SubpixelLayout {
-	NONE = 0,   // 未知 / 非标准 → 强制灰阶 AA
-	RGB,         // 水平 R-G-B（默认，最常见）
-	BGR,         // 水平 B-G-R（常见于部分笔记本/外接屏）
-	VRGB,        // 垂直 R-G-B
-	VBGR,        // 垂直 B-G-R
-};
+
 /* ==================== 2. 5-tap FIR 低通（FT_LcdFilter 经典系数）====================
 	对每个颜色分量用相邻 3 个「通道」平滑，抑制 LCD 色边条纹。
 	系数 {0x08, 0x4D, 0x56, 0x4D, 0x08} 与 FreeType 默认一致。
@@ -1200,9 +1238,28 @@ void fir_horizontal(A8Buf& src, A8Buf& dst) {
 		}
 	}
 }
-void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, SubpixelLayout layout, uint32_t c) {
-	auto color = *(glm::u8vec4*)&c;
+inline void blend_lcd_bgra_premul(
+	uint8_t* dst,        // 目标 BGRA（dst RGB 也必须是预乘格式）
+	const uint8_t* src)  // a8_to_lcd 输出的 BGRA（预乘）
+{
+	uint8_t src_a = src[3];
+	if (src_a == 0) return;
 
+	if (src_a == 255) {
+		*(uint32_t*)dst = *(const uint32_t*)src;
+		return;
+	}
+	uint8_t dst_a = dst[3];
+	uint8_t ia = 255 - src_a;
+	dst[0] = (src[0] + (uint16_t)dst[0] * ia / 255);
+	dst[1] = (src[1] + (uint16_t)dst[1] * ia / 255);
+	dst[2] = (src[2] + (uint16_t)dst[2] * ia / 255);
+	dst[3] = src_a + (uint16_t)dst_a * ia / 255;
+}
+void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, int out_stride, SubpixelLayout layout, uint32_t c) {
+	glm::vec4 c4 = *(glm::u8vec4*)&c;
+	c4 *= c4.w / 255.0;
+	glm::u8vec4 color = c4;
 	/* gamma 校正：覆盖度是线性面积，需转 sRGB 观感 */
 	auto gamma = [](int v) -> uint8_t {
 		double n = v / 255.0;
@@ -1212,11 +1269,11 @@ void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, 
 
 	/* 是否为水平排列（可做真正的三通道 LCD 着色） */
 	const bool horizontal = (layout == SubpixelLayout::RGB || layout == SubpixelLayout::BGR);
-
+	int ow = std::min(filtered.w / 3, out_w);
 	for (int y = 0; y < height; ++y) {
 		const uint8_t* a = filtered.row(y);
-		uint8_t* out = rgba_out + y * out_w * 4;
-		for (int px = 0; px < out_w; ++px) {
+		uint8_t* out = rgba_out + y * out_stride;
+		for (int px = 0; px < ow; ++px) {
 			int c0 = a[px * 3 + 0]; // 左通道
 			int c1 = a[px * 3 + 1]; // 中通道
 			int c2 = a[px * 3 + 2]; // 右通道
@@ -1243,14 +1300,106 @@ void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, 
 				g = uint8_t((g * color.y) >> 8);
 				b = uint8_t((b * color.z) >> 8);
 			}
-			out[px * 4 + 0] = b;   // BGRA
-			out[px * 4 + 1] = g;
-			out[px * 4 + 2] = r;
-			out[px * 4 + 3] = uint8_t((gray * color.w) >> 8);
+
+			{
+				uint32_t cc = 0;
+				auto dc = (uint8_t*)&cc;
+				dc[0] = b;
+				dc[1] = g;
+				dc[2] = r;
+				dc[3] = gray;
+				*(uint32_t*)(out + px * 4) = cc;
+			}
 		}
 	}
 }
 
+void rgba_copy2gray(A8Glyph* dst, const glm::ivec2& pos, const glm::ivec4& src, const uint8_t* dt, int stride, bool fy)
+{
+	if (stride < 1)stride = src.z;
+	if (!dst || !dt || src.z <= 0 || src.w <= 0 || stride < src.z) return;
+	// 计算实际绘制区域（处理边界裁剪）
+	int dst_x = std::max(0, pos.x);
+	int dst_y = std::max(0, pos.y);
+	int src_x = src.x;
+	int src_y = src.y;
+	int copy_w = std::min(src.z - src_x, dst->width - dst_x);
+	int copy_h = std::min(src.w - src_y, dst->height - dst_y);
+	for (int iy = 0; iy < copy_h; ++iy) {
+		const uint8_t* src_row = fy ? dt + (src.w - 1 - (src_y + iy)) * stride : dt + (src_y + iy) * stride + src_x;
+		auto dst_row = dst->coverage + ((dst_y + iy) * dst->width + dst_x);
+		for (int ix = 0; ix < copy_w; ++ix) {
+			uint8_t gray = src_row[ix];
+			if (gray > 0)
+			{
+				dst_row[ix] = gray;
+			}
+		}
+	}
+}
+
+void subpixel_lcd(ovg_image_s* dst, int px, int py, hb_raster_image_t* img_src, const glm::ivec2& size, SubpixelLayout pixelLayout, bool flipY)
+{
+	hb_raster_extents_t ext = {};
+	hb_raster_image_get_extents(img_src, &ext);
+	glm::ivec2 ws = { ovg::align_up(ext.width,2), ovg::align_up(ext.height,2) };
+
+	A8Buf src(ws.x, ws.y);
+	A8Buf filtered(ws.x, ws.y);
+	auto coverage = hb_raster_image_get_buffer(img_src);
+#if 1
+	const uint8_t* src_row = coverage + (flipY ? (ext.height - 1) * ext.stride : 0);
+	int row_step = flipY ? -ext.stride : ext.stride;
+	for (size_t i = 0; i < ext.height; i++)
+	{
+		std::memcpy(src.rows + src.w * i, src_row, ext.width);
+		src_row += row_step;
+	}
+#else
+	A8Glyph g(ws.x, ws.y);
+	rgba_copy2gray(&g, { 0, 0 }, { 0,0,ext.width, ext.height }, coverage, ext.stride, true);
+	std::memcpy(src.rows, g.coverage, g.width * g.height);
+#endif
+	uint32_t c = -1;
+	/* ② 5-tap FIR 低通 */
+	fir_horizontal(src, filtered);
+	/* ③ A8(3x) → LCD 三通道 + gamma */
+	if (py < 0)
+		py = 0;
+	if (px < 0)px = 0;
+	a8_to_lcd(filtered, ext.height, (uint8_t*)(dst->data + px + py * dst->width), size.x, dst->stride, pixelLayout, c);
+}
+
+bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& orc, bool origin, bool type, SubpixelLayout pixelLayout)
+{
+	auto img = img_src;
+	bool has_color = false;
+	hb_raster_extents_t ext = {};
+	hb_raster_image_get_extents(img_src, &ext);
+	hb_raster_format_t fmt = hb_raster_image_get_format(img_src);
+	dst->multiply = 1;
+	if (origin)
+	{
+		rx += orc.x;
+		ry += orc.y;
+	}
+	if (fmt == HB_RASTER_FORMAT_A8)
+	{
+		if (type)
+			subpixel_lcd(dst, rx, ry, img, { orc.z,orc.w }, pixelLayout, true);
+		else
+			rgba_copy2gray(dst, rx, ry, ext.width, ext.height, color, hb_raster_image_get_buffer(img_src), ext.stride, true);
+	}
+	else if (fmt == HB_RASTER_FORMAT_BGRA32)
+	{
+		has_color = true;
+		if (dst->format == 1)
+			rgba_copy_bgra(dst, rx, ry, ext.width, ext.height, (uint32_t*)hb_raster_image_get_buffer(img_src), ext.stride, true);
+		else
+			rgba_copy_bgra2rgba(dst, rx, ry, ext.width, ext.height, (uint32_t*)hb_raster_image_get_buffer(img_src), ext.stride, true);
+	}
+	return has_color;
+}
 // todo packer
 
 
@@ -1500,7 +1649,7 @@ glm::ivec2 image_cache_cx::fill_color(int w, int h, uint32_t color)
 
 ovg_image_s* image_cache_cx::push_cache_size(const glm::ivec2& ss, glm::ivec2* pos, int linegap)
 {
-	int width = align_up(ss.x + linegap, 2), height = align_up(ss.y + linegap, 2);
+	int width = ovg::align_up(ss.x + linegap, 2), height = ovg::align_up(ss.y + linegap, 2);
 	glm::ivec4 rc4 = { 0, 0, ss.x,ss.y };
 	auto pt = get_last_packer(false);
 	if (!pt)return 0;
@@ -1521,7 +1670,7 @@ ovg_image_s* image_cache_cx::push_cache_bitmap(hb_raster_image_t* img, glm::ivec
 {
 	hb_raster_extents_t ext = {};
 	hb_raster_image_get_extents(img, &ext);
-	int width = align_up(ext.width + linegap, 2), height = align_up(ext.height + linegap, 2);
+	int width = ovg::align_up(ext.width + linegap, 2), height = ovg::align_up(ext.height + linegap, 2);
 	glm::ivec4 rc4 = { 0, 0, ext.width, ext.height };
 	auto pt = get_last_packer(false);
 	if (!pt)return 0;
