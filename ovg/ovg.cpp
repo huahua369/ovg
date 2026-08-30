@@ -1704,10 +1704,13 @@ public:
 	std::pmr::vector<Vertex1> vd1;	// 单面顶点
 	std::pmr::vector<Vertex2> vd2;	// 双面顶点
 	std::pmr::vector<uint32_t> ids;	// 索引 
+	std::pmr::vector<glm::mat4> instance_mat;	// 实例矩阵 
 	glm::mat4 mat = glm::mat4(1.0f);// 当前矩阵
 	gem_info_t curState = {};		// 当前状态	 
 	std::pmr::vector<gcmd_t>* gt = 0;
 	rvg_cx* dc = 0;
+	size_t inst_count = 0;			// 当前实例
+	size_t inst_idx = 0;			// 当前实例
 public:
 	geom_primitive();
 	~geom_primitive();
@@ -1715,6 +1718,7 @@ public:
 	// 清空数据
 	void clear();
 	void set_state(gem_info_t* info, const glm::mat4* matrix);
+	size_t set_instance_mat(const glm::mat4* matrix, size_t count);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
 	bool add_geometry(void* texture, const float* xy, int xy_stride, const void* color, int color_stride
 		, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
@@ -1799,6 +1803,7 @@ rvg_cx::~rvg_cx()
 {}
 void rvg_cx::clear_all()
 {
+	gps.clear();
 	ovg_clear_path(path);
 	_curVertOffset = 0;
 	gCount = 0;
@@ -2881,6 +2886,11 @@ void  ovg_set_geom_state(rvg_t* v0, gem_info_t* info, const glm::mat4* matrix)
 	auto dc = (rvg_cx*)v0;
 	if (dc)dc->gps.set_state(info, matrix);
 }
+size_t ovg_set_instance_mat(rvg_t* v0, const glm::mat4* matrix, size_t count)
+{
+	auto dc = (rvg_cx*)v0;
+	return (dc && count && matrix) ? dc->gps.set_instance_mat(matrix, count) : 0;
+}
 // 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
 void  ovg_add_geometry(rvg_t* v0, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
 {
@@ -2982,6 +2992,7 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 	cb->add_text = ovg_add_text;
 	cb->add_image = ovg_add_image;
 	cb->set_geom_state = (void (*)(rvg_t*, gem_info_t*, const void*)) ovg_set_geom_state;
+	cb->set_instance_mat = (size_t(*)(rvg_t*, const void*, size_t)) ovg_set_instance_mat;
 	cb->add_geometry = ovg_add_geometry;
 	cb->add_geometry3d = ovg_add_geometry3d;
 
@@ -2994,21 +3005,39 @@ geom_primitive::geom_primitive()
 {}
 
 geom_primitive::~geom_primitive()
-{}
+{
+	clear();
+}
 
 void geom_primitive::clear()
 {
 	vd1.clear();
 	vd2.clear();
 	ids.clear();
+	instance_mat.clear();
 	mat = glm::mat4(1.0f);
 	curState = {};
+	inst_idx = 0;
+	inst_count = 0;
 }
 
 void geom_primitive::set_state(gem_info_t* info, const glm::mat4* matrix)
 {
 	if (info) { curState = *info; }
 	if (matrix) { mat = *matrix; }
+}
+
+size_t geom_primitive::set_instance_mat(const glm::mat4* matrix, size_t count)
+{
+	auto ps = instance_mat.size();
+	if (matrix && count > 0)
+	{
+		instance_mat.resize(ps + count);
+		memcpy(instance_mat.data() + ps, matrix, count * sizeof(glm::mat4));
+		inst_count = count;
+		inst_idx = ps;
+	}
+	return ps;
 }
 
 bool geom_primitive::add_geometry(void* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
@@ -3018,6 +3047,8 @@ bool geom_primitive::add_geometry(void* texture, const float* xy, int xy_stride,
 	c.state = curState;
 	c.texture = texture;
 	c.mat = mat;
+	c.instance_count = inst_count;
+	c.instance_ssbo_pos = inst_idx;
 	float scale_x = 1.0, scale_y = 1.0;
 	float u_scale = 1.0, v_scale = 1.0;
 	size_indices = indices ? size_indices : 0;
@@ -4372,6 +4403,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->add_text = vctx_add_text;
 	cb->add_image = vctx_add_image;
 	cb->set_geom_state = vctx_set_geom_state;
+	cb->set_instance_mat = (size_t(*)(rvg_t*, const void*, size_t)) ovg_set_instance_mat;
 	cb->add_geometry = vctx_add_geometry;
 	cb->add_geometry3d = vctx_add_geometry3d;
 	cb->start_recording = vctx_start_recording;

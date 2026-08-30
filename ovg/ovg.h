@@ -397,7 +397,8 @@ struct ovg_draw_data_t {
 	size_t g_count;			// 索引数量
 	size_t instance_count;	// 实例矩阵总数量
 	void* instance_data;	// 实例所有数据
-	glm::uvec2 _offset;		// 渲染自动计算用
+	glm::uvec2 vg_offset;		// 渲染自动计算用
+	glm::uvec3 geom_offset = {};
 };
 
 #endif
@@ -581,8 +582,11 @@ struct ovg_canvas_cb {
 	void (*add_text)(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box);
 	// 普通图片，支持九宫格、混合颜色
 	void (*add_image)(rvg_t* dc, ovg_image_r* r);
-	// 原始三角形，输入0则不修改
+	// 原始三角形
+	// gem_info_t或矩阵输入空指针则不修改该值
 	void (*set_geom_state)(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
+	// 实例化
+	size_t(*set_instance_mat)(rvg_t* dc, const void* instance_mat, size_t instance_count);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
 	void (*add_geometry)(rvg_t* dc, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
@@ -680,8 +684,11 @@ struct ovg_ctx_cb {
 	// 普通图片，支持九宫格、混合颜色
 	void (*add_image)(rvg_t* dc, ovg_image_r* r);
 
-	// 原始三角形，输入0则不修改
+	// 原始三角形
+	// gem_info_t或矩阵输入空指针则不修改该值
 	void (*set_geom_state)(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
+	// 实例化
+	size_t(*set_instance_mat)(rvg_t* dc, const void* instance_mat, size_t instance_count);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
 	void (*add_geometry)(rvg_t* dc, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据

@@ -2038,8 +2038,8 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 				}
 			}
 		}
-		if (t->pattern) {
-			auto gr = *(vg_gradient_t*)t->pattern->data;
+		if (t->pattern && t->pattern->data) {
+			auto gr = *((vg_gradient_t*)t->pattern->data);
 			glm::mat3 patmat = glm::mat3(1.0);
 			if (t->pattern->hasMatrix)
 			{
@@ -2108,11 +2108,11 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	}
 }
 
-void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm::uvec2& offset)
+void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm::uvec3& offset)
 {
 	if (!c)return;
-	fbo->ctx->gpubuf->bindVBO(pass, offset.x);
-	fbo->ctx->gpubuf->bindIBO(pass, offset.y);
+	fbo->ctx->gpubuf->bindVBO(pass, c->v_offset ? offset.y : offset.x);
+	fbo->ctx->gpubuf->bindIBO(pass, offset.z);
 	if (c->instance_count > 1)
 		fbo->ctx->gpubuf->bindSSBO(pass, true);
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
@@ -2202,13 +2202,14 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
 	}
 	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
+
 	for (size_t i = 0; i < count; i++) {
 		auto* kd = &data[i];
-		kd->_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
-		kd->_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
-		ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
-		ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
-		ctx->gpubuf->add_ibo(kd->geom_indices, kd->g_count * sizeof(uint32_t));
+		kd->vg_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
+		kd->vg_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
+		kd->geom_offset.x = ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
+		kd->geom_offset.y = ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
+		kd->geom_offset.z = ctx->gpubuf->add_ibo(kd->geom_indices, kd->g_count * sizeof(uint32_t));
 		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
 	}
 	ctx->gpubuf->end(cmd);
@@ -2224,12 +2225,12 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 			switch (it.g.stype) {
 			case 0:
 			{
-				draw_vg(fbo, pass, &it.vg, &cuClip, kd->_offset);
+				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset);
 			}
 			break;
 			case 1:
 			{
-
+				draw_geom(fbo, pass, &it.g, kd->geom_offset);
 			}
 			break;
 			}
