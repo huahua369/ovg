@@ -338,12 +338,16 @@ struct geom_cmd_t {
 	int stype = 1;
 	gem_info_t state = {};
 	void* texture = nullptr;
+	void* texture_mask = nullptr;
 	glm::mat4 mat = glm::mat4(1.0f);	// 矩阵
 	float mask_time = 1.0;				// 遮罩时间
 	uint32_t elemCount = 0;				// 元素计数，索引数量或顶点数量
 	uint32_t firstIndex = 0;			// -1则非索引渲染
 	int32_t  vertexOffset = 0;
 	size_t v_offset = 0;				// vbo绑定偏移：0单面，1双面
+	glm::mat4* instance_mat = 0;		// 实例矩阵
+	uint32_t instance_count = 0;		// 实例数量
+	uint32_t instance_ssbo_pos = 0;		// 实例数据在gpu偏移,由vg计算
 };
 
 // 矢量命令
@@ -390,8 +394,10 @@ struct ovg_draw_data_t {
 	geomVertex2* vertex2;	// 双面顶点
 	size_t v2_count;
 	uint32_t* geom_indices;	// 索引 
-	size_t g_count;
-	glm::uvec2 _offset;
+	size_t g_count;			// 索引数量
+	size_t instance_count;	// 实例矩阵总数量
+	void* instance_data;	// 实例所有数据
+	glm::uvec2 _offset;		// 渲染自动计算用
 };
 
 #endif

@@ -62,13 +62,7 @@ set3 frag ubo
 // ========================================================================
 // 内部数据结构
 // ========================================================================
-struct sdl3gpu_buffer {
-	SDL_GPUBuffer* buffer = nullptr;
-	SDL_GPUDevice* device = nullptr;
-	uint32_t        size = 0;
-	uint32_t        stride = 0;
-	bool            isUniform = false;
-};
+
 
 struct sdl3gpu_texture {
 	SDL_GPUTexture* texture = nullptr;
@@ -118,12 +112,13 @@ class gpu_buffer_cx
 public:
 	SDL_GPUBuffer* buf = 0;
 	SDL_GPUDevice* dev = 0;
-	SDL_GPUBufferCreateInfo info = {};
-	size_t size = 0;
+	SDL_GPUBufferCreateInfo info = {};	// 保存了分配大小
+	size_t size = 0;					// 正在用的大小
 public:
 	gpu_buffer_cx();
 	~gpu_buffer_cx();
 	void init(SDL_GPUDevice* d, const SDL_GPUBufferCreateInfo* createinfo);
+	void init(SDL_GPUDevice* d, uint32_t usage, size_t capacity);
 	void resize(size_t newsize);
 
 private:
@@ -136,13 +131,13 @@ public:
 
 	gpu_buffer_cx _vbo = {};
 	gpu_buffer_cx _ibo = {};
-	gpu_buffer_cx _ubo = {}; // storage
+	gpu_buffer_cx _ssbo = {};
 
 	SDL_GPUTransferBuffer* _staging = nullptr;
 	size_t _stagingSize = 0;
 	size_t vbo_ps = 0;
 	size_t ibo_ps = 0;
-	size_t ubo_ps = 0;
+	size_t ssbo_ps = 0;
 	char* mapdt = 0;
 	size_t _offset = 0;
 public:
@@ -151,25 +146,27 @@ public:
 
 	// 初始化（只调用一次）
 	void init(SDL_GPUDevice* device);
-	void begin(size_t vcs, size_t ics, size_t ucs);
-	// 返回offset,
+	// 总顶点大小、索引大小、ssbo大小
+	void begin(size_t vcs, size_t ics, size_t ssbocs);
+	// 分片添加数据，返回offset,
 	uint32_t add_vbo(const void* data, uint32_t size);
 	uint32_t add_ibo(const void* data, uint32_t size);
 	uint32_t add_ssbo(const void* data, uint32_t size);
+
 	void end(SDL_GPUCommandBuffer* cmd);
 
 
 	// 绑定接口（RenderPass 内）
 	void bindVBO(SDL_GPURenderPass* pass, uint32_t offset = 0);
 	void bindIBO(SDL_GPURenderPass* pass, uint32_t offset = 0);
+	// 偏移需要自行在ubo指定
+	void bindSSBO(SDL_GPURenderPass* pass, bool is_vertex);
 	void bind_v_ssbo(SDL_GPURenderPass* pass, SDL_GPUBuffer** storage_buffers, uint32_t num_bindings);
 	void bind_f_ssbo(SDL_GPURenderPass* pass, SDL_GPUBuffer** storage_buffers, uint32_t num_bindings);
 
 	// getter（用于创建 pipeline / bind）
 	SDL_GPUBuffer* vbo() const { return _vbo.buf; }
 	SDL_GPUBuffer* ibo() const { return _ibo.buf; }
-	SDL_GPUBuffer* ubo() const { return _ubo.buf; }
-
 private:
 };
 
@@ -312,6 +309,18 @@ void gpu_buffer_cx::init(SDL_GPUDevice* d, const SDL_GPUBufferCreateInfo* create
 		info = *createinfo;
 	}
 }
+void gpu_buffer_cx::init(SDL_GPUDevice* d, uint32_t usage, size_t capacity)
+{
+	SDL_GPUBufferCreateInfo c = {};
+	if (!d || !dev || !usage)return;
+	c.usage = usage;
+	info.size = align_up(capacity, 256);
+	if (d)
+		dev = d;
+	buf = SDL_CreateGPUBuffer(dev, &c);
+	info = c;
+	size = c.size;
+}
 void gpu_buffer_cx::resize(size_t newsize)
 {
 	size = newsize;
@@ -324,92 +333,6 @@ void gpu_buffer_cx::resize(size_t newsize)
 	}
 }
 
-static void create_uniform_buffer(ovg_device_t* dev, sdl3gpu_buffer* buf, uint32_t stride, uint32_t count) {
-	buf->device = dev->gpuDevice;
-	buf->stride = stride;
-	buf->size = align_up(stride * count, 256);
-	buf->isUniform = true;
-
-	SDL_GPUBufferCreateInfo info = {};
-	info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-	info.size = buf->size;
-
-	buf->buffer = SDL_CreateGPUBuffer(dev->gpuDevice, &info);
-	assert(buf->buffer && "Failed to create uniform buffer");
-}
-
-static void create_vertex_buffer(ovg_device_t* dev, sdl3gpu_buffer* buf, uint32_t size, uint32_t stride) {
-	buf->device = dev->gpuDevice;
-	buf->stride = stride;
-	buf->size = align_up(size, 256);
-
-	SDL_GPUBufferCreateInfo info = {};
-	info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-	info.size = buf->size;
-
-	buf->buffer = SDL_CreateGPUBuffer(dev->gpuDevice, &info);
-	assert(buf->buffer && "Failed to create vertex buffer");
-}
-
-static void create_index_buffer(ovg_device_t* dev, sdl3gpu_buffer* buf, uint32_t size) {
-	buf->device = dev->gpuDevice;
-	buf->stride = sizeof(uint32_t);
-	buf->size = size;
-
-	SDL_GPUBufferCreateInfo info = {};
-	info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
-	info.size = buf->size;
-
-	buf->buffer = SDL_CreateGPUBuffer(dev->gpuDevice, &info);
-	assert(buf->buffer && "Failed to create index buffer");
-}
-
-static void resize_buffer(sdl3gpu_buffer* buf, uint32_t newSize) {
-	if (buf->size >= newSize) return;
-
-	SDL_GPUBufferUsageFlags usage;
-	if (buf->isUniform) {
-		usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-	}
-	else {
-		usage = SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_INDEX;
-	}
-
-	SDL_GPUBufferCreateInfo info = {};
-	info.usage = usage;
-	info.size = align_up(newSize, 256);;
-
-	SDL_GPUBuffer* newBuf = SDL_CreateGPUBuffer(buf->device, &info);
-	assert(newBuf && "Failed to resize buffer");
-
-	// 复制旧数据
-	//SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(buf->device);
-	//if (cmd) {
-	//	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
-	//	if (copyPass) {
-	//		// 源：旧缓冲区
-	//		SDL_GPUBufferRegion srcRegion = {};
-	//		srcRegion.buffer = buf->buffer;
-	//		srcRegion.offset = 0;
-	//		srcRegion.size = buf->size;
-
-	//		// 目的：新缓冲区
-	//		SDL_GPUBufferRegion dstRegion = {};
-	//		dstRegion.buffer = newBuf;
-	//		dstRegion.offset = 0;
-	//		dstRegion.size = buf->size;
-
-	//		SDL_CopyGPUBuffer(copyPass, &srcRegion, &dstRegion);
-	//		SDL_EndGPUCopyPass(copyPass);
-	//	}
-	//	SDL_SubmitGPUCommandBuffer(cmd);
-	//	SDL_WaitForGPUIdle(buf->device);
-	//}
-
-	SDL_ReleaseGPUBuffer(buf->device, buf->buffer);
-	buf->buffer = newBuf;
-	buf->size = info.size;
-}
 OvgGpuBuffers::~OvgGpuBuffers()
 {
 	if (_staging)
@@ -420,19 +343,17 @@ OvgGpuBuffers::~OvgGpuBuffers()
 void OvgGpuBuffers::init(SDL_GPUDevice* device)
 {
 	_device = device;
-	SDL_GPUBufferCreateInfo info = {};
-	info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-	info.size = 1024;
-	_vbo.init(_device, &info);
-	info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
-	_ibo.init(_device, &info);
-	info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-	_ubo.init(_device, &info);
+	_vbo.init(_device, SDL_GPU_BUFFERUSAGE_VERTEX, 1024);
+	_ibo.init(_device, SDL_GPU_BUFFERUSAGE_INDEX, 1024);
+	_ssbo.init(_device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, 1024);
 }
 
-void OvgGpuBuffers::begin(size_t vcs, size_t ics, size_t ucs)
+void OvgGpuBuffers::begin(size_t vcs, size_t ics, size_t ssbocs)
 {
-	size_t ss = align_up(vcs, 64) + align_up(ics, 64) + align_up(ucs, 64);
+	vcs = align_up(vcs, 64);
+	ics = align_up(ics, 64);
+	ssbocs = align_up(ssbocs, 64);
+	size_t ss = vcs + ics + ssbocs;
 	if (_device && ss > _stagingSize)
 	{
 		ss = align_up(ss, 256);
@@ -451,19 +372,18 @@ void OvgGpuBuffers::begin(size_t vcs, size_t ics, size_t ucs)
 	}
 	_vbo.resize(vcs);
 	_ibo.resize(ics);
-	_ubo.resize(ucs);
+	_ssbo.resize(ics);
 	mapdt = (char*)SDL_MapGPUTransferBuffer(_device, _staging, true);
-	vbo_ps = ibo_ps = ibo_ps = 0;
+	vbo_ps = ibo_ps = ssbo_ps = 0;
 	if (!mapdt)return;
 }
 
 uint32_t OvgGpuBuffers::add_vbo(const void* data, uint32_t size)
 {
 	assert(mapdt);
-	if (!mapdt || !size)return 0;
+	if (!mapdt || !size || !data)return 0;
 	auto dst = mapdt + vbo_ps;
 	memcpy(dst, data, size);
-	//auto ss = align_up(size, 64);
 	auto ret = vbo_ps;
 	vbo_ps += size;
 	return ret;
@@ -472,7 +392,7 @@ uint32_t OvgGpuBuffers::add_vbo(const void* data, uint32_t size)
 uint32_t OvgGpuBuffers::add_ibo(const void* data, uint32_t size)
 {
 	assert(mapdt);
-	if (!mapdt || !size)return 0;
+	if (!mapdt || !size || !data)return 0;
 	auto dst = mapdt + ibo_ps + _vbo.size;
 	memcpy(dst, data, size);
 	auto ret = ibo_ps;
@@ -483,18 +403,18 @@ uint32_t OvgGpuBuffers::add_ibo(const void* data, uint32_t size)
 uint32_t OvgGpuBuffers::add_ssbo(const void* data, uint32_t size)
 {
 	assert(mapdt);
-	if (!mapdt || !size)return 0;
-	auto dst = mapdt + ubo_ps + _vbo.size + _ibo.size;
+	if (!mapdt || !size || !data)return 0;
+	auto dst = mapdt + ssbo_ps + _vbo.size + _ibo.size;
 	memcpy(dst, data, size);
-	auto ret = ubo_ps;
-	ubo_ps += size;
+	auto ret = ssbo_ps;
+	ssbo_ps += size;
 	return ret;
 }
 
 void OvgGpuBuffers::end(SDL_GPUCommandBuffer* cmd)
 {
 	SDL_UnmapGPUTransferBuffer(_device, _staging);
-	if (!(_vbo.size + _ibo.size + _ubo.size > 0))return;
+	if (!(_vbo.size + _ibo.size > 0))return;
 	auto copyPass = SDL_BeginGPUCopyPass(cmd);
 	SDL_GPUTransferBufferLocation tbl = { .transfer_buffer = _staging, .offset = 0 };
 	SDL_GPUBufferRegion vbr = { .buffer = _vbo.buf, .offset = 0, .size = (uint32_t)_vbo.size };
@@ -507,7 +427,7 @@ void OvgGpuBuffers::end(SDL_GPUCommandBuffer* cmd)
 		tbl.offset = vbr.size;
 		SDL_UploadToGPUBuffer(copyPass, &tbl, &ibr, true);
 	}
-	SDL_GPUBufferRegion ubr = { .buffer = _ubo.buf, .offset = 0, .size = (uint32_t)_ubo.size };
+	SDL_GPUBufferRegion ubr = { .buffer = _ssbo.buf, .offset = 0, .size = (uint32_t)_ssbo.size };
 	if (ubr.size) {
 		tbl.offset += ibr.size;
 		SDL_UploadToGPUBuffer(copyPass, &tbl, &ubr, true);
@@ -531,6 +451,14 @@ void OvgGpuBuffers::bindIBO(SDL_GPURenderPass* pass, uint32_t offset)
 	SDL_BindGPUIndexBuffer(pass, &binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 }
 
+void OvgGpuBuffers::bindSSBO(SDL_GPURenderPass* pass, bool is_vertex)
+{
+	if (is_vertex)
+		SDL_BindGPUVertexStorageBuffers(pass, 0, &_ssbo.buf, 1);
+	else
+		SDL_BindGPUFragmentStorageBuffers(pass, 0, &_ssbo.buf, 1);
+}
+
 void OvgGpuBuffers::bind_v_ssbo(SDL_GPURenderPass* pass, SDL_GPUBuffer** storage_buffers, uint32_t num_bindings)
 {
 	SDL_BindGPUVertexStorageBuffers(pass, 0, storage_buffers, num_bindings);
@@ -541,14 +469,77 @@ void OvgGpuBuffers::bind_f_ssbo(SDL_GPURenderPass* pass, SDL_GPUBuffer** storage
 	SDL_BindGPUFragmentStorageBuffers(pass, 0, storage_buffers, num_bindings);
 }
 
-static void destroy_buffer(sdl3gpu_buffer* buf) {
-	if (buf->buffer) {
-		SDL_ReleaseGPUBuffer(buf->device, buf->buffer);
-		buf->buffer = nullptr;
-	}
-	buf->size = 0;
+
+struct gpu_ssbo_t {
+	SDL_GPUDevice* device;
+	SDL_GPUBuffer* buf;
+	Uint32          capacity;
+	Uint32          size;
+};
+bool matrix_buffer_create(SDL_GPUDevice* device, Uint32 max_count, gpu_ssbo_t* out)
+{
+	if (max_count == 0) return false;
+	Uint32 size = align_up(max_count * 64, 256);
+
+	SDL_GPUBufferCreateInfo bi = {
+		.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+		.size = size,
+	};
+	SDL_GPUBuffer* buf = SDL_CreateGPUBuffer(device, &bi);
+	if (!buf) return false;
+
+	out->device = device;
+	out->buf = buf;
+	out->capacity = max_count;
+	out->size = size;
+	return true;
 }
 
+bool matrix_buffer_update(gpu_ssbo_t* mb, const glm::mat4* matrices, Uint32 count)
+{
+	if (count > mb->capacity) return false;
+
+	SDL_GPUDevice* device = mb->device;
+	Uint32 raw = count * 64;
+
+	SDL_GPUTransferBufferCreateInfo ti = {
+		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+		.size = raw,
+	};
+	SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(device, &ti);
+	if (!tb) return false;
+
+	void* ptr = SDL_MapGPUTransferBuffer(device, tb, false);
+	if (!ptr) { SDL_ReleaseGPUTransferBuffer(device, tb); return false; }
+	SDL_memcpy(ptr, matrices, raw);
+	SDL_UnmapGPUTransferBuffer(device, tb);
+
+	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device);
+	SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+
+	SDL_GPUTransferBufferLocation src = { .transfer_buffer = tb, .offset = 0 };
+	SDL_GPUBufferRegion dst = { .buffer = mb->buf, .offset = 0, .size = raw };
+	SDL_UploadToGPUBuffer(cp, &src, &dst, true);
+
+	SDL_EndGPUCopyPass(cp);
+	SDL_SubmitGPUCommandBuffer(cmd);
+
+	SDL_ReleaseGPUTransferBuffer(device, tb);
+	return true;
+}
+
+void matrix_buffer_bind_vertex(gpu_ssbo_t* mb, SDL_GPURenderPass* pass, Uint32 slot)
+{
+	SDL_BindGPUVertexStorageBuffers(pass, slot, &mb->buf, 1);
+}
+
+void matrix_buffer_destroy(gpu_ssbo_t* mb) {
+	if (mb && mb->buf) {
+		SDL_WaitForGPUIdle(mb->device);
+		SDL_ReleaseGPUBuffer(mb->device, mb->buf);
+		mb->buf = NULL;
+	}
+}
 // ========================================================================
 // 纹理管理
 // ========================================================================
@@ -1760,15 +1751,6 @@ void ovg_bind_texture(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPURende
 	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 }
 
-// 绑定 UBO（渐变数据）
-void ovg_bind_ubo(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPURenderPass* pass, uint32_t offset) {
-	if (!ctx || !pass) return;
-
-	SDL_GPUBufferBinding uboBinding = {};
-	uboBinding.buffer = ctx->gpubuf->ubo();
-	uboBinding.offset = offset;
-	SDL_BindGPUVertexStorageBuffers(pass, 0, &uboBinding.buffer, 1);
-}
 
 // ========================================================================
 // 几何管道绑定
@@ -2024,7 +2006,7 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	fbo->ctx->gpubuf->bindVBO(pass, offset.x);
 	fbo->ctx->gpubuf->bindIBO(pass, offset.y);
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
-	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+
 	if (t) {
 		int smax = std::max(fbo->width, fbo->height);
 		pc = t->pushConsts;
@@ -2033,11 +2015,29 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 		if (t->pattern && t->pattern->type != vg_pattern_type_t::VG_PATTERN_TYPE_SOLID) {
 			pc.source = { smax,smax,0,0 };
 		}
-		if (t->pattern)
-			pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) + t->pattern->type;
-
 		glm::mat3x3 inv = pc.mat;
 		pc.matInv = glm::inverse(inv);
+		if (t->pattern)
+		{
+			pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) + t->pattern->type;
+			if (t->pattern->type == vg_pattern_type_t::VG_PATTERN_TYPE_SURFACE) {
+				auto tex = (sdl3gpu_texture*)t->pattern->data;
+				if (tex)
+				{
+					binding.texture = tex->texture;
+					binding.sampler = tex->sampler;
+					pc.source.x;// 在vg设置了
+					pc.source.y;
+					pc.source.z = (float)fbo->width;
+					pc.source.w = (float)fbo->height;
+					glm::mat3x3 mat;
+					if (t->pattern->hasMatrix) {
+						mat = t->pattern->matrix;
+						pc.matInv = pc.matInv * mat;
+					}
+				}
+			}
+		}
 		if (t->pattern) {
 			auto gr = *(vg_gradient_t*)t->pattern->data;
 			glm::mat3 patmat = glm::mat3(1.0);
@@ -2061,6 +2061,7 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 		ovg_bind_vg_pipeline(fbo->ctx, fbo->cmd, pass, (int)vg_operator_t::VG_OPERATOR_SOURCE);
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	}
+	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
 	switch (c->type) {
 	case 0:
 	case 1:
@@ -2100,27 +2101,57 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	break;
 	case 4:
 	{
-		//SDL_GPUColorTarget colorTarget = {
-		//	.clear_color = {
-		//		static_cast<float>(c->bounds.x),
-		//		static_cast<float>(c->bounds.y),
-		//		static_cast<float>(c->bounds.z),
-		//		static_cast<float>(c->bounds.w)
-		//	},
-		//	.load_op = SDL_GPU_LOADOP_CLEAR,
-		//	.store_op = SDL_GPU_STOREOP_STORE
-		//};
-
-		//SDL_GPUDepthStencilTarget depthStencilTarget = {
-		//	.clear_depth = 1.0f,
-		//	.clear_stencil = 0,
-		//	.load_op = SDL_GPU_LOADOP_CLEAR,
-		//	.store_op = SDL_GPU_STOREOP_STORE
-		//};
 		//SDL_ClearGPUColorTarget(cmd, pass, &colorTarget);
 		//SDL_ClearGPUDepthStencilTarget(cmd, pass, &depthStencilTarget);
 	}
 	break;
+	}
+}
+
+void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm::uvec2& offset)
+{
+	if (!c)return;
+	fbo->ctx->gpubuf->bindVBO(pass, offset.x);
+	fbo->ctx->gpubuf->bindIBO(pass, offset.y);
+	if (c->instance_count > 1)
+		fbo->ctx->gpubuf->bindSSBO(pass, true);
+	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
+	if (c->texture) {
+		auto tex = (sdl3gpu_texture*)c->texture;
+		if (tex)
+		{
+			binding.texture = tex->texture;
+			binding.sampler = tex->sampler;
+		}
+	}
+	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+	if (c->texture_mask) {
+		auto tex = (sdl3gpu_texture*)c->texture_mask;
+		if (tex)
+		{
+			binding.texture = tex->texture;
+			binding.sampler = tex->sampler;
+		}
+		SDL_BindGPUFragmentSamplers(pass, 1, &binding, 1);
+		SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &c->mask_time, sizeof(float));
+	}
+	struct PushConsts
+	{
+		glm::mat4 mvp;
+		uint32_t instance_pos;
+	};
+	PushConsts pc = { c->mat, c->instance_ssbo_pos };
+	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(PushConsts));
+
+	//auto cp = get_state(&c->state);
+
+	if (c->firstIndex >= 0)
+	{
+		SDL_DrawGPUIndexedPrimitives(pass, c->elemCount, 1, c->firstIndex, c->vertexOffset, 0);
+	}
+	else
+	{
+		SDL_DrawGPUPrimitives(pass, c->elemCount, 1, c->vertexOffset, 0);
 	}
 }
 
@@ -2160,6 +2191,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 	ctx->currentCmdBuf = fbo->cmd;
 	size_t total_vbo = 0;
 	size_t total_ibo = 0;
+	size_t total_ssbo = 0;
 	for (size_t i = 0; i < count; i++) {
 		total_vbo += data[i].v_count * sizeof(ovgVertex);
 		total_vbo += data[i].v1_count * sizeof(geomVertex1);
@@ -2167,8 +2199,9 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 
 		total_ibo += data[i].i_count * sizeof(uint32_t);
 		total_ibo += data[i].g_count * sizeof(uint32_t);
+		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
 	}
-	ctx->gpubuf->begin(total_vbo, total_ibo, 0);
+	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
 	for (size_t i = 0; i < count; i++) {
 		auto* kd = &data[i];
 		kd->_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
@@ -2176,6 +2209,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 		ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
 		ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
 		ctx->gpubuf->add_ibo(kd->geom_indices, kd->g_count * sizeof(uint32_t));
+		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
 	}
 	ctx->gpubuf->end(cmd);
 	auto cmd0 = ovg_begin_frame(ctx, fbo, true);

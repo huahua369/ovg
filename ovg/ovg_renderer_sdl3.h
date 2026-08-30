@@ -19,14 +19,7 @@ struct sdl3gpu_texture;  // 内部纹理包装器
 
 struct ovg_sdl3_ctx {
 	SDL_Window* window;
-	SDL_GPUDevice* device;
-	/* CPU-side data mirrors */
-	int width = 0, height = 0;
-	SDL_GPUTexture* emptyImg;
-	SDL_GPUSampler* sampler;
-	SDL_GPURenderPass* pass;
-	SDL_GPUCommandBuffer* cmd; 
-
+	SDL_GPUDevice* device; 
 };
 
 // FBO 结构体 - SDL3 GPU 版本
