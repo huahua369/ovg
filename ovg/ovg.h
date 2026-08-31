@@ -247,9 +247,6 @@ struct vg_gradient_t {
 	int extend;
 	int type;
 };
-// 纹理表面，由后端提供
-struct vg_surface_t;
-
 
 struct font_family_t {
 	hb_font_t* font;
@@ -385,24 +382,36 @@ struct geomVertex2 {
 	uint32_t color;
 	uint32_t color1;
 };
-struct ovg_draw_data_t {
-	gcmd_t* d = 0;				// 渲染命令列表
-	size_t count = 0;
-	ovgVertex* vg_vertex = 0;	// 矢量顶点
-	size_t v_count = 0;
-	uint32_t* vg_indices = 0;	// 矢量索引
-	size_t i_count = 0;
-	size_t uboCount = 0;		// 渐变ubo结构数量
-	geomVertex1* vertex1 = 0;	// 单面顶点
-	size_t v1_count = 0;
-	geomVertex2* vertex2 = 0;	// 双面顶点
-	size_t v2_count = 0;
-	uint32_t* geom_indices = 0;	// 索引 
-	size_t ig_count = 0;		// 索引数量
-	size_t instance_count = 0;	// 实例矩阵总数量
-	void* instance_data = 0;	// 实例所有数据
-	glm::uvec2 vg_offset = {};	// 渲染自动计算用
-	glm::uvec3 geom_offset = {};
+enum vg_format_t {
+	VG_FORMAT_RGBA8 = 0,	// 对应SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+	VG_FORMAT_BGRA8,
+	VG_FORMAT_RGBA8_SRGB,	// SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+	VG_FORMAT_BGRA8_SRGB,
+	VG_FORMAT_RGBA16F,
+	VG_FORMAT_RGBA32F,
+};
+
+// 图片
+struct vg_image_t {
+	uint32_t id;		// 由设备分配
+	uint32_t w, h;		// 更新纹理时自动更新大小
+	bool upload_status;	// 上传状态
+};
+/**
+ * 更新图片数据（不重建句柄）：
+ *   - 尺寸不变 → 覆盖上传（partial=true 时只传脏矩形）
+ *   - 尺寸变化 → 后端重建纹理，旧纹理延迟释放
+ */
+struct vg_image_desc_t {
+	vg_image_t*		img;			// 需要更新的纹理
+	uint32_t        width;
+	uint32_t        height;
+	vg_format_t     format;
+	uint32_t		stride;
+	const void* pixels;				// CPU 像素数据。vg_image_t.upload_status等于true时才能释放
+	uint32_t        x, y, w, h;		// 脏矩形（全量更新时 = 整张图） 
+	bool            partial;		// true = 只更新脏矩形；false = 全量 
+	bool            is_destroy;		// true = 删除纹理；
 };
 
 #endif
@@ -441,7 +450,7 @@ struct ovg_image_s {
 
 struct ovg_image_r
 {
-	void* img;
+	vg_image_t* img;
 	glm::ivec4 rc;		// 所在纹理区域
 	glm::ivec4 sliced;	// 九宫格
 	glm::ivec2 texsize;	// 纹理大小
@@ -492,6 +501,31 @@ struct rvg_t {
 	ovg_path_t* path = 0;
 	vg_state_save_t* st = 0;
 };
+// 打包数据引用
+struct ovg_draw_data_t {
+	gcmd_t* d = 0;				// 渲染命令列表
+	size_t count = 0;
+	ovgVertex* vg_vertex = 0;	// 矢量顶点
+	size_t v_count = 0;
+	uint32_t* vg_indices = 0;	// 矢量索引
+	size_t i_count = 0;
+	size_t uboCount = 0;		// 渐变ubo结构数量
+	geomVertex1* vertex1 = 0;	// 单面顶点
+	size_t v1_count = 0;
+	geomVertex2* vertex2 = 0;	// 双面顶点
+	size_t v2_count = 0;
+	uint32_t* geom_indices = 0;	// 索引 
+	size_t ig_count = 0;		// 索引数量
+	size_t instance_count = 0;	// 实例矩阵总数量
+	void* instance_data = 0;	// 实例所有数据
+	vg_image_desc_t** image_desc = 0;
+	size_t image_desc_count = 0;	// 更新纹理数量
+	gem_info_t* pipeinfo = 0;
+	size_t pipeinfo_count = 0;	// 需要build的管线数量
+	glm::uvec2 vg_offset = {};	// 渲染自动计算用
+	glm::uvec3 geom_offset = {};
+};
+
 // 录制
 struct ovg_recording_t;
 
@@ -539,7 +573,7 @@ struct ovg_canvas_cb {
 	void(*set_miter_limit)(vg_state_save_t* ctx, float limit);
 	void(*set_line_cap)(vg_state_save_t* ctx, int cap);
 	void(*set_line_join)(vg_state_save_t* ctx, int join);
-	void(*set_source_surface)(vg_state_save_t* ctx, vg_surface_t* surf, float x, float y);
+	void(*set_source_surface)(vg_state_save_t* ctx, vg_image_t* surf, float x, float y);
 	void(*set_source)(vg_state_save_t* ctx, vg_pattern_t* pat);
 	void(*set_operator)(vg_state_save_t* ctx, int op);
 	void(*set_fill_rule)(vg_state_save_t* ctx, int fr);
@@ -564,6 +598,10 @@ struct ovg_canvas_cb {
 	void(*pattern_set_extend)(vg_pattern_t* pat, int extend);
 	void(*pattern_set_filter)(vg_pattern_t* pat, int filter);
 	void(*pattern_destroy)(vg_pattern_t* pat);
+	// 更新纹理，vg_image_t指针由用户创建管理
+	void (*image_update)(rvg_t* p, vg_image_t* img, vg_image_desc_t* desc);
+	//标记图片不再使用（后端延迟释放 GPU 纹理）
+	void (*image_destroy)(rvg_t* p, vg_image_t* img);
 
 	// 渲染操作，rvg_t可以多次执行fill或stroke/clip
 	rvg_t* (*new_rvg)(mem_resource_t* ac);
@@ -592,9 +630,9 @@ struct ovg_canvas_cb {
 	// 实例化
 	size_t(*set_instance_mat)(rvg_t* dc, const void* instance_mat, size_t instance_count);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
-	void (*add_geometry)(rvg_t* dc, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+	void (*add_geometry)(rvg_t* dc, vg_image_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
-	void (*add_geometry3d)(rvg_t* dc, vg_surface_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+	void (*add_geometry3d)(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 
 };
 
@@ -644,7 +682,7 @@ struct ovg_ctx_cb {
 	void(*set_miter_limit)(rvg_t* ctx, float limit);
 	void(*set_line_cap)(rvg_t* ctx, int cap);
 	void(*set_line_join)(rvg_t* ctx, int join);
-	void(*set_source_surface)(rvg_t* ctx, vg_surface_t* surf, float x, float y);
+	void(*set_source_surface)(rvg_t* ctx, vg_image_t* surf, float x, float y);
 	void(*set_source)(rvg_t* ctx, vg_pattern_t* pat);
 	void(*set_operator)(rvg_t* ctx, int op);
 	void(*set_fill_rule)(rvg_t* ctx, int fr);
@@ -668,6 +706,11 @@ struct ovg_ctx_cb {
 	void(*pattern_set_matrix)(vg_pattern_t* pat, const void* matrix);	// mat3x2
 	void(*pattern_set_extend)(vg_pattern_t* pat, int extend);
 	void(*pattern_set_filter)(vg_pattern_t* pat, int filter);
+
+	// 更新纹理，vg_image_t指针由用户创建管理
+	void (*image_update)(rvg_t* p, vg_image_t* img, vg_image_desc_t* desc);
+	//标记图片不再使用（后端延迟释放 GPU 纹理）
+	void (*image_destroy)(rvg_t* p, vg_image_t* img);
 
 	void(*save)(rvg_t* v);		// 保存状态，（裁剪状态暂不实现）
 	void(*restore)(rvg_t* v);	// 恢复状态
@@ -694,9 +737,9 @@ struct ovg_ctx_cb {
 	// 实例化
 	size_t(*set_instance_mat)(rvg_t* dc, const void* instance_mat, size_t instance_count);
 	// 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
-	void (*add_geometry)(rvg_t* dc, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+	void (*add_geometry)(rvg_t* dc, vg_image_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
-	void (*add_geometry3d)(rvg_t* dc, vg_surface_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+	void (*add_geometry3d)(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// todo 录制
 	void (*start_recording)(rvg_t* ctx);
 	ovg_recording_t* (*stop_recording)(rvg_t* ctx);
@@ -713,6 +756,7 @@ void free_canvas_cb(ovg_canvas_cb*);
 // 状态机模式接口，两个模式接口创建的对象不能混用
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
+
 
 ovg_draw_data_t get_draw_list(rvg_t* p);
 

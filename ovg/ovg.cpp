@@ -1303,7 +1303,7 @@ void ovg_set_line_cap(vg_state_save_t* ctx, int cap) {
 void ovg_set_line_join(vg_state_save_t* ctx, int join) {
 	if (ctx)ctx->lineJoin = join;
 }
-void ovg_set_source_surface(vg_state_save_t* ctx, vg_surface_t* surf, float x, float y) {
+void ovg_set_source_surface(vg_state_save_t* ctx, vg_image_t* surf, float x, float y) {
 	auto p = (ss_act*)ctx;
 	p->pushConsts.source.x = x;
 	p->pushConsts.source.y = y;
@@ -1464,6 +1464,8 @@ void ovg_pattern_destroy(vg_pattern_t* pat) {
 	}
 }
 
+
+
 int _vg_pattern_edit_linear(vg_pattern_t* pat, float x0, float y0, float x1, float y1) {
 	if (!pat)
 		return -2;
@@ -1573,6 +1575,8 @@ vg_pattern_t* ovg_new_pattern_sweep(mem_resource_t* ac0, float cx, float cy, flo
 	pat->references = 1;
 	return pat;
 }
+
+
 ovg_path_t* ovg_new_path(mem_resource_t* ac0) {
 	auto ac = (usp_ac_cx*)ac0;
 	ovg_path_t* p = 0;
@@ -1710,6 +1714,7 @@ public:
 	glm::mat4 mat = glm::mat4(1.0f);// 当前矩阵
 	gem_info_t curState = {};		// 当前状态	 
 	std::pmr::vector<gcmd_t>* gt = 0;
+	std::pmr::vector<gem_info_t> build_pipes;
 	rvg_cx* dc = 0;
 	size_t inst_count = 0;			// 当前实例
 	size_t inst_idx = 0;			// 当前实例
@@ -1750,6 +1755,10 @@ struct rvg_cx :public rvg_t {
 	// 临时缓冲用
 	std::pmr::vector<ear_clip_point> ecpsd;
 	std::pmr::vector<glm::vec2> _normals;
+
+	std::pmr::map<vg_image_t*, vg_image_desc_t> _images;
+	std::pmr::vector<vg_image_desc_t*> _images_up;
+
 	// 23d
 	geom_primitive gps = {};
 
@@ -1774,6 +1783,9 @@ public:
 
 	void save();
 	void restore();
+
+	void image_update(vg_image_t* img, vg_image_desc_t* desc);
+	void image_destroy(vg_image_t* img);
 public:
 	void fill_non_zero_tess2(ovg_path_t* p);
 	void fill_non_zero(ovg_path_t* p);
@@ -2135,6 +2147,7 @@ void rvg_cx::restore()
 	free_state(c);
 	_cst.pop();
 }
+
 void rvg_cx::fill()
 {
 	fill_preserve();
@@ -2778,6 +2791,17 @@ void rvg_cx::_draw_segment(ovg_path_t* ctx, stroke_context_t* str, dash_context_
 	str->iL = str->cp++;
 }
 
+void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
+{
+	_images[img] = *desc;
+}
+
+void rvg_cx::image_destroy(vg_image_t* img)
+{
+	_images[img].is_destroy = true;
+}
+
+
 // todo 渲染操作，rvg_cx可以多次执行fill或stroke/clip
 rvg_t* ovg_new_rvg(mem_resource_t* ac0)
 {
@@ -2894,18 +2918,29 @@ size_t ovg_set_instance_mat(rvg_t* v0, const glm::mat4* matrix, size_t count)
 	return (dc) ? dc->gps.set_instance_mat(matrix, count) : 0;
 }
 // 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
-void  ovg_add_geometry(rvg_t* v0, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
+void  ovg_add_geometry(rvg_t* v0, vg_image_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
 {
 	auto dc = (rvg_cx*)v0;
 	if (dc)dc->gps.add_geometry(texture, xy, xy_stride, color, color_stride, uv, uv_stride, num_vertices, indices, num_indices, size_indices, color_type);
 }
 // 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
-void  ovg_add_geometry3d(rvg_t* v0, vg_surface_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
+void  ovg_add_geometry3d(rvg_t* v0, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
 {
 	auto dc = (rvg_cx*)v0;
 	if (dc)dc->gps.add_geometry3d(texture, xyz, xyz_stride, color, color_stride, uv, uv_stride, num_vertices, indices, num_indices, size_indices, color_type);
 }
 
+void ovg_image_update(rvg_t* p, vg_image_t* img, vg_image_desc_t* desc) {
+	if (!p || !img || !desc)return;
+	auto dc = (rvg_cx*)p;
+	dc->image_update(img, desc);
+}
+//标记图片不再使用（后端延迟释放 GPU 纹理）
+void ovg_image_destroy(rvg_t* p, vg_image_t* img) {
+	if (!p || !img)return;
+	auto dc = (rvg_cx*)p;
+	dc->image_destroy(img);
+}
 #endif // 1
 
 // todo init cb
@@ -2975,6 +3010,8 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 	cb->pattern_set_filter = ovg_pattern_set_filter;
 	cb->pattern_destroy = ovg_pattern_destroy;
 
+	cb->image_update = ovg_image_update;
+	cb->image_destroy = ovg_image_destroy;
 	// 渲染操作，rvg_cx可以多次执行fill或stroke/clip
 	cb->new_rvg = ovg_new_rvg;
 	cb->destroy_rvg = ovg_destroy_rvg;
@@ -3017,6 +3054,7 @@ void geom_primitive::clear()
 	vd2.clear();
 	ids.clear();
 	instance_mat.clear();
+	build_pipes.clear();
 	mat = glm::mat4(1.0f);
 	curState = {};
 	inst_idx = 0;
@@ -3025,7 +3063,10 @@ void geom_primitive::clear()
 
 void geom_primitive::set_state(gem_info_t* info, const glm::mat4* matrix)
 {
-	if (info) { curState = *info; }
+	if (info) {
+		curState = *info;
+		build_pipes.push_back(curState);
+	}
 	if (matrix) { mat = *matrix; }
 }
 
@@ -3749,6 +3790,14 @@ ovg_draw_data_t get_draw_list(rvg_t* p0)
 		ret.ig_count = p->gps.ids.size();
 		ret.instance_count = p->gps.instance_mat.size();
 		ret.instance_data = p->gps.instance_mat.data();
+		p->_images_up.clear();
+		for (auto& [k, v] : p->_images) {
+			p->_images_up.push_back(&v);
+		}
+		ret.image_desc = p->_images_up.data();
+		ret.image_desc_count = p->_images_up.size();
+		ret.pipeinfo = p->gps.build_pipes.data();
+		ret.pipeinfo_count = p->gps.build_pipes.size();
 	}
 	return ret;
 }
@@ -3798,7 +3847,7 @@ void vctx_set_line_width(rvg_t* ctx, float width);
 void vctx_set_miter_limit(rvg_t* ctx, float limit);
 void vctx_set_line_cap(rvg_t* ctx, int cap);
 void vctx_set_line_join(rvg_t* ctx, int join);
-void vctx_set_source_surface(rvg_t* ctx, vg_surface_t* surf, float x, float y);
+void vctx_set_source_surface(rvg_t* ctx, vg_image_t* surf, float x, float y);
 void vctx_set_source(rvg_t* ctx, vg_pattern_t* pat);
 void vctx_set_operator(rvg_t* ctx, int op);
 void vctx_set_fill_rule(rvg_t* ctx, int fr);
@@ -3844,9 +3893,9 @@ void  vctx_add_image(rvg_t* dc, ovg_image_r* r);
 // 原始三角形，输入0则不修改
 void  vctx_set_geom_state(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
 // 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
-void  vctx_add_geometry(rvg_t* dc, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+void  vctx_add_geometry(rvg_t* dc, vg_image_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 // 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
-void  vctx_add_geometry3d(rvg_t* dc, vg_surface_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
+void  vctx_add_geometry3d(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 
 void vctx_start_recording(rvg_t* ctx);
 ovg_recording_t* vctx_stop_recording(rvg_t* ctx);
@@ -4043,7 +4092,7 @@ void vctx_set_line_join(rvg_t* ctx, int join) {
 	if (ctx) ovg_set_line_join(ctx->st, join);
 }
 
-void vctx_set_source_surface(rvg_t* ctx, vg_surface_t* surf, float x, float y) {
+void vctx_set_source_surface(rvg_t* ctx, vg_image_t* surf, float x, float y) {
 	if (ctx) ovg_set_source_surface(ctx->st, surf, x, y);
 }
 
@@ -4267,7 +4316,7 @@ void vctx_set_geom_state(rvg_t* dc, gem_info_t* info, const void* matrix4x4) {
 
 // 添加几何数据到缓冲区
 void vctx_add_geometry(rvg_t* dc,
-	vg_surface_t* texture,
+	vg_image_t* texture,
 	const float* xy, int xy_stride,
 	const void* color, int color_stride,
 	const float* uv, int uv_stride,
@@ -4288,7 +4337,7 @@ void vctx_add_geometry(rvg_t* dc,
 
 // 添加3D几何数据到缓冲区
 void vctx_add_geometry3d(rvg_t* dc,
-	vg_surface_t* texture,
+	vg_image_t* texture,
 	const float* xyz, int xyz_stride,
 	const void* color, int color_stride,
 	const float* uv, int uv_stride,
@@ -4395,6 +4444,10 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->pattern_set_matrix = vctx_pattern_set_matrix;
 	cb->pattern_set_extend = vctx_pattern_set_extend;
 	cb->pattern_set_filter = vctx_pattern_set_filter;
+
+	cb->image_update = ovg_image_update;
+	cb->image_destroy = ovg_image_destroy;
+
 	cb->save = vctx_save;
 	cb->restore = vctx_restore;
 	cb->stroke = vctx_stroke;

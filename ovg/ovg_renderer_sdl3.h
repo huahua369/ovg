@@ -71,4 +71,5 @@ SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
 // 绘制入口 
 void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count);
 
-void ovg_wait_idle(ovg_ctx_t* ctx); 
+void ovg_wait_idle(ovg_ctx_t* ctx);
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, vg_format_t format);
