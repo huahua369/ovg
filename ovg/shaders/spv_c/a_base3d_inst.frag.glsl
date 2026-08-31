@@ -27,19 +27,10 @@ in vec4 input_color_0;
 void main()
 {
 
-#line 76
-    vec4 _S1 = input_color_0 * (texture((samplerColor_0), (input_uv_0)));
+#line 69
+    entryPointParam_fragMain_0 = input_color_0 * (texture((samplerColor_0), (input_uv_0)));
 
-#line 71
-    vec4 color_0 = _S1;
-
-#line 81
-    color_0.xyz = _S1.xyz * _S1.w;
-
-#line 81
-    entryPointParam_fragMain_0 = color_0;
-
-#line 81
+#line 69
     return;
 }
 

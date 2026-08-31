@@ -1,19 +1,34 @@
 ﻿/*
  * ovg_renderer_sdl3.cpp
- * SDL3 GPU 矢量渲染后端 — "ref 动态切"版
- *
- * 核心设计（stencil 位平面）：
- *   bit0 = STENCIL_FILL_BIT (0x1) → 奇偶填充（INVERT 翻转）
- *   bit1 = STENCIL_CLIP_BIT (0x2) → 裁剪掩码（REPLACE 写入）
- *
- * 原则：
- *   - compareOp / compareMask / writeMask / passOp → pipeline 静态
- *   - ref → SDL_SetGPUStencilReference() 动态切
- *   - 每次 bind pipeline 后立刻 SetStencilReference
-set0 vert 纹理
-set1 vert ubo
-set2 frag 纹理
-set3 frag ubo
+ * SDL3 GPU 矢量渲染后端
+ 
+
+
+
+
+2026/8/31 后端支持普通三角形渲染
+
+
+shader规则：
+每set的binding排列
+ Category 1: read resources
+	  samplerCount,
+	  storageTextureCount,
+	  storageBufferCount,
+ Category 2: write resources
+	  writeStorageTextureCount,
+	  writeStorageBufferCount,
+ Category 3: uniform buffers
+	  uniformBufferCount
+
+顶点	set=0[num_samplers, num_storageTextures, num_storageBuffers]
+	set=1[num_uniformBuffers]
+像素	set=2[num_samplers, num_storageTextures, num_storageBuffers]
+	set=3[numUniformBuffers]
+计算	set=0[num_samplers, num_readonly_storage_textures, num_readonly_storage_buffers]
+	set=1[num_readwrite_storage_textures, num_readwrite_storage_buffers]
+	set=2[num_uniform_buffers]
+
 
  */
 
@@ -106,6 +121,7 @@ struct ovg_device_t {
 
 	sdl3gpu_texture* emptyTexture = nullptr;
 	SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_INVALID;
+
 };
 class gpu_buffer_cx
 {
@@ -312,9 +328,9 @@ void gpu_buffer_cx::init(SDL_GPUDevice* d, const SDL_GPUBufferCreateInfo* create
 void gpu_buffer_cx::init(SDL_GPUDevice* d, uint32_t usage, size_t capacity)
 {
 	SDL_GPUBufferCreateInfo c = {};
-	if (!d || !dev || !usage)return;
+	if ((!d && !dev) || !usage)return;
 	c.usage = usage;
-	info.size = align_up(capacity, 256);
+	c.size = align_up(capacity, 256);
 	if (d)
 		dev = d;
 	buf = SDL_CreateGPUBuffer(dev, &c);
@@ -372,7 +388,7 @@ void OvgGpuBuffers::begin(size_t vcs, size_t ics, size_t ssbocs)
 	}
 	_vbo.resize(vcs);
 	_ibo.resize(ics);
-	_ssbo.resize(ics);
+	_ssbo.resize(ssbocs);
 	mapdt = (char*)SDL_MapGPUTransferBuffer(_device, _staging, true);
 	vbo_ps = ibo_ps = ssbo_ps = 0;
 	if (!mapdt)return;
@@ -772,11 +788,9 @@ static void destroy_texture(sdl3gpu_texture* tex) {
         (blend).alpha_blend_op = SDL_GPU_BLENDOP_ADD; \
     } while(0)
 
-void gpu_set_blend(SDL_GPUColorTargetBlendState& blend, uint32_t blendMode)
+void gpu_set_blend(SDL_GPUColorTargetBlendState& blend, blendMode_e bm)
 {
 	blend = {};
-	auto bm = static_cast<blendMode_e>(blendMode);
-
 	switch (bm)
 	{
 	case blendMode_e::none:
@@ -898,7 +912,7 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, cons
 		SDL_GPU_COLORCOMPONENT_B |
 		SDL_GPU_COLORCOMPONENT_A;
 
-	gpu_set_blend(colorTarget.blend_state, (uint32_t)inputs->blendMode);
+	gpu_set_blend(colorTarget.blend_state, inputs->blendMode);
 	if (inputs->logicOpEnable)
 		colorTarget.blend_state.alpha_blend_op = colorTarget.blend_state.color_blend_op = inputs->logicOp;
 	SDL_GPUDepthStencilState dsState = {};
@@ -963,14 +977,12 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline(ovg_device_t* dev, cons
 // ★ 核心：5 条 VG 管道初始化（ref 动态切方案）
 // ========================================================================
 //
-// 位平面分配：
-//   bit0 (STENCIL_FILL_BIT = 0x1) → 奇偶填充，由 pipePolyFill 的 INVERT 翻转
-//   bit1 (STENCIL_CLIP_BIT = 0x2) → 裁剪掩码，由 pipeClipping 的 REPLACE 写入
+//   bit1 (STENCIL_CLIP_BIT = 0x1) → 裁剪掩码，由 pipeClipping 的 REPLACE 写入
 //
 // 动态 ref 切换：
 //   - 填充阶段：ref 无关（INVERT 不依赖 ref）
-//   - 裁剪阶段：ref = STENCIL_CLIP_BIT (0x2)，写入掩码
-//   - 绘制阶段：ref = STENCIL_CLIP_BIT (0x2)，通过测试
+//   - 裁剪阶段：ref = STENCIL_CLIP_BIT，写入掩码
+//   - 绘制阶段：ref = STENCIL_CLIP_BIT，通过测试
 //
 // ========================================================================
 static void init_vg_pipelines(ovg_ctx_t* ctx) {
@@ -991,7 +1003,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 	// ═══════════════════════════════════════════════════════════════
 	// ② pipeClipping — 裁剪掩码写入
-	//   职责：把通过的像素 bit1 写成 ref（= STENCIL_CLIP_BIT = 0x2）
+	//   职责：把通过的像素 bit1 写成 ref（= STENCIL_CLIP_BIT = 0x1）
 	//   使用：TRIANGLE_LIST，compareOp=ALWAYS
 	//   绘制前需：SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT)
 	// ═══════════════════════════════════════════════════════════════
@@ -1050,8 +1062,8 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		//   compareOp = EQUAL → (stencil & compare_mask) == (ref & compare_mask)
 		//   compare_mask = CLIP_BIT → 只比 bit1
 		//   writeMask = 0 → 不改 stencil
-		//   ref = STENCIL_CLIP_BIT (0x2) → 动态设置
-		inputs.ds.compare_mask = STENCIL_CLIP_BIT;      // 0x2
+		//   ref = STENCIL_CLIP_BIT (0x1) → 动态设置
+		inputs.ds.compare_mask = STENCIL_CLIP_BIT;
 		inputs.ds.write_mask = 0x0;                   // 不改 stencil
 		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_EQUAL;
 		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_KEEP;
@@ -1265,12 +1277,10 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 // ========================================================================
 // 几何管道创建
 // ========================================================================
-static pipelinestate_p_internal create_geom_pipeline(
-	ovg_device_t* dev,
-	const gem_info_t* info)
+static pipelinestate_p_internal create_geom_pipeline(ovg_ctx_t* ctx, const gem_info_t* info)
 {
 	pipelinestate_p_internal result = {};
-
+	auto dev = ctx->device;
 	int shaderIdx = info->shader;
 	if (shaderIdx < 0 || shaderIdx >= 5) shaderIdx = 0;
 	bool doublesided = info->shader == ST_INSTANCE_DOUBLESIDED || info->shader == ST_DOUBLESIDED;
@@ -1285,7 +1295,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 	};
 
 	SDL_GPUColorTargetDescription colorTarget = {};
-	colorTarget.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	colorTarget.format = ctx->colorFormat;
 	colorTarget.blend_state.enable_color_write_mask = true;
 	colorTarget.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R |
 		SDL_GPU_COLORCOMPONENT_G |
@@ -1300,7 +1310,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 	colorTarget.blend_state.src_alpha_blendfactor = bp.srcAlpha;
 	colorTarget.blend_state.dst_alpha_blendfactor = bp.dstAlpha;
 	colorTarget.blend_state.alpha_blend_op = bp.alphaOp;
-	gpu_set_blend(colorTarget.blend_state, (uint32_t)info->blendMode);
+	gpu_set_blend(colorTarget.blend_state, (blendMode_e)info->blendMode);
 
 	SDL_GPUDepthStencilState dsState = {};
 	dsState.enable_depth_test = (info->flags & (uint8_t)depth_stencil_State::d_depthtest_enable) != 0;
@@ -1318,11 +1328,11 @@ static pipelinestate_p_internal create_geom_pipeline(
 	SDL_GPURasterizerState rasterState = {};
 	rasterState.fill_mode = (SDL_GPUFillMode)info->polygon;
 	rasterState.cull_mode = SDL_GPU_CULLMODE_NONE;
-	rasterState.front_face = info->frontFace ? SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE : SDL_GPU_FRONTFACE_CLOCKWISE;
+	rasterState.front_face = info->frontFace ? SDL_GPU_FRONTFACE_CLOCKWISE : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 	rasterState.enable_depth_clip = false;
 
 	SDL_GPUMultisampleState msState = {};
-	msState.sample_count = SDL_GPU_SAMPLECOUNT_1;
+	msState.sample_count = ctx->samples;
 	msState.sample_mask = 0;// 0xFFFFFFFF;
 
 	SDL_GPUVertexBufferDescription vbDesc = {};
@@ -1348,7 +1358,7 @@ static pipelinestate_p_internal create_geom_pipeline(
 	//pci.color_target_descriptions = &colorTarget;
 	//pci.enable_primitive_restart = false;
 	pci.target_info.has_depth_stencil_target = true;
-	pci.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
+	pci.target_info.depth_stencil_format = ctx->depthFormat;
 	pci.target_info.num_color_targets = 1;
 	pci.target_info.color_target_descriptions = &colorTarget;
 
@@ -1381,7 +1391,7 @@ static pipelinestate_p_internal* get_geom_pipeline(ovg_ctx_t* ctx, const gem_inf
 	ctx->currentState = key;
 	auto it = ctx->geomPipelines.find(key);
 	if (it == ctx->geomPipelines.end()) {
-		pipelinestate_p_internal p = create_geom_pipeline(ctx->device, info);
+		pipelinestate_p_internal p = create_geom_pipeline(ctx, info);
 		ctx->geomPipelines[key] = p;
 		ctx->currentPipeline = &ctx->geomPipelines[key];
 	}
@@ -1397,9 +1407,9 @@ static pipelinestate_p_internal* get_geom_pipeline(ovg_ctx_t* ctx, const gem_inf
 //
 // 每次 bind pipeline 后立刻设置正确的 stencil reference：
 //   pipePolyFill → ref 无关（ALWAYS），设 0 即可
-//   pipeClipping → ref = STENCIL_CLIP_BIT (0x2)，REPLACE 写入
-//   pipeOVER     → ref = STENCIL_CLIP_BIT (0x2)，EQUAL 比较
-//   pipeSUB      → ref = STENCIL_CLIP_BIT (0x2)，EQUAL 比较
+//   pipeClipping → ref = STENCIL_CLIP_BIT，REPLACE 写入
+//   pipeOVER     → ref = STENCIL_CLIP_BIT，EQUAL 比较
+//   pipeSUB      → ref = STENCIL_CLIP_BIT，EQUAL 比较
 //   pipeCLEAR    → stencil 已禁用，ref 无关
 //
 // ========================================================================
@@ -1423,13 +1433,13 @@ void ovg_bind_vg_pipeline(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPUR
 	switch (pipeIndex) {
 	case VG_PIPE_CLIPPING:
 		// REPLACE 写入：ref = STENCIL_CLIP_BIT → 通过的像素 bit1 = 1
-		SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);  // 0x2
+		SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);
 		break;
 
 	case VG_PIPE_OVER:
 	case VG_PIPE_SUB:
 		// EQUAL 比较：只画 bit1 == 1 的像素
-		SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);  // 0x2
+		SDL_SetGPUStencilReference(pass, STENCIL_CLIP_BIT);
 		break;
 	case VG_PIPE_CLEAR:
 		// stencil 已禁用，ref 无关
@@ -1843,10 +1853,6 @@ void ovg_wait_idle(ovg_ctx_t* ctx) {
 	SDL_WaitForGPUIdle(ctx->device->gpuDevice);
 }
 
-// ========================================================================
-// 一次性绘制入口
-// ========================================================================
-
 void ovg_sort_gradient_stops(vg_gradient_t* grad, float* stops, uint32_t count) {
 	auto colors = grad->colors;
 	for (uint32_t i = 1; i < count; i++) {
@@ -2111,6 +2117,10 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm::uvec3& offset)
 {
 	if (!c)return;
+	pipelinestate_p_internal* pipe = get_geom_pipeline(fbo->ctx, &c->state);
+	if (pipe && pipe->pipeline) {
+		SDL_BindGPUGraphicsPipeline(pass, pipe->pipeline);
+	}
 	fbo->ctx->gpubuf->bindVBO(pass, c->v_offset ? offset.y : offset.x);
 	fbo->ctx->gpubuf->bindIBO(pass, offset.z);
 	if (c->instance_count > 1)
@@ -2142,16 +2152,13 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 	};
 	PushConsts pc = { c->mat, c->instance_ssbo_pos };
 	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(PushConsts));
-
-	//auto cp = get_state(&c->state);
-
 	if (c->firstIndex >= 0)
 	{
-		SDL_DrawGPUIndexedPrimitives(pass, c->elemCount, 1, c->firstIndex, c->vertexOffset, 0);
+		SDL_DrawGPUIndexedPrimitives(pass, c->elemCount, c->instance_count > 1 ? c->instance_count : 1, c->firstIndex, c->vertexOffset, 0);
 	}
 	else
 	{
-		SDL_DrawGPUPrimitives(pass, c->elemCount, 1, c->vertexOffset, 0);
+		SDL_DrawGPUPrimitives(pass, c->elemCount, c->instance_count > 1 ? c->instance_count : 1, c->vertexOffset, 0);
 	}
 }
 
@@ -2192,15 +2199,29 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 	size_t total_vbo = 0;
 	size_t total_ibo = 0;
 	size_t total_ssbo = 0;
+	int errornum = 0;
 	for (size_t i = 0; i < count; i++) {
+		auto* kd = &data[i];
 		total_vbo += data[i].v_count * sizeof(ovgVertex);
 		total_vbo += data[i].v1_count * sizeof(geomVertex1);
 		total_vbo += data[i].v2_count * sizeof(geomVertex2);
 
 		total_ibo += data[i].i_count * sizeof(uint32_t);
-		total_ibo += data[i].g_count * sizeof(uint32_t);
+		total_ibo += data[i].ig_count * sizeof(uint32_t);
 		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
+		for (size_t y = 0; y < kd->count; y++)
+		{
+			auto it = kd->d + y;
+			if (it->g.stype == cmd_type_e::DRAW_GEOM)
+			{
+				pipelinestate_p_internal* p = get_geom_pipeline(ctx, &it->g.state);
+				if (!p) {
+					errornum++;
+				}
+			}
+		}
 	}
+	assert(errornum == 0);
 	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
 
 	for (size_t i = 0; i < count; i++) {
@@ -2209,7 +2230,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 		kd->vg_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
 		kd->geom_offset.x = ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
 		kd->geom_offset.y = ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
-		kd->geom_offset.z = ctx->gpubuf->add_ibo(kd->geom_indices, kd->g_count * sizeof(uint32_t));
+		kd->geom_offset.z = ctx->gpubuf->add_ibo(kd->geom_indices, kd->ig_count * sizeof(uint32_t));
 		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
 	}
 	ctx->gpubuf->end(cmd);
@@ -2222,13 +2243,13 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 		for (size_t i = 0; i < kd->count; i++)
 		{
 			auto& it = kd->d[i];
-			switch (it.g.stype) {
-			case 0:
+			switch ((cmd_type_e)it.g.stype) {
+			case cmd_type_e::DRAW_VG:
 			{
 				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset);
 			}
 			break;
-			case 1:
+			case cmd_type_e::DRAW_GEOM:
 			{
 				draw_geom(fbo, pass, &it.g, kd->geom_offset);
 			}

@@ -1,5 +1,7 @@
 ﻿/*
+矢量渲染
 
+2026/8/31 支持普通三角形渲染
 2026/8/13 版本1.0
 2026/8/8 创建文件
 
@@ -2889,7 +2891,7 @@ void  ovg_set_geom_state(rvg_t* v0, gem_info_t* info, const glm::mat4* matrix)
 size_t ovg_set_instance_mat(rvg_t* v0, const glm::mat4* matrix, size_t count)
 {
 	auto dc = (rvg_cx*)v0;
-	return (dc && count && matrix) ? dc->gps.set_instance_mat(matrix, count) : 0;
+	return (dc) ? dc->gps.set_instance_mat(matrix, count) : 0;
 }
 // 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
 void  ovg_add_geometry(rvg_t* v0, vg_surface_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type)
@@ -3034,9 +3036,9 @@ size_t geom_primitive::set_instance_mat(const glm::mat4* matrix, size_t count)
 	{
 		instance_mat.resize(ps + count);
 		memcpy(instance_mat.data() + ps, matrix, count * sizeof(glm::mat4));
-		inst_count = count;
 		inst_idx = ps;
 	}
+	inst_count = count;
 	return ps;
 }
 
@@ -3048,7 +3050,8 @@ bool geom_primitive::add_geometry(void* texture, const float* xy, int xy_stride,
 	c.texture = texture;
 	c.mat = mat;
 	c.instance_count = inst_count;
-	c.instance_ssbo_pos = inst_idx;
+	if (inst_count > 0)
+		c.instance_ssbo_pos = inst_idx;
 	float scale_x = 1.0, scale_y = 1.0;
 	float u_scale = 1.0, v_scale = 1.0;
 	size_indices = indices ? size_indices : 0;
@@ -3169,6 +3172,9 @@ bool geom_primitive::add_geometry3d(void* texture, const float* xyz, int xyz_str
 	c.state = curState;
 	c.texture = texture;
 	c.mat = mat;
+	c.instance_count = inst_count;
+	if (inst_count > 0)
+		c.instance_ssbo_pos = inst_idx;
 	float scale_x = 1.0, scale_y = 1.0, scale_z = 1.0;
 	float u_scale = 1.0, v_scale = 1.0;
 	size_indices = indices ? size_indices : 0;
@@ -3310,12 +3316,12 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 	auto vbs = av->vtxs.size();
 	auto ibs = av->idxs.size();
 	std::vector<int> idxs;
-	struct { void* texture; uint32_t blendMode; } states = {};
+	struct { void* texture; int blendMode; } states = {};
 	glm::ivec4 oldclip = {};
 	ovg_get_clip_rect(ctx, (int*)&oldclip);
 	size_t cclip = 0;
 	gem_info_t info = {};
-	info.blendMode = (uint8_t)blendMode_e::normal;
+	info.blendMode = (int8_t)blendMode_e::normal;
 	info.topology = 3;
 	//info.doubleSided = false;
 	//info.depthTestEnable = false;
@@ -3349,7 +3355,7 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 		int size_indices = 4;
 		auto indices = ibs ? idv + pcmd.idxOffset : nullptr;
 		auto num_indices = pcmd.elemCount;
-		uint32_t blend = pcmd.blend_mode;
+		int8_t blend = pcmd.blend_mode;
 		if (states.blendMode != blend) {
 			states.blendMode = blend;
 			info.blendMode = states.blendMode;
@@ -3726,23 +3732,25 @@ void mesh2d_x::add_image_angle(void* img, const glm::ivec2& texsize, const glm::
 ovg_draw_data_t get_draw_list(rvg_t* p0)
 {
 	rvg_cx* p = (rvg_cx*)p0;
-	ovg_draw_data_t r = {};
+	ovg_draw_data_t ret = {};
 	if (p)
 	{
-		r.d = p->cmdlist.data(); r.count = p->cmdlist.size();
-		r.vg_vertex = (ovgVertex*)p->_vertex.data();
-		r.v_count = p->_vertex.size();
-		r.vg_indices = p->_indices.data();
-		r.i_count = p->_indices.size();
-		r.uboCount = p->gCount;
-		r.vertex1 = (geomVertex1*)p->gps.vd1.data();
-		r.v1_count = p->gps.vd1.size();
-		r.vertex2 = (geomVertex2*)p->gps.vd2.data();
-		r.v2_count = p->gps.vd2.size();
-		r.geom_indices = p->gps.ids.data();
-		r.g_count = p->gps.ids.size();
+		ret.d = p->cmdlist.data(); ret.count = p->cmdlist.size();
+		ret.vg_vertex = (ovgVertex*)p->_vertex.data();
+		ret.v_count = p->_vertex.size();
+		ret.vg_indices = p->_indices.data();
+		ret.i_count = p->_indices.size();
+		ret.uboCount = p->gCount;
+		ret.vertex1 = (geomVertex1*)p->gps.vd1.data();
+		ret.v1_count = p->gps.vd1.size();
+		ret.vertex2 = (geomVertex2*)p->gps.vd2.data();
+		ret.v2_count = p->gps.vd2.size();
+		ret.geom_indices = p->gps.ids.data();
+		ret.ig_count = p->gps.ids.size();
+		ret.instance_count = p->gps.instance_mat.size();
+		ret.instance_data = p->gps.instance_mat.data();
 	}
-	return r;
+	return ret;
 }
 
 // cmd ctx

@@ -5,6 +5,7 @@
 #include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
+#include <unordered_map>
 using namespace std;
 
 // 渲染普通文本
@@ -291,7 +292,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	//cb->clip(vg, vg);// 圆角矩形裁剪
 	//cb->clip_rect(vg, 20, 150, 300, 500);// 矩形裁剪会接受当前矩阵影响
 	{
-		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false); 
+		auto pat = cb->new_pattern_radial(vg, 150, 100, 25.6, 102.4, 102.4, 128.0, false);
 		cb->pattern_add_color_stop(pat, 0, 0, 0, 1, 0);// 蓝
 		cb->pattern_add_color_stop(pat, 0.5, 0, 1, 0, 1);
 		cb->pattern_add_color_stop(pat, 1, 1, 0, 0, 1);// 红
@@ -300,6 +301,316 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->arc(vg, 128, 128.0, 76.8, 0, 2 * M_PI);
 	cb->fill(vg);// 填充
 
+
+}
+#if 1
+glm::vec3 polarToVector(float yaw, float pitch) {
+	return glm::vec3(
+		sinf(yaw) * sinf(pitch),  // x = sin(yaw) * sin(pitch)
+		cosf(pitch),              // y = cos(pitch)
+		cosf(yaw) * sinf(pitch)   // z = cos(yaw) * sin(pitch)
+	);
+}
+
+void generateSphere(int sides, std::vector<uint32_t>& outIndices, std::vector<glm::vec3>& outVertices) {
+	outIndices.clear();
+	outVertices.clear();
+	outVertices.reserve((sides + 1) * (sides + 1));  // 调整预留大小 
+	outIndices.reserve(sides * sides * 6);          // 每个网格生成 2 个三角形（6 个索引）
+
+	for (int roll = 0; roll <= sides; roll++) {    // 改为闭合区间 
+		float phi = roll * (glm::pi<float>() * 2.0f) / sides;  // yaw 覆盖 0-2π
+		for (int theta = 0; theta <= sides; theta++) {        // pitch 覆盖 0-π
+			float thetaRad = theta * glm::pi<float>() / sides;
+			outVertices.push_back(polarToVector(phi, thetaRad));
+		}
+	}
+
+	// 生成索引（参考球面经纬网格连接逻辑）
+	for (int i = 0; i < sides; i++) {
+		for (int j = 0; j < sides; j++) {
+			uint32_t currentRow = i * (sides + 1);
+			uint32_t nextRow = (i + 1) * (sides + 1);
+			outIndices.push_back(currentRow + j);
+			outIndices.push_back(nextRow + j);
+			outIndices.push_back(nextRow + j + 1);
+			outIndices.push_back(currentRow + j);
+			outIndices.push_back(nextRow + j + 1);
+			outIndices.push_back(currentRow + j + 1);
+		}
+	}
+}
+void generateCube(std::vector<glm::vec3>& vertices, std::vector<unsigned int>& indices, float r, const glm::vec3& pos)
+{
+	std::vector<glm::vec3> v = {
+		glm::vec3{ -r, -r, -r }, glm::vec3{ r, -r, -r },
+			glm::vec3{ -r,  r, -r }, glm::vec3{ r,  r, -r },
+			glm::vec3{ -r, -r,  r }, glm::vec3{ r, -r,  r },
+			glm::vec3{ -r,  r,  r }, glm::vec3{ r,  r,  r }
+	};
+	std::vector<uint32_t> idx = {
+		0, 2, 3, 1,  4,5,7,6 ,
+		 0,1,5,4 ,  1,3,7,5 ,
+		 3,2,6,7 ,  2,0,4,6 ,
+	};
+	std::vector<uint32_t> triangles = {
+	0,3,2,  0,1,3,     // 第一个四边形 0,2,3,1 
+	4,7,5,  4,6,7,     // 第二个四边形 4,5,7,6 
+	0,5,1,  0,4,5,     // 第三个四边形 0,1,5,4 
+	1,7,3,  1,5,7,     // 第四个四边形 1,3,7,5 
+	3,6,2,  3,7,6,     // 第五个四边形 3,2,6,7 
+	2,4,0,  2,6,4      // 第六个四边形 2,0,4,6 
+	};
+	vertices = v;
+	for (auto& it : vertices)it += pos;
+	indices = triangles;
+}
+void generateTorus(std::vector<glm::vec3>& vertices, std::vector<glm::vec3>& normals, std::vector<glm::vec2>& texCoords, std::vector<unsigned int>& indices,
+	float R, float r, int numSegments, int numRings)
+{
+	auto idx = vertices.size();
+	auto idxs = indices.size();
+	vertices.reserve(idx + (numRings + 1) * (numSegments + 1));
+	indices.reserve(idxs + numRings * numSegments * 6);
+	normals.reserve(idx + (numRings + 1) * (numSegments + 1));
+	texCoords.reserve(idx + (numRings + 1) * (numSegments + 1));
+	for (int i = 0; i <= numRings; ++i) {
+		float ringAngle = 2 * glm::pi<float>() * i / numRings;
+		glm::mat4 ringRotate = glm::rotate(glm::mat4(1.0f), ringAngle, glm::vec3(0, 1, 0));
+
+		for (int j = 0; j <= numSegments; ++j) {
+			float segAngle = 2 * glm::pi<float>() * j / numSegments;
+			glm::vec3 basePoint(r * cos(segAngle), r * sin(segAngle), R);
+
+			// 顶点位置（应用旋转变换）
+			glm::vec4 worldPos = ringRotate * glm::vec4(basePoint, 1.0f);
+			vertices.push_back(glm::vec3(worldPos));
+
+			// 法向量（圆心到顶点的方向）
+			auto n = glm::vec3(worldPos - ringRotate * glm::vec4(0, 0, R, 1));
+			glm::vec3 normal = glm::normalize(n);
+			normals.push_back(normal);
+
+			// 纹理坐标（避免接缝处拉伸）
+			float u = static_cast<float>(i) / numRings;
+			float v = static_cast<float>(j) / numSegments;
+			texCoords.push_back(glm::vec2(u, v));
+		}
+	}
+	for (int i = 0; i < numRings; ++i) {
+		for (int j = 0; j < numSegments; ++j) {
+			int current = i * (numSegments + 1) + j;
+			int next = current + numSegments + 1;
+			current += idx;
+			next += idx;
+			// 四边形拆分为两个三角形 
+			indices.push_back(current);
+			indices.push_back(next);
+			indices.push_back(current + 1);
+
+			indices.push_back(next);
+			indices.push_back(next + 1);
+			indices.push_back(current + 1);
+		}
+	}
+}
+
+struct mesh3d_vi {
+	std::vector<glm::vec3> vertices;
+	std::vector<uint32_t> indices; // 三角形索引，每三个一组表示一个三角形 
+};
+
+
+// 获取边的唯一键 
+inline size_t getEdgeKey(size_t i0, size_t i1) {
+	if (i0 > i1) std::swap(i0, i1);
+	return (i0 << 32) | i1;
+}
+
+// 获取或创建边中点 
+size_t getMidpoint(std::unordered_map<size_t, size_t>& midCache,
+	std::vector<glm::vec3>& vertices,
+	size_t i0, size_t i1) {
+	size_t key = getEdgeKey(i0, i1);
+	auto it = midCache.find(key);
+	if (it != midCache.end())
+		return it->second;
+
+	glm::vec3 mid = glm::normalize((vertices[i0] + vertices[i1]) * 0.5f);
+	size_t index = vertices.size();
+	vertices.push_back(mid);
+	midCache[key] = index;
+	return index;
+}
+
+void createIcosphere(mesh3d_vi* shphere, size_t subdivisions, float radius, const glm::vec3& pos)
+{
+	const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
+
+	if (!(radius > 1.0f)) {
+		shphere->vertices.clear();
+		shphere->indices.clear();
+		return;
+	}
+	// 初始二十面体的12个顶点 
+	std::vector<glm::vec3> verts = {
+		glm::normalize(glm::vec3(-1,  t,  0)),
+		glm::normalize(glm::vec3(1,  t,  0)),
+		glm::normalize(glm::vec3(-1, -t,  0)),
+		glm::normalize(glm::vec3(1, -t,  0)),
+		glm::normalize(glm::vec3(0, -1,  t)),
+		glm::normalize(glm::vec3(0,  1,  t)),
+		glm::normalize(glm::vec3(0, -1, -t)),
+		glm::normalize(glm::vec3(0,  1, -t)),
+		glm::normalize(glm::vec3(t,  0, -1)),
+		glm::normalize(glm::vec3(t,  0,  1)),
+		glm::normalize(glm::vec3(-t,  0, -1)),
+		glm::normalize(glm::vec3(-t,  0,  1))
+	};
+
+	// 初始二十面体的20个三角形面 
+	std::vector<unsigned int> triangles = {
+		0,11,5,  0,5,1,  0,1,7,  0,7,10,  0,10,11,
+		1,5,9,  5,11,4,  11,10,2,  10,7,6,  7,1,8,
+		3,9,4,  3,4,2,  3,2,6,  3,6,8,  3,8,9,
+		4,9,5,  2,4,11, 6,2,10, 8,6,7,  9,8,1
+	};
+	auto length = triangles.size() / 3;
+	for (size_t i = 0; i < length; i++)
+	{
+		std::swap(triangles[i * 3 + 1], triangles[i * 3 + 2]); // 翻转三角形顶点顺序
+	}
+	std::unordered_map<size_t, size_t> midCache;
+	std::vector<unsigned int> newTriangles;
+	// 递归细分 
+	for (unsigned int i = 0; i < subdivisions; ++i) {
+		midCache.clear();
+		newTriangles.clear();
+		for (size_t j = 0; j < triangles.size(); j += 3) {
+			size_t v0 = triangles[j];
+			size_t v1 = triangles[j + 1];
+			size_t v2 = triangles[j + 2];
+
+			size_t a = getMidpoint(midCache, verts, v0, v1);
+			size_t b = getMidpoint(midCache, verts, v1, v2);
+			size_t c = getMidpoint(midCache, verts, v2, v0);
+
+			newTriangles.insert(newTriangles.end(), {
+				(unsigned)v0, (unsigned)a, (unsigned)c,
+				(unsigned)v1, (unsigned)b, (unsigned)a,
+				(unsigned)v2, (unsigned)c, (unsigned)b,
+				(unsigned)a, (unsigned)b, (unsigned)c
+				});
+		}
+		triangles.swap(newTriangles);
+	}
+	shphere->vertices = verts;
+	shphere->indices = triangles;
+	glm::vec3 sc = { 1,1,1 };
+	if ((radius > 0.0f && radius < 1.0f) || radius > 1.0f)
+	{
+		sc = { radius,radius,radius };
+	}
+	for (auto& it : shphere->vertices)it = pos + it * sc;
+}
+
+glm::mat4 ortho(float width, float height, float znear, float zfar, bool is_top)
+{
+	return is_top ? glm::ortho(0.0f, width, height, 0.0f, znear, zfar) : glm::ortho(0.0f, width, 0.0f, height, znear, zfar);
+}
+#endif // 1
+
+void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
+	gem_info_t info = {};
+	info.blendMode = (uint8_t)blendMode_e::normal;
+	info.topology = 0;
+	info.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+	info.frontFace = 0;
+	info.cullMode = 0;
+	auto info2d = info;
+	glm::vec2 surfSize = { (float)fbo->width, (float)fbo->height };
+
+	uint32_t color[3] = { 0x8f0080FF,0xFF80FF00,0xFF555555 };
+	uint32_t indices[15] = { 0,1,2,0,2,3,0,3,4,0,4,5,0,5,1 };
+	glm::vec3 v[6] = {};
+	glm::vec2 uv[6] = {};
+	double r = 100.0;
+	glm::vec3 pos = { 126,126,0 };
+	v[0] = glm::vec3(0.0f) + pos;
+	auto t = v;
+	t++;
+	for (int i = 0; i < 5; ++i) {
+		double angle = 2.0 * M_PI * i / 5; // 五边形角度
+		double x = r * cos(angle + M_PI / 2); // 旋转90°使顶点朝上
+		double y = r * sin(angle + M_PI / 2);
+		*t++ = glm::vec3(x, y, 0.0f) + pos;
+	}
+
+	std::vector<uint32_t> indices3; std::vector<glm::vec3> vertices3;
+	generateSphere(16, indices3, vertices3);
+	std::vector<glm::vec3>vertices, normals; std::vector<glm::vec2>  texCoords; std::vector<unsigned int> indices4;
+	//generateTorus(vertices3, normals, texCoords, indices3, 2.0f, 1.0f, 32, 64);
+	generateCube(vertices, indices4, 1.2f, glm::vec3(2.5, 0, 0));
+
+	mesh3d_vi shphere;
+	createIcosphere(&shphere, 2, 2, glm::vec3(-3.2, 0, 0));
+
+	glm::mat4 model = glm::mat4(1.0f);
+	//model = glm::translate(glm::mat4(1.0), glm::vec3(2, 0, 0));
+	float fov = 45;
+	glm::mat4 projection = glm::perspective(glm::radians(fov), (float)(surfSize.x * 1.0 / surfSize.y), 0.1f, 1000.0f);
+	// 视图矩阵：摄像机位于(0,1,5)，看向原点，上方向为(0,1,0)
+	glm::mat4 view = glm::lookAt(
+		glm::vec3(0.0f, 0.0f, 8.0f),
+		glm::vec3(0.0f, 0.0f, 0.0f),
+		glm::vec3(0.0f, 1.0f, 0.0f)
+	);
+	glm::mat4 mat = projection * view * model;
+	cb->set_geom_state(vg, &info, &mat);
+	info.lineWidth = 1;
+	//gem_info_s info;
+	info.blendMode = (uint8_t)blendMode_e::normal;
+	info.topology = 0;
+	info.shader = ST_DOUBLESIDED;
+	info.flags = ((uint8_t)depth_stencil_State::d_depthtest_enable | (uint8_t)depth_stencil_State::d_depthwrite_enable);
+
+	cb->set_geom_state(vg, &info, &mat);
+	cb->add_geometry3d(vg, nullptr, (float*)vertices3.data(), sizeof(glm::vec3), &color[1], 0, (float*)uv, sizeof(glm::vec2), vertices3.size(), indices3.data(), indices3.size(), sizeof(uint32_t), 1);
+
+	cb->add_geometry3d(vg, nullptr, (float*)vertices.data(), sizeof(glm::vec3), &color[1], 0, (float*)uv, sizeof(glm::vec2), vertices.size(), indices4.data(), indices4.size(), sizeof(uint32_t), 1);
+
+	uint32_t color2[2] = { 0xFF9678B4,0xFFf55555 };
+
+	{
+		glm::mat4 ins[5] = {};
+		ins[0] = glm::mat4(1.0);
+		ins[1] = glm::translate(glm::vec3(0.5, 1.0, 0));
+		cb->set_instance_mat(vg, ins, 2);
+		info.shader = ST_INSTANCE;
+		cb->set_geom_state(vg, &info, &mat);
+	}
+	cb->add_geometry3d(vg, nullptr, (float*)shphere.vertices.data(), sizeof(glm::vec3), color2, 0, (float*)uv, sizeof(glm::vec2), shphere.vertices.size(), shphere.indices.data(), shphere.indices.size(), sizeof(uint32_t), 1);
+
+	cb->set_instance_mat(vg, 0, 0);
+
+	info.polygon = 1;// 线框模式  
+	info.shader = ST_NONE;
+	cb->set_geom_state(vg, &info, &mat);
+	uint32_t color1[2] = { 0xFF2c2c2c,0xFFf55555 };
+	cb->add_geometry3d(vg, nullptr, (float*)vertices3.data(), sizeof(glm::vec3), color1, 0, (float*)uv, sizeof(glm::vec2), vertices3.size(), indices3.data(), indices3.size(), sizeof(uint32_t), 1);
+	cb->add_geometry3d(vg, nullptr, (float*)vertices.data(), sizeof(glm::vec3), color1, 0, (float*)uv, sizeof(glm::vec2), vertices.size(), indices4.data(), indices4.size(), sizeof(uint32_t), 1);
+	cb->add_geometry3d(vg, nullptr, (float*)shphere.vertices.data(), sizeof(glm::vec3), color1, 0, (float*)uv, sizeof(glm::vec2), shphere.vertices.size(), shphere.indices.data(), shphere.indices.size(), sizeof(uint32_t), 1);
+
+	info2d.shader = ST_INSTANCE;
+	mat = ortho(surfSize.x, surfSize.y, -1.0f, 1.0f, 0);
+	info2d.flags = ((uint8_t)depth_stencil_State::d_depthtest_enable);
+	cb->set_geom_state(vg, &info2d, &mat);
+	glm::mat4 ins[5] = {};
+	ins[0] = glm::mat4(1.0);
+	ins[1] = glm::translate(glm::vec3(200, 10, 0));
+	cb->set_instance_mat(vg, ins, 2);
+	auto vm = mat * glm::vec4(v[0], 1.0f);// 颜色结构0则读取第一个颜色，UV也一样
+	cb->add_geometry(vg, nullptr, (float*)v, sizeof(glm::vec3), color, 0, (float*)uv, sizeof(glm::vec2), 6, indices, 15, sizeof(uint32_t), 1);
 
 }
 
@@ -315,7 +626,7 @@ int main()
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
 
-	if (!vg_sdl3_init(g, surfsize.x, surfsize.y,true)) {
+	if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
 		SDL_Log("Init failed: %s", SDL_GetError());
 		return 1;
 	}
@@ -336,7 +647,7 @@ int main()
 	auto path = can->new_path(can->ac);
 	auto st = can->new_state(can->ac);
 	can->set_path(canvg, path, st);
-	bool testvg = true;
+	bool testvg = false;
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -346,8 +657,9 @@ int main()
 		{
 			rtc.begin();
 			cb->clear(vg);
-			can->clear(canvg);
-			can->reset_clip(canvg, 1);
+#if 0
+			//can->clear(canvg);
+			//can->reset_clip(canvg, 1);
 			//can->rectangle(path, 10, 10, 200, 200);
 			//can->set_source_color(st, 0xffff8000);
 			//can->set_path(canvg, path, st);
@@ -355,7 +667,7 @@ int main()
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 			glm::vec2 sf = fbo.display_size;
 			//sf *= 0.5;
-			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+			//draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 			cb->reset_clip(vg, 1);
 			if (testvg)
 				draw(cb, vg, fbo.display_size);// 录制图元
@@ -378,6 +690,10 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
+#endif
+
+			draw_test3d(&fbo, cb, vg);
+
 			static int xx = 190;
 			static int yy = 400;
 			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;

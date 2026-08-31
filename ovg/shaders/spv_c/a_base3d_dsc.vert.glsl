@@ -34,27 +34,27 @@ layout(location = 2)
 out vec4 entryPointParam_main_color1_0;
 
 
-#line 3120 1
+#line 1
 layout(location = 0)
 in vec3 input_pos_0;
 
 
-#line 3120
+#line 1
 layout(location = 1)
 in vec2 input_uv_0;
 
 
-#line 3120
+#line 1
 layout(location = 2)
 in vec4 input_color_0;
 
 
-#line 3120
+#line 1
 layout(location = 3)
 in vec4 input_color1_0;
 
 
-#line 11 0
+#line 11
 struct VSOutput_0
 {
     vec4 pos_0;

@@ -299,7 +299,7 @@ enum class depth_stencil_State :uint8_t {
 	d_stenciltest_enable = 0x04
 };
 // 混合模式 
-enum class blendMode_e :int {
+enum class blendMode_e :int8_t {
 	none = -1,	// 不混合
 	normal = 0,	// 普通混合
 	additive,
@@ -316,6 +316,10 @@ enum shader_type_e :uint8_t {
 	ST_INSTANCE,
 	ST_INSTANCE_DOUBLESIDED,
 };
+enum cmd_type_e :uint8_t {
+	DRAW_VG,
+	DRAW_GEOM,
+};
 // 0矢量图管线						2d
 // 0普通三角形(纹理)					2d/3d		tex0
 // 1普通三角形+遮罩纹理				2d/3d		tex0、tex1
@@ -323,7 +327,7 @@ enum shader_type_e :uint8_t {
 // 3三角形(纹理)实例化							ubo0、tex1
 // 4双面三角形(两种颜色/纹理)实例化				ubo0、tex1
 struct gem_info_t {
-	uint8_t blendMode = 0;
+	int8_t blendMode = 0;
 	uint8_t topology = 0;
 	uint8_t polygon = 0;
 	uint8_t frontFace = 0;	// COUNTER_CLOCKWISE = 0, CLOCKWISE = 1,
@@ -382,22 +386,22 @@ struct geomVertex2 {
 	uint32_t color1;
 };
 struct ovg_draw_data_t {
-	gcmd_t* d;				// 渲染命令列表
-	size_t count;
-	ovgVertex* vg_vertex;	// 矢量顶点
-	size_t v_count;
-	uint32_t* vg_indices;	// 矢量索引
-	size_t i_count;
-	size_t uboCount;		// 渐变ubo结构数量
-	geomVertex1* vertex1;	// 单面顶点
-	size_t v1_count;
-	geomVertex2* vertex2;	// 双面顶点
-	size_t v2_count;
-	uint32_t* geom_indices;	// 索引 
-	size_t g_count;			// 索引数量
-	size_t instance_count;	// 实例矩阵总数量
-	void* instance_data;	// 实例所有数据
-	glm::uvec2 vg_offset;		// 渲染自动计算用
+	gcmd_t* d = 0;				// 渲染命令列表
+	size_t count = 0;
+	ovgVertex* vg_vertex = 0;	// 矢量顶点
+	size_t v_count = 0;
+	uint32_t* vg_indices = 0;	// 矢量索引
+	size_t i_count = 0;
+	size_t uboCount = 0;		// 渐变ubo结构数量
+	geomVertex1* vertex1 = 0;	// 单面顶点
+	size_t v1_count = 0;
+	geomVertex2* vertex2 = 0;	// 双面顶点
+	size_t v2_count = 0;
+	uint32_t* geom_indices = 0;	// 索引 
+	size_t ig_count = 0;		// 索引数量
+	size_t instance_count = 0;	// 实例矩阵总数量
+	void* instance_data = 0;	// 实例所有数据
+	glm::uvec2 vg_offset = {};	// 渲染自动计算用
 	glm::uvec3 geom_offset = {};
 };
 

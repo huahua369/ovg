@@ -31,16 +31,17 @@ in vec4 input_color1_0;
 #line 69 0
 void main()
 {
-    vec4 color_0 = input_color_0;
 
-#line 71
-    vec4 _S1;
+#line 69
+    vec4 color_0;
+
+
 
     if(gl_FrontFacing)
     {
 
 #line 73
-        _S1 = input_color_0;
+        color_0 = input_color_0;
 
 #line 73
     }
@@ -48,24 +49,15 @@ void main()
     {
 
 #line 73
-        _S1 = input_color1_0;
+        color_0 = input_color1_0;
 
 #line 73
     }
 
+#line 73
+    entryPointParam_fragMain_0 = color_0 * (texture((samplerColor_0), (input_uv_0)));
 
-    vec4 _S2 = _S1 * (texture((samplerColor_0), (input_uv_0)));
-
-#line 76
-    color_0 = _S2;
-
-#line 81
-    color_0.xyz = _S2.xyz * _S2.w;
-
-#line 81
-    entryPointParam_fragMain_0 = color_0;
-
-#line 81
+#line 73
     return;
 }
 

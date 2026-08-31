@@ -77,8 +77,5 @@ float4 fragMain(VSOutput input, bool FrontFacing : SV_IsFrontFace) : SV_TARGET
 #ifdef COLOR_MASK
 	color *= 1.0 - step(pu.masktime, samplerMask.Sample(input.uv).r);
 #endif
-#ifndef NOT_PREMULT_ALPHA
-	color.rgb *= color.a;
-#endif
 	return color;
 }
