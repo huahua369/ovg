@@ -58,7 +58,19 @@ using uspool_t = std::pmr::unsynchronized_pool_resource;	// 线程不安全
 using mbpool_t = std::pmr::monotonic_buffer_resource;		// 线程不安全，多次分配，统一释放
 using spool_t = std::pmr::synchronized_pool_resource;		// 线程安全的
 
-class usp_ac_cx
+
+vg_alloc_cx::vg_alloc_cx()
+{}
+
+vg_alloc_cx::~vg_alloc_cx()
+{}
+void* vg_alloc_cx::alloc(const size_t _Bytes, const size_t align)
+{
+	return nullptr;
+}
+void vg_alloc_cx::dealloc(void* t, size_t n)
+{}
+class usp_ac_cx :public vg_alloc_cx
 {
 public:
 	size_t _Align = 16;
@@ -68,6 +80,9 @@ public:
 	usp_ac_cx() {}
 	~usp_ac_cx() {}
 public:
+	void* alloc(const size_t _Bytes, const size_t align = 0) {
+		return  _alloc.allocate(_Bytes, align > 0 ? align : _Align);
+	}
 	void* allocate(const size_t _Bytes, const size_t align = 0) {
 		return  _alloc.allocate(_Bytes, align > 0 ? align : _Align);
 	}
@@ -137,6 +152,14 @@ public:
 			_alloc.deallocate(t, n, _Align);
 		}
 	}
+	void dealloc(void* t, size_t n)
+	{
+		auto ptr = t;
+		if (t && n > 0)
+		{
+			_alloc.deallocate(t, n, _Align);
+		}
+	}
 	template<class T, class... Ts>
 	T* new_obj(Ts &&... args)
 	{
@@ -165,12 +188,44 @@ public:
 
 #endif // !MEMAC_PMR
 
-ovg_canvas_cb* new_canvas_cb()
+class ovg_canvas_cx :public ovg_canvas_cb
 {
-	auto p = new ovg_canvas_cb();
-	auto ac = new usp_ac_cx();
-	p->ac = (mem_resource_t*)ac;
-	init_ovg_cb(p);
+public:
+	font_cache_cx* font_ctx = 0;
+public:
+	ovg_canvas_cx();
+	~ovg_canvas_cx();
+
+private:
+
+};
+
+ovg_canvas_cx::ovg_canvas_cx()
+{
+	auto a = new usp_ac_cx();
+	ac = (mem_resource_t*)a;
+	init_ovg_cb(this);
+}
+
+ovg_canvas_cx::~ovg_canvas_cx()
+{
+	free_font_cache(font_ctx);
+	font_ctx = 0;
+	if (ac) {
+		auto ac1 = (usp_ac_cx*)ac;
+		if (ac1)
+			delete ac1;
+	}
+	ac = 0;
+}
+
+ovg_canvas_cb* new_canvas_cb(font_cache_cx* fctx)
+{
+	auto p = new ovg_canvas_cx();
+	if (p) {
+		if (fctx)fctx->references++;
+		p->font_ctx = fctx;
+	}
 	return p;
 }
 void free_canvas_cb(ovg_canvas_cb* p) {
@@ -208,14 +263,18 @@ ovg_ctx_cx::~ovg_ctx_cx()
 	auto ac1 = (usp_ac_cx*)ac;
 	if (ac1)
 		delete ac1;
-	if (font_ctx)
-		delete font_ctx;
+	free_font_cache(font_ctx);
 	font_ctx = 0;
 	ac = 0;
 }
-ovg_ctx_cb* new_ctx_cb()
+ovg_ctx_cb* new_ctx_cb(font_cache_cx* fctx)
 {
 	auto p = new ovg_ctx_cx();
+	if (p)
+	{
+		if (fctx)fctx->references++;
+		p->font_ctx = fctx;
+	}
 	return p;
 }
 void free_ctx_cb(ovg_ctx_cb* p) {
@@ -232,13 +291,13 @@ struct ovg_path_t {
 	std::pmr::vector<uint32_t> pathes;	// 每段大小
 	std::pmr::vector<uint32_t> colors;	// 颜色数组，和pathes大小一样
 	uint32_t color = 0xffffffff;		// 默认颜色
-	uint32_t segmentPtr;   // current segment count in current path having curves
-	uint32_t subpathCount; // store count of subpath, not straight forward to retrieve from segmented path array
+	uint32_t segmentPtr = 0;   // current segment count in current path having curves
+	uint32_t subpathCount = 0; // store count of subpath, not straight forward to retrieve from segmented path array
 
 	uint32_t  pathPtr = 0;		// 路径数组中的指针pointer in the path array  
 	vg_state_save_t* t = 0;
 	uint32_t curVertOffset = 0;
-	bool     simpleConvex; // true if path is single rect or concave closed curve.
+	bool     simpleConvex = false; // true if path is single rect or concave closed curve.
 };
 
 #define PATH_CLOSED_BIT 0x80000000 /* most significant bit of path elmts is closed/open path state */
@@ -2801,8 +2860,8 @@ void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
 {
 	if (!img)img = desc->img;
 	auto& dst = _images[img]; dst = *desc;
-	img->w = desc->width;
-	img->h = desc->height;
+	img->width = desc->width;
+	img->height = desc->height;
 	if (desc->is_copy) {
 		dst.px_size = dst.height * dst.stride;
 		dst.pixels = ac->new_mem(dst.px_size);
@@ -3344,6 +3403,48 @@ bool geom_primitive::add_geometry3d(void* texture, const float* xyz, int xyz_str
 	gt->push_back({ .g = c });
 	return true;
 }
+#if 0
+void build_text()
+{
+	auto& git = vt.f;
+	if (git._image) {
+		auto& tp = _vt[git._image];
+		if (tex != tp)
+		{
+			submit_data(tex);
+			tex = tp;
+		}
+		auto ps = git._dwpos + git._apos;
+		ps += pos0;
+		auto tstyle = tbp[git.tb_idx].style;
+		color = tstyle.color;
+		auto img = git._image;
+		glm::ivec2 tex_size = { img->width,  img->height };
+		if (!git.color || tstyle.mcolor_effect)
+		{
+			if (tstyle.color_shadow)
+			{
+				auto ps1 = ps;
+				ps1 += tstyle.shadow_pos;	// 生成阴影数据
+				gen3data(tex_size, ps1, git._rect, {}, tstyle.color_shadow, &opt, &idx);
+			}
+			if (tstyle.stroke && tstyle.color_stroke)
+			{
+				int pxx[4] = { -tstyle.stroke, 0, tstyle.stroke, 0 };
+				int pyy[4] = { 0, -tstyle.stroke, 0, tstyle.stroke };
+				for (int e = 0; e < 4; e++)
+				{
+					auto ps1 = ps;
+					ps1.x += pxx[e];
+					ps1.y += pyy[e];	// 生成描边数据
+					gen3data(tex_size, ps1, git._rect, {}, tstyle.color_stroke, &opt, &idx);
+				}
+			}
+		}
+		gen3data(tex_size, ps, git._rect, {}, git.color ? git.color : color, &opt, &idx);
+	}
+}
+#endif
 void geom_primitive::add_text(text_st_t* p, text_style_t* ts, text_box_rt* box)
 {
 	if (!p || !p->text || !*p->text || !ts || !ts->family || ts->fontsize < 1)return;
@@ -3430,7 +3531,7 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 void geom_primitive::add_image(ovg_image_r* r)
 {
 	if (!r || !r->img || (r->dst.z * r->dst.w <= 0) || (r->rc.z < 1 || r->rc.w < 1))return;
-	add_image0(r->img, { r->img->w,r->img->h }, {}, r->dst, r->rc, r->sliced, r->color);
+	add_image0(r->img, { r->img->width,r->img->height }, {}, r->dst, r->rc, r->sliced, r->color);
 	draw_mesh2d_x(dc, this, { 1.0,1.0 });
 }
 #if 1
@@ -5418,6 +5519,8 @@ font_cache_cx* new_font_cache()
 void free_font_cache(font_cache_cx* p)
 {
 	if (p) {
+		p->references--;
+		if (p->references > 0) return;
 		if (p->ac)delete p->ac;
 		delete p;
 	}
@@ -5425,7 +5528,7 @@ void free_font_cache(font_cache_cx* p)
 font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const char* styles) {
 	if (!ctx || !familys || !*familys)return nullptr;
 	font_familys_cx* p = 0;
-	auto ac = ctx->ac;
+	auto ac = (usp_ac_cx*)ctx->ac;
 	do {
 		std::vector<std::string> v, st;
 		vg_split(familys, ",", v);

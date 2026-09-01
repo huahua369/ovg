@@ -260,6 +260,9 @@ inline size_t align_up(size_t val, size_t align)
 {
 	return (val + align - 1) / align * align;
 }
+//inline uint32_t align_up(uint32_t v, uint32_t a) {
+//	return (v + a - 1) & ~(a - 1);
+//}
 /*
 	VG_FORMAT_RGBA8 = 0,
 	VG_FORMAT_BGRA8,
@@ -584,6 +587,7 @@ static sdl3gpu_texture* new_texture(sdl3gpu_texture* tex, ovg_device_t* dev, SDL
 
 	SDL_GPUTextureCreateInfo info = {};
 	info.format = format;
+	info.type = SDL_GPU_TEXTURETYPE_2D;
 	info.width = (Uint32)width;
 	info.height = (Uint32)height;
 	info.layer_count_or_depth = 1;
@@ -607,6 +611,7 @@ static sdl3gpu_texture* new_msaa_texture(sdl3gpu_texture* tex, ovg_device_t* dev
 
 	SDL_GPUTextureCreateInfo info = {};
 	info.format = format;
+	info.type = SDL_GPU_TEXTURETYPE_2D;
 	info.width = (Uint32)width;
 	info.height = (Uint32)height;
 	info.layer_count_or_depth = 1;
@@ -631,6 +636,7 @@ static sdl3gpu_texture* new_depth_stencil_texture(sdl3gpu_texture* tex, ovg_devi
 
 	SDL_GPUTextureCreateInfo info = {};
 	info.format = format;
+	info.type = SDL_GPU_TEXTURETYPE_2D;
 	info.width = (Uint32)width;
 	info.height = (Uint32)height;
 	info.layer_count_or_depth = 1;
@@ -2282,9 +2288,6 @@ uint32_t format_bpp(vg_format_t fmt) {
 	default: return 4;
 	}
 }
-inline uint32_t align_up(uint32_t v, uint32_t a) {
-	return (v + a - 1) & ~(a - 1);
-}
 
 upload_result_t upload_pixels_batched(
 	SDL_GPUDevice* device,
@@ -2295,7 +2298,7 @@ upload_result_t upload_pixels_batched(
 	upload_result_t result = { 0, 0 };
 
 	if (!device || !descs || count == 0) return result;
- 
+
 	const uint32_t align = 256;
 
 	struct per_item_t {

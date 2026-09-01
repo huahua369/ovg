@@ -72,6 +72,7 @@ struct vg_font :public font_family_t {
 };
 
 struct FontStyle {
+	uint32_t id;
 	std::string family;
 	std::set<std::string> alias;
 	std::string style;
@@ -84,7 +85,7 @@ struct FontStyle {
 };
 void hb_res_init(vg_font* hp, hb_font_t* font);
 void free_hb_res(vg_font* hp);
-bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& ow, bool origin, bool type, SubpixelLayout pixelLayout);
+bool gfont_copy_image(ovg_image_data* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& ow, bool origin, bool type, SubpixelLayout pixelLayout);
 namespace ovg {
 	uint64_t align_up(uint64_t val, uint64_t alignment)
 	{
@@ -178,12 +179,19 @@ font_cache_cx::font_cache_cx()
 
 font_cache_cx::~font_cache_cx()
 {
+	if (funcs)
+		hb_draw_funcs_destroy(funcs); funcs = 0;
 	clear_load();
 	clear_sys();
 	if (cfg)
 		FcConfigDestroy(cfg);
 	cfg = 0;
 	_emojis.clear();
+}
+
+void font_cache_cx::set_alloc_ptr(vg_alloc_cx* p)
+{
+	if (p)ac = p;
 }
 
 void font_cache_cx::clear_sys()
@@ -407,6 +415,7 @@ bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBu
 	return false;
 }
 
+static hb_user_data_key_t gdkey = {};
 
 size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt, const char* family, const char* style, int weight, int slant)
 {
@@ -458,6 +467,8 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		}
 		if (it->font.font)
 		{
+			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&gdkey, (void*)(uintptr_t)next_font_id, nullptr, true);
+			next_font_id++;
 			hb_res_init(&it->font, 0);
 			if (font_supports_slnt_axis(it->font.font)) {
 				//float desired = fc_slant_to_slant_angle(slant);
@@ -604,6 +615,131 @@ const char* font_cache_cx::slant_to_string(int s) {
 	case FC_SLANT_OBLIQUE: return "Oblique";
 	default:               return "Roman";
 	}
+}
+
+void of_move_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float x, float y, void* ud) {
+	auto b = (font_cache_cx*)data;
+	b->tem_vec.push_back((float)path_type_et::e_vmove);  // MOVE
+	b->tem_vec.push_back(x / 64.0f);
+	b->tem_vec.push_back(y / 64.0f);
+}
+void of_line_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float x, float y, void* ud) {
+	auto b = (font_cache_cx*)data;
+	b->tem_vec.push_back((float)path_type_et::e_vline);  // LINE
+	b->tem_vec.push_back(x / 64.0f);
+	b->tem_vec.push_back(y / 64.0f);
+}
+void of_quad_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx, float cy, float x, float y, void* ud) {
+	auto b = (font_cache_cx*)data;
+	b->tem_vec.push_back((float)path_type_et::e_quadratic);  // QUAD
+	b->tem_vec.push_back(cx / 64.0f);
+	b->tem_vec.push_back(cy / 64.0f);
+	b->tem_vec.push_back(x / 64.0f);
+	b->tem_vec.push_back(y / 64.0f);
+}
+void of_close_path(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void* ud) {
+	auto b = (font_cache_cx*)data;
+	b->tem_vec.push_back((float)path_type_et::e_close);  // CLOSE
+}
+
+glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize)
+{
+	uint32_t font_id = (uint32_t)hb_font_get_user_data(font, (hb_user_data_key_t*)&gdkey);
+	hb_glyph_extents_t extents;
+	hb_font_get_glyph_extents(font, glyph_id, &extents);
+
+	int em = hb_face_get_upem(hb_font_get_face(font));
+	float scale = fontsize / (float)em;
+
+	int px_w = (int)(extents.width / 64.0f * scale);
+	int px_h = (int)(extents.height / 64.0f * scale);
+
+	bool use_raster = (px_w <= max_raster_size && px_h <= max_raster_size
+		&& px_w > 0 && px_h > 0);
+
+	// ═══════════════════════════════════════════
+	// 位图路径
+	// ═══════════════════════════════════════════
+	if (use_raster) {
+		glyph_key gk;
+		gk.s.idsize.x = (uint16_t)font_id;
+		gk.s.idsize.y = (uint16_t)fontsize;
+		gk.s.glyph_index = glyph_id;
+
+		auto it = glyph_cache.find(gk.v);
+		if (it != glyph_cache.end())
+			return &it->second;
+
+		// ── 缓存未命中：光栅化 ──
+		// 用 hb 的 raster 接口或你已有的光栅化路径
+		// 这里假设你有 hb_raster_image_t 或类似结构
+		hb_raster_image_t* img = 0;
+		// ... 光栅化 font + glyph_id + fontsize → img ...
+
+		// 装箱进 image_cache_cx
+		glm::ivec2 pos = {};
+		ovg_image_data* img_data = image_cache.push_cache_bitmap(img, &pos);
+
+		glyph_atlas_entry entry{};
+		entry.atlas_img = img_data;  // ovg_image_data 继承自 vg_image_t
+		entry.uv_rect = glm::ivec4(pos.x, pos.y, px_w, px_h);
+		entry.offset = glm::ivec2(
+			(int)(extents.x_bearing / 64.0f * scale),
+			(int)(extents.y_bearing / 64.0f * scale));
+		entry.advance = (int)(extents.x_bearing / 64.0f * scale);
+		entry.path_data = nullptr;
+		entry.path_size = 0;
+
+		auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
+		return &it2->second;
+	}
+
+	// ═══════════════════════════════════════════
+	// 矢量路径（字号无关，只提取一次）
+	// ═══════════════════════════════════════════
+	path_key pk;
+	pk.s.id = font_id;
+	pk.s.glyph_index = glyph_id;
+
+	auto it = path_cache.find(pk.v);
+	if (it != path_cache.end())
+		return &it->second;
+
+	// ── 缓存未命中：提取路径 ──
+	// 用 HarfBuzz 的 draw 接口输出路径
+
+
+	// 回调：把 hb 路径命令序列化为线性数组
+	// 格式: [cmd, x, y, ...]
+	// cmd: 0=move_to, 1=line_to, 2=quad_to, 3=close
+
+	if (!funcs)
+	{
+		funcs = hb_draw_funcs_create();
+		hb_draw_funcs_set_move_to_func(funcs, of_move_to, nullptr, nullptr);
+		hb_draw_funcs_set_line_to_func(funcs, of_line_to, nullptr, nullptr);
+		hb_draw_funcs_set_quadratic_to_func(funcs, of_quad_to, nullptr, nullptr);
+		hb_draw_funcs_set_close_path_func(funcs, of_close_path, nullptr, nullptr);
+	}
+
+	hb_font_draw_glyph(font, glyph_id, funcs, this);
+
+	// 拷贝到持久内存
+	size_t bytes = tem_vec.size() * sizeof(float);
+	float* path_copy = (float*)ac->alloc(bytes, 0);
+	memcpy(path_copy, tem_vec.data(), bytes);
+
+	glyph_atlas_entry entry{};
+	entry.type = glyph_atlas_entry::VECTOR;
+	entry.atlas_img = nullptr;
+	entry.uv_rect = glm::ivec4(0);
+	entry.offset = glm::ivec2(0);
+	entry.advance = 0;
+	entry.path_data = path_copy;
+	entry.path_size = tem_vec.size();
+
+	auto [it2, ok] = path_cache.emplace(pk.v, entry);
+	return &it2->second;
 }
 struct draw_ctx_f {
 	ovg_ctx_cb* cb = 0;
@@ -857,7 +993,7 @@ void render_text(const font_familys_t* ffs, const void* str8, size_t len, float 
 	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
 	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
 
-	ovg_image_s imgbuf = {};
+	ovg_image_data imgbuf = {};
 	imgbuf.width = vg->width;
 	imgbuf.height = vg->height;
 	imgbuf.stride = imgbuf.width * 4;
@@ -1079,7 +1215,7 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	return img;
 }
 // 按颜色复制
-void rgba_copy2gray(ovg_image_s* dst, int x, int y, int w, int h, uint32_t c, const uint8_t* dt, int stride, bool fy)
+void rgba_copy2gray(ovg_image_data* dst, int x, int y, int w, int h, uint32_t c, const uint8_t* dt, int stride, bool fy)
 {
 	if (stride < 1)stride = w;
 	if (!dst || !dt || w <= 0 || h <= 0 || stride < w) return;
@@ -1105,7 +1241,7 @@ void rgba_copy2gray(ovg_image_s* dst, int x, int y, int w, int h, uint32_t c, co
 	}
 }
 // 预乘白色复制
-void rgba_copy2gray_mul(ovg_image_s* dst, int x, int y, int w, int h, const uint8_t* dt, int stride, bool fy)
+void rgba_copy2gray_mul(ovg_image_data* dst, int x, int y, int w, int h, const uint8_t* dt, int stride, bool fy)
 {
 	if (stride < 1)stride = w;
 	if (!dst || !dt || w <= 0 || h <= 0 || stride < w) return;
@@ -1130,7 +1266,7 @@ void rgba_copy2gray_mul(ovg_image_s* dst, int x, int y, int w, int h, const uint
 	}
 }
 
-void rgba_copy_bgra(ovg_image_s* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
+void rgba_copy_bgra(ovg_image_data* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
 {
 	if (!dst || !dt || w <= 0 || h <= 0) return;
 	if (stride < 1)
@@ -1149,7 +1285,7 @@ void rgba_copy_bgra(ovg_image_s* dst, int x, int y, int w, int h, const uint32_t
 	}
 }
 
-void rgba_copy_bgra2rgba(ovg_image_s* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
+void rgba_copy_bgra2rgba(ovg_image_data* dst, int x, int y, int w, int h, const uint32_t* dt, int stride, bool fy)
 {
 	if (!dst || !dt || w <= 0 || h <= 0) return;
 	if (stride < 1)
@@ -1338,7 +1474,7 @@ void rgba_copy2gray(A8Glyph* dst, const glm::ivec2& pos, const glm::ivec4& src, 
 	}
 }
 
-void subpixel_lcd(ovg_image_s* dst, int px, int py, hb_raster_image_t* img_src, const glm::ivec2& size, SubpixelLayout pixelLayout, bool flipY)
+void subpixel_lcd(ovg_image_data* dst, int px, int py, hb_raster_image_t* img_src, const glm::ivec2& size, SubpixelLayout pixelLayout, bool flipY)
 {
 	hb_raster_extents_t ext = {};
 	hb_raster_image_get_extents(img_src, &ext);
@@ -1370,7 +1506,7 @@ void subpixel_lcd(ovg_image_s* dst, int px, int py, hb_raster_image_t* img_src, 
 	a8_to_lcd(filtered, ext.height, (uint8_t*)(dst->data + px + py * dst->width), size.x, dst->stride, pixelLayout, c);
 }
 
-bool gfont_copy_image(ovg_image_s* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& orc, bool origin, bool type, SubpixelLayout pixelLayout)
+bool gfont_copy_image(ovg_image_data* dst, int rx, int ry, uint32_t color, hb_raster_image_t* img_src, const glm::ivec4& orc, bool origin, bool type, SubpixelLayout pixelLayout)
 {
 	auto img = img_src;
 	bool has_color = false;
@@ -1518,14 +1654,14 @@ class stb_packer :public packer_base
 {
 public:
 	stbrp_context _ctx = {};
-	ovg_image_s img = {};
+	ovg_image_data img = {};
 	std::vector<uint32_t> ptr;
 	std::vector<stbrp_node> _rpns;
 public:
 	stb_packer() {}
 	~stb_packer() {}
-	ovg_image_s* get() {
-		return (ovg_image_s*)&img;
+	ovg_image_data* get() {
+		return &img;
 	}
 	// BL = 0 “从下向左塞”（快速降低高度）
 	// BF = 1 “精打细算”（最小化空间浪费）
@@ -1647,7 +1783,7 @@ glm::ivec2 image_cache_cx::fill_color(int w, int h, uint32_t color)
 	return pos;
 }
 
-ovg_image_s* image_cache_cx::push_cache_size(const glm::ivec2& ss, glm::ivec2* pos, int linegap)
+ovg_image_data* image_cache_cx::push_cache_size(const glm::ivec2& ss, glm::ivec2* pos, int linegap)
 {
 	int width = ovg::align_up(ss.x + linegap, 2), height = ovg::align_up(ss.y + linegap, 2);
 	glm::ivec4 rc4 = { 0, 0, ss.x,ss.y };
@@ -1666,7 +1802,7 @@ ovg_image_s* image_cache_cx::push_cache_size(const glm::ivec2& ss, glm::ivec2* p
 	return pt->get();
 }
 
-ovg_image_s* image_cache_cx::push_cache_bitmap(hb_raster_image_t* img, glm::ivec2* pos, int linegap)
+ovg_image_data* image_cache_cx::push_cache_bitmap(hb_raster_image_t* img, glm::ivec2* pos, int linegap)
 {
 	hb_raster_extents_t ext = {};
 	hb_raster_image_get_extents(img, &ext);

@@ -3,8 +3,23 @@
 矢量/图片/文本/三角形录制到rvg_t对象
 */
 #include <cstdint>
+#ifndef OVG_H
+#define OVG_H
+#endif // !OVG_H
 
-# ifdef __cplusplus 
+#ifdef __cplusplus
+
+class vg_alloc_cx
+{
+public:
+	vg_alloc_cx();
+	virtual ~vg_alloc_cx();
+	virtual void* alloc(const size_t _Bytes, const size_t align);
+	virtual void dealloc(void* t, size_t n);
+private:
+
+};
+
 extern "C" {
 #endif
 	typedef struct hb_font_t hb_font_t;
@@ -51,7 +66,9 @@ enum class path_type_et :uint32_t
 	e_vmove = 1,// 移动
 	e_vline,	// 直线
 	e_vcurve,	// 二次曲线
-	e_vcubic	// 三次曲线
+	e_quadratic = e_vcurve,	// 二次曲线
+	e_vcubic,	// 三次曲线
+	e_close		// 封闭线段
 };
 
 enum vg_line_cap_t :uint8_t {
@@ -394,7 +411,7 @@ enum vg_format_t {
 // 图片
 struct vg_image_t {
 	uint32_t id;		// 由设备分配
-	uint32_t w, h;		// 更新纹理时自动更新大小
+	int width, height;		// 更新纹理时自动更新大小
 	bool valid = true;	// 是否要更新到纹理
 	bool copy_status;	// 复制状态
 };
@@ -411,6 +428,7 @@ struct vg_image_desc_t {
 	uint32_t	stride;
 	void* pixels;			// CPU 像素数据。is_copy=false时vg_image_t.copy_status等于true时才能释放
 	uint32_t x, y, w, h;	// 更新矩形区域
+	uint32_t idx;			// 纹理数组层号
 	uint32_t px_size;		// 像素字节大小
 	bool is_destroy;		// true = 删除纹理；
 	bool is_copy;			// 是否要复制内存；
@@ -441,13 +459,11 @@ struct image_ptr_t
 };
 
 
-struct ovg_image_s {
-	int width, height;
+struct ovg_image_data :public vg_image_t {
 	int format;			// 0 rgba, 1 bgra
 	int stride;			// 像素宽度
 	uint32_t* data;
-	bool multiply;		// 是否预乘
-	bool valid = false;			// 是否更新到纹理
+	bool multiply;		// 是否预乘  
 };
 
 struct ovg_image_r
@@ -751,15 +767,6 @@ struct ovg_ctx_cb {
 	void  (*recording_destroy)(ovg_recording_t* rec);
 
 };
-// 对象模式接口
-ovg_canvas_cb* new_canvas_cb();
-void free_canvas_cb(ovg_canvas_cb*);
-// 状态机模式接口，两个模式接口创建的对象不能混用
-ovg_ctx_cb* new_ctx_cb();
-void free_ctx_cb(ovg_ctx_cb*);
-
-
-ovg_draw_data_t get_draw_list(rvg_t* p);
 
 void draw_grid_fill(rvg_t* vg, glm::vec2 size, glm::ivec2 cols, int width);
 
@@ -776,3 +783,11 @@ void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
 
+
+// 对象模式接口，如果没字体ctx则无法渲染文本
+ovg_canvas_cb* new_canvas_cb(font_cache_cx* fctx);
+void free_canvas_cb(ovg_canvas_cb*);
+// 状态机模式接口，两个模式接口创建的对象不能混用
+ovg_ctx_cb* new_ctx_cb(font_cache_cx* fctx);
+void free_ctx_cb(ovg_ctx_cb*);
+ovg_draw_data_t get_draw_list(rvg_t* p);

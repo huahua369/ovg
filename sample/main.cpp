@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include <cmath>
 #include <unordered_map>
+#include "ovg_fonts.h"
 using namespace std;
 
 // 渲染普通文本
@@ -623,7 +624,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	cb->set_instance_mat(vg, ins, 2);
 	static vg_image_t img[1] = {};
 	vg_image_desc_t desc = {};
-	uint32_t pxcolord2[2] = { 0xffffffff,0xffffffff,  };
+	uint32_t pxcolord2[2] = { 0xffffffff,0xffffffff, };
 	uint32_t pxcolor2[16] = { 0xFFf55555,0xFF2c2c2c, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555, };
 	desc.width = 4;
 	desc.height = 4;
@@ -645,7 +646,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	rimg.dst = { 10,10,100,100 };
 	rimg.rc = { 0,0,4,4 };
 	rimg.color = -1;
-	cb->add_image (vg, &rimg);
+	cb->add_image(vg, &rimg);
 }
 
 int main()
@@ -653,13 +654,13 @@ int main()
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
-	auto cb = new_ctx_cb();
-	auto vg = cb->new_rvg(cb->ac);
 
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
-
+	font_ctx->get_cache_lookup_glyph(familys->familys[0]->font, 27, 18);
+	auto cb = new_ctx_cb(font_ctx);
+	auto vg = cb->new_rvg(cb->ac);
 	if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
 		SDL_Log("Init failed: %s", SDL_GetError());
 		return 1;
@@ -669,7 +670,7 @@ int main()
 	auto format = SDL_GetGPUSwapchainTextureFormat(g->device, g->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
-	ovg_canvas_cb* can = new_canvas_cb();
+	ovg_canvas_cb* can = new_canvas_cb(font_ctx);
 
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
