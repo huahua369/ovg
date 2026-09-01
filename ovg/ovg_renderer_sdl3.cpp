@@ -89,6 +89,7 @@ struct sdl3gpu_texture {
 	int                  height = 0;
 	uint32_t             references = 0;
 	void* user_ptr = 0;
+	uint32_t id = 0;
 	bool                 hasStencil = false;
 };
 
@@ -2140,7 +2141,8 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 		fbo->ctx->gpubuf->bindSSBO(pass, true);
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
 	if (c->texture) {
-		auto tex = (sdl3gpu_texture*)c->texture;
+		auto texid = (vg_image_t*)c->texture;
+		auto tex = fbo->ctx->textures[texid->id];
 		if (tex)
 		{
 			binding.texture = tex->texture;
@@ -2239,22 +2241,19 @@ void upload_pixels(ovg_ctx_t* r, sdl3gpu_texture* tex, vg_image_desc_t* desc)
 	SDL_ReleaseGPUTransferBuffer(dev, tb);
 }
 
-struct pending_upload_t {
-	SDL_GPUTransferBuffer* tb;
-	SDL_GPUTexture* texture;
-	uint32_t               x, y, w, h;
-};
 
-typedef struct {
+struct upload_desc_t {
 	void* pixels;     /* CPU 像素数据，调用方持有生命周期 */
-	uint32_t           width;
-	uint32_t           height;
-	uint32_t           stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
-	vg_format_t    format;     /* 像素格式 */
-	SDL_GPUTexture* dst_texture;/* 目标 GPU 纹理 */
-	uint32_t           x, y;       /* 目标区域起点（纹理空间） */
-	uint32_t           w, h;       /* 目标区域尺寸（0 = 整张） */
-} upload_desc_t;
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
+	vg_format_t format;     /* 像素格式 */
+	sdl3gpu_texture* dst_texture;/* 目标 GPU 纹理 */
+	uint32_t x, y;       /* 目标区域起点（纹理空间） */
+	uint32_t w, h;       /* 目标区域尺寸（0 = 整张） */
+	vg_image_t* img;
+	bool is_copy_rect;		// 是否从区域复制
+};
 
 /* 批量上传结果 */
 typedef struct {
@@ -2270,11 +2269,7 @@ typedef struct {
  *   - descs[i].pixels 必须在本次调用期间保持有效（在 Submit 之前）
  *   - 所有 dst_texture 属于同一个 SDL_GPUDevice
  */
-upload_result_t upload_pixels_batched(
-	SDL_GPUDevice* device,
-	SDL_GPUCommandBuffer* cmd,      /* 外部已 Acquire 的 cmd（可为 NULL，内部自建） */
-	const upload_desc_t* descs,
-	uint32_t              count);
+upload_result_t upload_pixels_batched(SDL_GPUDevice* device, SDL_GPUCommandBuffer* cmd, const upload_desc_t* descs, uint32_t count);
 
 uint32_t format_bpp(vg_format_t fmt) {
 	switch (fmt) {
@@ -2287,40 +2282,102 @@ uint32_t format_bpp(vg_format_t fmt) {
 	default: return 4;
 	}
 }
-upload_result_t upload_pixels_batched(SDL_GPUDevice* device, SDL_GPUCommandBuffer* cmd, const upload_desc_t* descs, uint32_t              count)
+inline uint32_t align_up(uint32_t v, uint32_t a) {
+	return (v + a - 1) & ~(a - 1);
+}
+
+upload_result_t upload_pixels_batched(
+	SDL_GPUDevice* device,
+	SDL_GPUCommandBuffer* cmd,
+	const upload_desc_t* descs,
+	uint32_t count)
 {
 	upload_result_t result = { 0, 0 };
 
 	if (!device || !descs || count == 0) return result;
-
-	/* ── 1. 预扫描：计算每张图大小 + 总大小 + 对齐 ── */
-	/* SDL 要求每行的 offset 对齐到 SDL_GPU_TEXTURE_TRANSFER_ALIGNMENT（默认 256 字节）。
-	   这里采用简单策略：每张图整体按 256 字节对齐，保证每行的起始 offset 合法。 */
+ 
 	const uint32_t align = 256;
-	uint32_t total_size = 0;
 
-	struct per_item_t { uint32_t size; uint32_t offset; };
+	struct per_item_t {
+		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
+		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
+		uint32_t pixels_per_row;   /* 传给 SDL：源 buffer 每行像素数（0=紧密） */
+		uint32_t copy_h;           /* 拷贝行数（= 脏矩形高） */
+		uint32_t dirty_w;          /* 脏矩形宽 */
+		uint32_t dirty_h;          /* 脏矩形高 */
+		uint32_t bpp;              /* 每像素字节 */
+		uint32_t stride;           /* 原始纹理每行字节（含 padding） */
+		uint32_t row_pitch;        /* memcpy 每行字节数（= dirty_w * bpp） */
+		uint32_t gpu_row_bytes;    /* buffer 里每行实际字节（紧密 or 对齐后） */
+	};
 	std::vector<per_item_t> items(count);
 
+	uint32_t total_size = 0;
+
+	/* ── 1. 预扫描：计算每张图的源偏移、buffer 布局、对齐 ── */
 	for (uint32_t i = 0; i < count; i++) {
 		const upload_desc_t* d = &descs[i];
+
+		/* 非法条目跳过 */
 		if (!d->pixels || !d->dst_texture || d->width == 0 || d->height == 0) {
-			items[i].size = 0;
-			items[i].offset = 0;
+			items[i].copy_h = 0;
 			result.skipped++;
 			continue;
 		}
 
 		uint32_t bpp = format_bpp(d->format);
 		uint32_t stride = (d->stride != 0) ? d->stride : (d->width * bpp);
-		uint32_t size = stride * d->height;
 
-		/* 对齐到 256 字节（让每张图的起始 offset 都是对齐边界） */
-		uint32_t aligned_size = (size + align - 1) & ~(align - 1);
+		/* 目标区域（纹理空间），0 表示整张 */
+		uint32_t dst_x = d->x;
+		uint32_t dst_y = d->y;
+		uint32_t dst_w = (d->w != 0) ? d->w : d->width;
+		uint32_t dst_h = (d->h != 0) ? d->h : d->height;
 
-		items[i].size = size;
-		items[i].offset = total_size;
-		total_size += aligned_size;
+		/* 裁剪到纹理边界，防止越界 */
+		if (dst_x + dst_w > d->width)  dst_w = d->width - dst_x;
+		if (dst_y + dst_h > d->height) dst_h = d->height - dst_y;
+		if (dst_w == 0 || dst_h == 0) {
+			items[i].copy_h = 0;
+			result.skipped++;
+			continue;
+		}
+
+		bool is_full_upload = (dst_x == 0 && dst_y == 0 &&
+			dst_w == d->width && dst_h == d->height);
+
+		uint32_t dirty_pitch = dst_w * bpp;  /* 每行有效像素字节数 */
+
+		if (is_full_upload) {
+			/* ── 整图上传：紧密打包，pixels_per_row = 0 ── */
+			items[i].src_offset = 0;
+			items[i].gpu_offset = total_size;
+			items[i].pixels_per_row = 0;          /* 驱动按 region.w 推导行距 */
+			items[i].copy_h = d->height;
+			items[i].dirty_w = d->width;
+			items[i].dirty_h = d->height;
+			items[i].bpp = bpp;
+			items[i].stride = stride;
+			items[i].row_pitch = d->width * bpp;
+			items[i].gpu_row_bytes = d->width * bpp;  /* 紧密：行距 = 行宽 */
+			total_size += stride * d->height;
+		}
+		else {
+			/* ── 脏矩形上传：buffer 每行对齐 256 字节 ── */
+			uint32_t aligned_pitch = align_up(dirty_pitch, align);
+
+			items[i].src_offset = dst_y * stride + dst_x * bpp;
+			items[i].gpu_offset = total_size;
+			items[i].pixels_per_row = aligned_pitch / bpp;  /* ← 关键：源 buffer 真实行像素宽 */
+			items[i].copy_h = dst_h;
+			items[i].dirty_w = dst_w;
+			items[i].dirty_h = dst_h;
+			items[i].bpp = bpp;
+			items[i].stride = stride;
+			items[i].row_pitch = dirty_pitch;          /* memcpy 只拷有效部分 */
+			items[i].gpu_row_bytes = aligned_pitch;        /* buffer 行距 = 对齐后 */
+			total_size += aligned_pitch * dst_h;
+		}
 	}
 
 	if (total_size == 0) return result;
@@ -2333,53 +2390,53 @@ upload_result_t upload_pixels_batched(SDL_GPUDevice* device, SDL_GPUCommandBuffe
 	SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(device, &ti);
 	if (!tb) return result;
 
-	/* ── 3. 映射一次，连续拷贝所有纹理数据（各自按 offset 落位） ── */
+	/* ── 3. 映射一次，逐张拷贝（各自按 gpu_offset / gpu_row_bytes 落位） ── */
 	uint8_t* base = (uint8_t*)SDL_MapGPUTransferBuffer(device, tb, false);
 	if (base) {
 		for (uint32_t i = 0; i < count; i++) {
-			if (items[i].size == 0) continue;
-			const upload_desc_t* d = &descs[i];
-			uint32_t bpp = format_bpp(d->format);
-			uint32_t stride = (d->stride != 0) ? d->stride : (d->width * bpp);
+			if (items[i].copy_h == 0) continue;
 
-			/* 若调用方 stride 与 width*bpp 一致，直接整块拷贝；
-			   否则逐行拷贝以保留行间距（padding）。 */
-			if (stride == d->width * bpp) {
-				SDL_memcpy(base + items[i].offset, d->pixels, items[i].size);
-			}
-			else {
-				uint8_t* dst = base + items[i].offset;
-				uint8_t* src = (uint8_t*)d->pixels;
-				for (uint32_t row = 0; row < d->height; row++) {
-					SDL_memcpy(dst + row * (d->width * bpp), src + row * stride, d->width * bpp);
-				}
+			const upload_desc_t* d = &descs[i];
+			const per_item_t* it = &items[i];
+
+			uint8_t* src = (uint8_t*)d->pixels + it->src_offset;   /* 原始纹理脏区起点 */
+			uint8_t* dst = base + it->gpu_offset;                    /* buffer 脏区起点 */
+
+			/* 逐行拷贝：源按 stride 跳行，目的按 gpu_row_bytes 跳行 */
+			for (uint32_t row = 0; row < it->copy_h; row++) {
+				SDL_memcpy(
+					dst + row * it->gpu_row_bytes,
+					src + row * it->stride,
+					it->row_pitch
+				);
 			}
 		}
 		SDL_UnmapGPUTransferBuffer(device, tb);
 	}
 
-	/* ── 4. 一个 CopyPass，提交全部上传（用 offset 寻址） ── */
+	/* ── 4. 一个 CopyPass，全部上传（offset 寻址） ── */
 	bool own_cmd = (cmd == NULL);
 	if (own_cmd) cmd = SDL_AcquireGPUCommandBuffer(device);
 	SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
 
 	for (uint32_t i = 0; i < count; i++) {
-		if (items[i].size == 0) continue;
+		if (items[i].copy_h == 0) continue;
 
 		const upload_desc_t* d = &descs[i];
-		uint32_t region_w = (d->w != 0) ? d->w : d->width;
-		uint32_t region_h = (d->h != 0) ? d->h : d->height;
+		const per_item_t* it = &items[i];
 
 		SDL_GPUTextureTransferInfo src = {
-			tb,                     /* transfer_buffer */
-			items[i].offset,         /* offset */
-			0,                       /* bytes_per_row（0 = 驱动按纹理格式推导） */
-			0,                       /* rows_per_layer */
+			.transfer_buffer = tb,
+			.offset = it->gpu_offset,
+			.pixels_per_row = it->pixels_per_row,   /* 0 或 aligned_pitch/bpp */
+			.rows_per_layer = 0,
 		};
 		SDL_GPUTextureRegion dst = {
-			.texture = d->dst_texture,
+			.texture = d->dst_texture->texture,
 			.x = d->x,  .y = d->y,  .z = 0,
-			.w = region_w, .h = region_h, .d = 1,
+			.w = it->dirty_w,
+			.h = it->copy_h,
+			.d = 1,
 		};
 		SDL_UploadToGPUTexture(cp, &src, &dst, false);
 		result.submitted++;
@@ -2388,12 +2445,16 @@ upload_result_t upload_pixels_batched(SDL_GPUDevice* device, SDL_GPUCommandBuffe
 	SDL_EndGPUCopyPass(cp);
 	if (own_cmd) SDL_SubmitGPUCommandBuffer(cmd);
 
-	/* ── 5. 提交后释放 transfer buffer（GPU 已拷贝完） ── */
+	/* ── 5. 提交后释放 transfer buffer（GPU 已读完，引用计数回收） ── */
 	SDL_ReleaseGPUTransferBuffer(device, tb);
 	return result;
 }
-
-
+#if 0
+struct pending_upload_t {
+	SDL_GPUTransferBuffer* tb;
+	SDL_GPUTexture* texture;
+	uint32_t               x, y, w, h;
+};
 void upload_pixels_batched(ovg_ctx_t* r, vg_image_desc_t* descs, sdl3gpu_texture** texs, uint32_t count)
 {
 	auto dev = r->device->gpuDevice;
@@ -2453,6 +2514,7 @@ void upload_pixels_batched(ovg_ctx_t* r, vg_image_desc_t* descs, sdl3gpu_texture
 		SDL_ReleaseGPUTransferBuffer(dev, up.tb);
 	}
 }
+#endif
 /* ---- 延迟释放 ---- */
 
 void deferred_free_push(ovg_ctx_t* ctx, sdl3gpu_texture* tex) {
@@ -2467,8 +2529,9 @@ void deferred_free_advance(ovg_ctx_t* r) {
 		for (; r->texq.size();)
 		{
 			auto p = r->texq.front();
-			if (p)
+			if (p && p->id > 0)
 			{
+				r->textures.erase(p->id);
 				destroy_texture(p);
 			}
 			r->texq.pop();
@@ -2476,7 +2539,7 @@ void deferred_free_advance(ovg_ctx_t* r) {
 	}
 }
 
-int build_devres(ovg_ctx_t* ctx, ovg_draw_data_t* kd) {
+int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd) {
 	int errornum = 0;
 	for (size_t y = 0; y < kd->pipeinfo_count; y++)
 	{
@@ -2489,24 +2552,45 @@ int build_devres(ovg_ctx_t* ctx, ovg_draw_data_t* kd) {
 			}
 		}
 	}
+	std::vector<upload_desc_t> uploads;
 	for (size_t i = 0; i < kd->image_desc_count; i++)
 	{
 		auto it = kd->image_desc[i];
-		auto& tex = ctx->textures[it->img->id];
+		auto tex = ctx->textures[it->img->id];
 		if (tex && it->is_destroy && tex != ctx->device->emptyTexture)
 		{
 			ctx->texq.push(tex);
 		}
+		if (it->img->id == 0)tex = 0;
 		if (!tex) {
 			tex = new_texture_def(ctx, it->width, it->height, it->format);
 			if (tex)
 			{
+				create_sampler(tex, SDL_GPU_FILTER_NEAREST, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERMIPMAPMODE_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
 				it->img->id = ctx->next_image_id++;
+				tex->id = it->img->id;
+				ctx->textures[it->img->id] = tex;
 			}
-			else { it->img->id = 0; }
+			else {
+				it->img->id = 0;
+			}
 		}
-
+		if (!tex)continue;
+		upload_desc_t d = {};
+		d.pixels = (void*)it->pixels;     /* CPU 像素数据，调用方持有生命周期 */
+		d.width = it->width;
+		d.height = it->height;
+		d.stride = it->stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
+		d.format = it->format;     /* 像素格式 */
+		d.dst_texture = tex;/* 目标 GPU 纹理 */
+		d.x = it->x, d.y = it->y;       /* 目标区域起点（纹理空间） */
+		d.w = it->w, d.h = it->h;       /* 目标区域尺寸（0 = 整张） */
+		d.is_copy_rect = !it->is_copy;
+		d.img = it->img;
+		uploads.push_back(d);
 	}
+
+	upload_result_t hr = upload_pixels_batched(ctx->device->gpuDevice, cmd, uploads.data(), uploads.size());
 	return errornum;
 }
 void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count)
@@ -2529,7 +2613,7 @@ void ovg_draw_data(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t 
 		total_ibo += data[i].i_count * sizeof(uint32_t);
 		total_ibo += data[i].ig_count * sizeof(uint32_t);
 		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
-		errornum += build_devres(ctx, kd);
+		errornum += build_devres(ctx, cmd, kd);
 	}
 
 	assert(errornum == 0);

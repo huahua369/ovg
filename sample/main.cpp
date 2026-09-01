@@ -545,7 +545,19 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 		double y = r * sin(angle + M_PI / 2);
 		*t++ = glm::vec3(x, y, 0.0f) + pos;
 	}
+	// 中心
+	uv[0] = glm::vec2(0.5f, 0.5f);
+	// 外圈 5 个顶点
+	for (int i = 0; i < 5; ++i) {
+		// v[i+1] 是世界/局部坐标，减去 pos 得到以中心为原点的坐标
+		glm::vec2 local = glm::vec2(v[i + 1].x, v[i + 1].y) - glm::vec2(pos.x, pos.y);
 
+		// 归一化到 [0, 1]
+		uv[i + 1] = glm::vec2(
+			0.5f + local.x / (2.0f * r),
+			0.5f + local.y / (2.0f * r)
+		);
+	}
 	std::vector<uint32_t> indices3; std::vector<glm::vec3> vertices3;
 	generateSphere(16, indices3, vertices3);
 	std::vector<glm::vec3>vertices, normals; std::vector<glm::vec2>  texCoords; std::vector<unsigned int> indices4;
@@ -609,9 +621,31 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	ins[0] = glm::mat4(1.0);
 	ins[1] = glm::translate(glm::vec3(200, 10, 0));
 	cb->set_instance_mat(vg, ins, 2);
-	auto vm = mat * glm::vec4(v[0], 1.0f);// 颜色结构0则读取第一个颜色，UV也一样
-	cb->add_geometry(vg, nullptr, (float*)v, sizeof(glm::vec3), color, 0, (float*)uv, sizeof(glm::vec2), 6, indices, 15, sizeof(uint32_t), 1);
-
+	static vg_image_t img[1] = {};
+	vg_image_desc_t desc = {};
+	uint32_t pxcolord2[2] = { 0xffffffff,0xffffffff,  };
+	uint32_t pxcolor2[16] = { 0xFFf55555,0xFF2c2c2c, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555, };
+	desc.width = 4;
+	desc.height = 4;
+	desc.format = VG_FORMAT_RGBA8;
+	desc.stride = desc.width * sizeof(int);
+	desc.pixels = pxcolor2;
+	desc.x = 0, desc.y = 0, desc.w = 4, desc.h = 4;		// 更新矩形区域
+	desc.is_copy = true;
+	auto pss = sizeof(pxcolor2);
+	if (img->valid)
+	{
+		img->valid = false;
+		cb->image_update(vg, img, &desc);
+	}
+	auto vm = mat * glm::vec4(v[0], 1.0f);
+	//cb->add_geometry(vg, img, (float*)v, sizeof(glm::vec3), pxcolord2, 0, (float*)uv, sizeof(glm::vec2), 6, indices, 15, sizeof(uint32_t), 1);
+	ovg_image_r rimg = {};
+	rimg.img = img;
+	rimg.dst = { 10,10,100,100 };
+	rimg.rc = { 0,0,4,4 };
+	rimg.color = -1;
+	cb->add_image (vg, &rimg);
 }
 
 int main()
@@ -692,6 +726,7 @@ int main()
 			cb->stroke(vg);
 #endif
 
+			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
 			draw_test3d(&fbo, cb, vg);
 
 			static int xx = 190;

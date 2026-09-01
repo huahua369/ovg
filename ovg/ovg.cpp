@@ -1679,7 +1679,7 @@ public:
 	void set_clip(const glm::ivec4& rc);
 	// 清除数据,保留viewport
 	void clear_m2d();
-	bool nohas_clip(glm::ivec4 a);
+	bool nohas_clip(const glm::ivec4&);
 	// 添加相同纹理/裁剪区域则自动合批
 	void add(void* user_image, std::vector<vertex_t>& vertex, std::vector<int>& vt_index, const glm::ivec4& clip);
 	void add(void* user_image, vertex_t* vertex, size_t vcount, int* vt_index, size_t icount, const glm::ivec4& clip);
@@ -1833,6 +1833,12 @@ void rvg_cx::clear_all()
 	}
 	free_state(st);
 	st = new_state();
+	for (auto& [k, v] : _images) {
+		if (v.is_copy && v.pixels) {
+			ac->free_mem0(v.pixels, v.px_size);
+		}
+	}
+	_images.clear();
 }
 void rvg_cx::set_path(ovg_path_t* path0, vg_state_save_t* st0)
 {
@@ -2793,7 +2799,15 @@ void rvg_cx::_draw_segment(ovg_path_t* ctx, stroke_context_t* str, dash_context_
 
 void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
 {
-	_images[img] = *desc;
+	if (!img)img = desc->img;
+	auto& dst = _images[img]; dst = *desc;
+	img->w = desc->width;
+	img->h = desc->height;
+	if (desc->is_copy) {
+		dst.px_size = dst.height * dst.stride;
+		dst.pixels = ac->new_mem(dst.px_size);
+		memcpy((void*)dst.pixels, desc->pixels, dst.px_size);
+	}
 }
 
 void rvg_cx::image_destroy(vg_image_t* img)
@@ -2904,7 +2918,10 @@ void  ovg_add_text(rvg_t* v0, text_st_t* p, text_style_t* ts, text_box_rt* box)
 void  ovg_add_image(rvg_t* v0, ovg_image_r* r)
 {
 	auto dc = (rvg_cx*)v0;
-	if (dc)dc->gps.add_image(r);
+	if (dc) {
+		dc->gps.set_viewport({ 0,0,dc->width,dc->height });
+		dc->gps.add_image(r);
+	}
 }
 // 原始三角形，输入0则不修改
 void  ovg_set_geom_state(rvg_t* v0, gem_info_t* info, const glm::mat4* matrix)
@@ -2931,7 +2948,7 @@ void  ovg_add_geometry3d(rvg_t* v0, vg_image_t* texture, const float* xyz, int x
 }
 
 void ovg_image_update(rvg_t* p, vg_image_t* img, vg_image_desc_t* desc) {
-	if (!p || !img || !desc)return;
+	if (!p || !desc)return;
 	auto dc = (rvg_cx*)p;
 	dc->image_update(img, desc);
 }
@@ -3363,7 +3380,7 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 	size_t cclip = 0;
 	gem_info_t info = {};
 	info.blendMode = (int8_t)blendMode_e::normal;
-	info.topology = 3;
+	info.topology = 0;
 	//info.doubleSided = false;
 	//info.depthTestEnable = false;
 	//info.depthWriteEnable = false;
@@ -3413,7 +3430,7 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 void geom_primitive::add_image(ovg_image_r* r)
 {
 	if (!r || !r->img || (r->dst.z * r->dst.w <= 0) || (r->rc.z < 1 || r->rc.w < 1))return;
-	add_image0(r->img, r->texsize, {}, r->dst, r->rc, r->sliced, r->color);
+	add_image0(r->img, { r->img->w,r->img->h }, {}, r->dst, r->rc, r->sliced, r->color);
 	draw_mesh2d_x(dc, this, { 1.0,1.0 });
 }
 #if 1
@@ -3470,9 +3487,10 @@ inline bool is_rect_intersect(glm::vec4 r1, glm::vec4 r2)
 	}
 	return is_rect_intersect0(r1.x, r1.y, r1.z, r1.w, r2.x, r2.y, r2.z, r2.w);
 }
-bool mesh2d_x::nohas_clip(glm::ivec4 a)
+bool mesh2d_x::nohas_clip(const glm::ivec4& a)
 {
 	auto clip = _clip_rect;
+	if (clip.z == 0 || clip.w == 0 || viewport.z == 0 || viewport.w == 0)return false;
 	if (clip.z > viewport.z || clip.z < 0)clip.z = viewport.z;
 	if (clip.w > viewport.w || clip.w < 0)clip.w = viewport.w;
 	if (clip.z < 0 || clip.w < 0)
@@ -3792,6 +3810,7 @@ ovg_draw_data_t get_draw_list(rvg_t* p0)
 		ret.instance_data = p->gps.instance_mat.data();
 		p->_images_up.clear();
 		for (auto& [k, v] : p->_images) {
+			v.img = k;
 			p->_images_up.push_back(&v);
 		}
 		ret.image_desc = p->_images_up.data();

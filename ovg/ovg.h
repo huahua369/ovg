@@ -395,7 +395,8 @@ enum vg_format_t {
 struct vg_image_t {
 	uint32_t id;		// 由设备分配
 	uint32_t w, h;		// 更新纹理时自动更新大小
-	bool upload_status;	// 上传状态
+	bool valid = true;	// 是否要更新到纹理
+	bool copy_status;	// 复制状态
 };
 /**
  * 更新图片数据（不重建句柄）：
@@ -403,15 +404,16 @@ struct vg_image_t {
  *   - 尺寸变化 → 后端重建纹理，旧纹理延迟释放
  */
 struct vg_image_desc_t {
-	vg_image_t*		img;			// 需要更新的纹理
-	uint32_t        width;
-	uint32_t        height;
-	vg_format_t     format;
-	uint32_t		stride;
-	const void* pixels;				// CPU 像素数据。vg_image_t.upload_status等于true时才能释放
-	uint32_t        x, y, w, h;		// 脏矩形（全量更新时 = 整张图） 
-	bool            partial;		// true = 只更新脏矩形；false = 全量 
-	bool            is_destroy;		// true = 删除纹理；
+	vg_image_t* img;		// 需要更新的纹理
+	uint32_t	width;
+	uint32_t	height;
+	vg_format_t	format;
+	uint32_t	stride;
+	void* pixels;			// CPU 像素数据。is_copy=false时vg_image_t.copy_status等于true时才能释放
+	uint32_t x, y, w, h;	// 更新矩形区域
+	uint32_t px_size;		// 像素字节大小
+	bool is_destroy;		// true = 删除纹理；
+	bool is_copy;			// 是否要复制内存；
 };
 
 #endif
@@ -452,8 +454,7 @@ struct ovg_image_r
 {
 	vg_image_t* img;
 	glm::ivec4 rc;		// 所在纹理区域
-	glm::ivec4 sliced;	// 九宫格
-	glm::ivec2 texsize;	// 纹理大小
+	glm::ivec4 sliced;	// 九宫格 
 	glm::ivec4 dst;		// 渲染坐标大小 
 	uint32_t color;		// 混合颜色
 	int8_t type;		// img的类型
