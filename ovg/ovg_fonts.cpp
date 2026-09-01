@@ -415,7 +415,7 @@ bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBu
 	return false;
 }
 
-static hb_user_data_key_t gdkey = {};
+static hb_user_data_key_t fontStyleKey = {};
 
 size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt, const char* family, const char* style, int weight, int slant)
 {
@@ -467,7 +467,8 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		}
 		if (it->font.font)
 		{
-			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&gdkey, (void*)(uintptr_t)next_font_id, nullptr, true);
+			it->id = next_font_id;
+			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&fontStyleKey, (void*)(uintptr_t)it, nullptr, true);
 			next_font_id++;
 			hb_res_init(&it->font, 0);
 			if (font_supports_slnt_axis(it->font.font)) {
@@ -642,17 +643,21 @@ void of_close_path(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void* ud) {
 	b->tem_vec.push_back((float)path_type_et::e_close);  // CLOSE
 }
 
+hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
+
 glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize)
 {
-	uint32_t font_id = (uint32_t)hb_font_get_user_data(font, (hb_user_data_key_t*)&gdkey);
+	auto font_ptr = (FontStyle*)hb_font_get_user_data(font, (hb_user_data_key_t*)&fontStyleKey);
+	uint32_t font_id = font_ptr->id;
+	hb_font_set_scale(font, fontsize, fontsize);
 	hb_glyph_extents_t extents;
 	hb_font_get_glyph_extents(font, glyph_id, &extents);
 
 	int em = hb_face_get_upem(hb_font_get_face(font));
 	float scale = fontsize / (float)em;
 
-	int px_w = (int)(extents.width / 64.0f * scale);
-	int px_h = (int)(extents.height / 64.0f * scale);
+	auto px_w = (extents.width);
+	auto px_h = (-extents.height);
 
 	bool use_raster = (px_w <= max_raster_size && px_h <= max_raster_size
 		&& px_w > 0 && px_h > 0);
@@ -671,22 +676,21 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 			return &it->second;
 
 		// ── 缓存未命中：光栅化 ──
-		// 用 hb 的 raster 接口或你已有的光栅化路径
-		// 这里假设你有 hb_raster_image_t 或类似结构
-		hb_raster_image_t* img = 0;
-		// ... 光栅化 font + glyph_id + fontsize → img ...
-
+		glm::ivec4 rc = {};
+		glm::vec2 fsc = { 1,1 };
+		hb_raster_image_t* img = build_glyph_image_hb(&font_ptr->font, glyph_id, fontsize, &rc, fsc);
 		// 装箱进 image_cache_cx
 		glm::ivec2 pos = {};
-		ovg_image_data* img_data = image_cache.push_cache_bitmap(img, &pos);
+		ovg_image_data* img_data = image_cache.push_cache_size({ rc.z,rc.w }, &pos);
+		gfont_copy_image(img_data, pos.x, pos.y, -1, (hb_raster_image_t*)img, rc, true, fsc.x > 1, SubpixelLayout::RGB);
 
 		glyph_atlas_entry entry{};
 		entry.atlas_img = img_data;  // ovg_image_data 继承自 vg_image_t
 		entry.uv_rect = glm::ivec4(pos.x, pos.y, px_w, px_h);
 		entry.offset = glm::ivec2(
-			(int)(extents.x_bearing / 64.0f * scale),
-			(int)(extents.y_bearing / 64.0f * scale));
-		entry.advance = (int)(extents.x_bearing / 64.0f * scale);
+			(int)(extents.x_bearing),
+			(int)(extents.y_bearing));
+		entry.advance = (int)(extents.x_bearing);
 		entry.path_data = nullptr;
 		entry.path_size = 0;
 
@@ -1157,7 +1161,7 @@ void free_hb_res(vg_font* hp) {
 	hp->pnt = 0;
 }
 
-void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
+hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
 {
 	hb_raster_image_t* img = nullptr;
 	hb_glyph_extents_t gext = {};
@@ -1169,7 +1173,8 @@ void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4*
 	hb_raster_draw_reset(rdr);
 	hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
 	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
-
+	float x, y;
+	hb_raster_draw_get_scale_factor(rdr, &x, &y);
 	int pad = 4;// ovg::align_up(font_size / 2, 2);
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);

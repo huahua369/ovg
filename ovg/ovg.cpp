@@ -5512,7 +5512,15 @@ font_cache_cx* new_font_cache()
 	auto p = new font_cache_cx();
 	if (p)
 	{
-		p->ac = new usp_ac_cx();
+		auto ac = new usp_ac_cx();
+		if (!ac)
+		{
+			delete p; p = 0;
+		}
+		else
+		{
+			p->set_alloc_ptr(ac);
+		}
 	}
 	return p;
 }

@@ -190,8 +190,7 @@ private:
 };
 // 渲染普通文本
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
-
-void* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
+ 
 
 
 vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);
