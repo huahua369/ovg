@@ -30,41 +30,41 @@ enum class SubpixelLayout {
 	VBGR,        // 垂直 B-G-R
 };
 #define MINSUBPIXEL 36
-struct vg_font_extents_t {
-	float ascent;
-	float descent;
-	float height;
-	float max_x_advance;
-	float max_y_advance;
-};
-struct vg_text_extents_t {
-	float x_bearing;
-	float y_bearing;
-	float width;
-	float height;
-	float x_advance;
-	float y_advance;
-};
-struct vg_glyph_info_t {
-	int32_t x_advance;
-	int32_t y_advance;
-	int32_t x_offset;
-	int32_t y_offset;
-	/* private */
-	uint32_t codepoint; // should be named glyphIndex, but for harfbuzz compatibility...
-};
+//struct vg_font_extents_t {
+//	float ascent;
+//	float descent;
+//	float height;
+//	float max_x_advance;
+//	float max_y_advance;
+//};
+//struct vg_text_extents_t {
+//	float x_bearing;
+//	float y_bearing;
+//	float width;
+//	float height;
+//	float x_advance;
+//	float y_advance;
+//};
+//struct vg_glyph_info_t {
+//	int32_t x_advance;
+//	int32_t y_advance;
+//	int32_t x_offset;
+//	int32_t y_offset;
+//	/* private */
+//	uint32_t codepoint; // should be named glyphIndex, but for harfbuzz compatibility...
+//};
 struct vg_font;
 struct FontStyle;
-struct vg_text_run_t {
-	vg_text_extents_t extents;
-	const char* text;
-	unsigned int glyph_count;
-	hb_buffer_t* hbBuf;
-	vg_glyph_info_t* glyphs;
-	vg_font* font;
-};
-class text_run_cx;
-typedef class text_run_cx* vgText;
+//struct vg_text_run_t {
+//	vg_text_extents_t extents;
+//	const char* text;
+//	unsigned int glyph_count;
+//	hb_buffer_t* hbBuf;
+//	vg_glyph_info_t* glyphs;
+//	vg_font* font;
+//};
+//class text_run_cx;
+//typedef class text_run_cx* vgText;
 class usp_ac_cx;
 
 // 纹理图像打包器接口
@@ -125,6 +125,19 @@ struct glyph_atlas_entry {
 	glm::ivec2 offset;		// 字形偏移（bearing）x_bearing/y_bearing
 	float* path_data;		// 路径数据，不同字号共用一份
 	size_t path_size;
+	int em_units = 2048;
+};
+struct path_builder {
+	std::vector<float> data;
+	float upem;
+	float scale;        // 1.0 / upem，用于归一化或直接存原始 upem
+	float pen_x = 0;    // 跟踪当前点，处理 close_path 时可能需要
+	float pen_y = 0;
+	void clear();
+	void move_to(float x, float y);
+	void line_to(float x, float y);
+	void quad_to(float cx, float cy, float x, float y);
+	void close();
 };
 
 class font_cache_cx
@@ -136,14 +149,7 @@ public:
 	};
 	union glyph_key {
 		struct {
-			glm::u16vec2 idsize;
-			uint32_t glyph_index;
-		}s;
-		uint64_t v;
-	};
-	union path_key {
-		struct {
-			uint32_t id;
+			glm::u16vec2 k;
 			uint32_t glyph_index;
 		}s;
 		uint64_t v;
@@ -155,11 +161,9 @@ public:
 	std::vector<FontStyle*> _temp;
 	// key=[uint16字体id，uint16字号，uint32字形id]
 	std::unordered_map<uint64_t, glyph_atlas_entry> glyph_cache;
-	// key=[uint32字体id，uint32字形id]
-	std::unordered_map<uint64_t, glyph_atlas_entry> path_cache;
 	// 位图缓存
 	image_cache_cx image_cache;
-	std::vector<float> tem_vec;
+	path_builder temp_path;
 	hb_draw_funcs_t* funcs = 0;
 	FcConfig* cfg = 0;
 	// 内存分配器
@@ -190,18 +194,128 @@ private:
 };
 // 渲染普通文本
 void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
- 
 
 
-vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);
-vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
-void text_run_destroy(vgText textRun);
+
+//vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);
+//vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
+//void text_run_destroy(vgText textRun);
 // 设置字体，字号，0则不改
-void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size);
+//void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size);
 // 重新设置文本
-void show_text_set(vgText textRun, const char* text, uint32_t length);
-void show_text_run(vgText textRun);
-void show_text_run_path(vgText textRun);
-void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
-uint32_t text_run_get_glyph_count(vgText textRun);
-void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo);
+//void show_text_set(vgText textRun, const char* text, uint32_t length);
+//void show_text_run(vgText textRun);
+//void show_text_run_path(vgText textRun);
+//void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
+//uint32_t text_run_get_glyph_count(vgText textRun);
+//void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo);
+
+struct vg_glyph_info_t {
+	uint32_t  glyph_id;
+	float     x_offset;
+	float     y_offset;
+	float     x_advance;
+	float     y_advance;
+	// 指向缓存条目（位图或矢量）
+	glyph_atlas_entry* cache_entry;
+};
+
+struct vg_text_extents_t {
+	float width;
+	float height;
+	float x_advance;
+	float y_advance;
+	float x_bearing;
+	float y_bearing;
+};
+struct glyph_draw_cmd {
+	enum { RASTER, VECTOR } type;
+	glyph_atlas_entry* entry;
+	glm::vec2         pos;      // 字形位置（已加 pen offset）
+	glm::vec2         size;     // 像素尺寸
+	glm::vec4         uv_rect;  // 归一化 UV
+	uint32_t          color;
+
+	int fontsize = 18;
+};
+
+struct text_draw_list {
+	std::vector<glyph_draw_cmd> cmds;
+	vg_text_extents_t           extents;
+
+	int fontsize = 18;
+	void clear();
+	void push_raster(glyph_atlas_entry* e, float x, float y, float w, float h, const glm::vec4& uv, uint32_t c);
+	void push_vector(glyph_atlas_entry* e, float x, float y, uint32_t c);
+};
+class vg_text_run_cx
+{
+public:
+	enum render_mode { RASTER_FIRST, VECTOR_ONLY };
+private:
+	const font_familys_t* _ffs = nullptr;
+	hb_font_t* _primary_font = nullptr;
+	int                   _fontsize = 16;
+	std::vector<uint32_t> _utf32;
+
+	// 当前 shaping 结果
+	hb_buffer_t* _buf = nullptr;
+	vg_text_extents_t     _extents{};
+	std::vector<vg_glyph_info_t> _glyphs;
+	uint32_t              _glyph_count = 0;
+
+	// 缓存引用
+	font_cache_cx* _cache = nullptr;
+
+	// 多 run 支持（不同 font fallback）
+	struct text_run {
+		hb_buffer_t* buf = nullptr;
+		hb_font_t* font = nullptr;
+		int          fontsize = 0;
+		uint32_t     start_cp = 0;
+		uint32_t     end_cp = 0;
+	};
+	std::vector<text_run> _runs;
+public:
+	vg_text_run_cx();
+	~vg_text_run_cx();
+
+	// 设置文本（UTF-8），触发重新 shape
+	void set_text(const void* str8, size_t len = -1);
+
+	// 设置字体参数
+	void set_font(hb_font_t* font, int fontsize);
+	
+	// 设置字体集（多 family fallback）
+	void set_font_families(const font_familys_t* ffs, int fontsize);
+
+	// 执行 shape + 缓存 lookup（内部调 set_text/set_font 后自动调）
+	void shape();
+
+	// 清除所有缓存引用（字体变了时调用，不释放 atlas 数据）
+	void clear_glyphs();
+
+	void populate_draw_list(text_draw_list& list, float origin_x, float origin_y, uint32_t color, render_mode m);
+	// 访问结果
+	const vg_text_extents_t& extents() const { return _extents; }
+	const std::vector<vg_glyph_info_t>& glyphs() const { return _glyphs; }
+	uint32_t glyph_count() const { return _glyph_count; }
+
+	// 遍历回调（方便渲染）
+	template<typename Fn>
+	void for_each_glyph(Fn&& fn) const {
+		float x = 0, y = 0;
+		for (const auto& g : _glyphs) {
+			fn(g, x, y);
+			x += g.x_advance;
+			y += g.y_advance;
+		}
+	}
+
+private:
+	void free_buffer();
+	void shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize);
+
+};
+
+bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h);

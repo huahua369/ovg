@@ -42,7 +42,6 @@
 #endif
 //#include "mapView.h"
 
-#include "ovg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +56,8 @@
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ot.h> 
 #include <harfbuzz/hb-raster.h> 
+
+#include "ovg.h"
 #include "ovg_fonts.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -416,6 +417,7 @@ bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBu
 }
 
 static hb_user_data_key_t fontStyleKey = {};
+static hb_user_data_key_t g_font_cache_key = {};
 
 size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt, const char* family, const char* style, int weight, int slant)
 {
@@ -469,6 +471,7 @@ size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt
 		{
 			it->id = next_font_id;
 			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&fontStyleKey, (void*)(uintptr_t)it, nullptr, true);
+			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&g_font_cache_key, (void*)(uintptr_t)this, nullptr, true);
 			next_font_id++;
 			hb_res_init(&it->font, 0);
 			if (font_supports_slnt_axis(it->font.font)) {
@@ -618,35 +621,63 @@ const char* font_cache_cx::slant_to_string(int s) {
 	}
 }
 
-void of_move_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float x, float y, void* ud) {
-	auto b = (font_cache_cx*)data;
-	b->tem_vec.push_back((float)path_type_et::e_vmove);  // MOVE
-	b->tem_vec.push_back(x / 64.0f);
-	b->tem_vec.push_back(y / 64.0f);
+void path_builder::clear()
+{
+	data.clear();
 }
-void of_line_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float x, float y, void* ud) {
-	auto b = (font_cache_cx*)data;
-	b->tem_vec.push_back((float)path_type_et::e_vline);  // LINE
-	b->tem_vec.push_back(x / 64.0f);
-	b->tem_vec.push_back(y / 64.0f);
+void path_builder::move_to(float x, float y) {
+	data.push_back((float)path_type_et::e_vmove);  // MOVE
+	data.push_back(x);
+	data.push_back(-y); // ← y 翻转
+	pen_x = x; pen_y = -y;
 }
-void of_quad_to(hb_draw_funcs_t*, void* data, hb_draw_state_t*, float cx, float cy, float x, float y, void* ud) {
-	auto b = (font_cache_cx*)data;
-	b->tem_vec.push_back((float)path_type_et::e_quadratic);  // QUAD
-	b->tem_vec.push_back(cx / 64.0f);
-	b->tem_vec.push_back(cy / 64.0f);
-	b->tem_vec.push_back(x / 64.0f);
-	b->tem_vec.push_back(y / 64.0f);
+void path_builder::line_to(float x, float y) {
+	data.push_back((float)path_type_et::e_vline);  // LINE
+	data.push_back(x);
+	data.push_back(-y); // ← y 翻转
+	pen_x = x; pen_y = -y;
 }
-void of_close_path(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void* ud) {
-	auto b = (font_cache_cx*)data;
-	b->tem_vec.push_back((float)path_type_et::e_close);  // CLOSE
+void path_builder::quad_to(float cx, float cy, float x, float y) {
+	data.push_back((float)path_type_et::e_quadratic);  // QUAD
+	data.push_back(cx);
+	data.push_back(-cy); // ← y 翻转
+	data.push_back(x);
+	data.push_back(-y);  // ← y 翻转
+	pen_x = x; pen_y = -y;
+}
+void path_builder::close() {
+	data.push_back((float)path_type_et::e_close);  // CLOSE
+	// close 不存坐标，ovg_path_t 内部补 终点→起点 直线
+}
+static void _hb_move_to(hb_draw_funcs_t* funcs, void* draw_data, hb_draw_state_t* st, float to_x, float to_y, void* user_data)
+{
+	auto* b = (path_builder*)draw_data;
+	b->move_to(to_x, to_y);
+}
+
+static void _hb_line_to(hb_draw_funcs_t* funcs, void* draw_data, hb_draw_state_t* st, float to_x, float to_y, void* user_data)
+{
+	auto* b = (path_builder*)draw_data;
+	b->line_to(to_x, to_y);
+}
+
+static void _hb_quad_to(hb_draw_funcs_t* funcs, void* draw_data, hb_draw_state_t* st, float cx, float cy, float to_x, float to_y, void* user_data)
+{
+	auto* b = (path_builder*)draw_data;
+	b->quad_to(cx, cy, to_x, to_y);
+}
+
+static void _hb_close_path(hb_draw_funcs_t* funcs, void* draw_data, hb_draw_state_t* st, void* user_data)
+{
+	auto* b = (path_builder*)draw_data;
+	b->close();
 }
 
 hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
 
 glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize)
 {
+	glyph_atlas_entry* ret = 0;
 	auto font_ptr = (FontStyle*)hb_font_get_user_data(font, (hb_user_data_key_t*)&fontStyleKey);
 	uint32_t font_id = font_ptr->id;
 	hb_font_set_scale(font, fontsize, fontsize);
@@ -662,18 +693,57 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 	bool use_raster = (px_w <= max_raster_size && px_h <= max_raster_size
 		&& px_w > 0 && px_h > 0);
 
+	glyph_key gk;
+	gk.s.k.x = (uint16_t)font_id;
+	gk.s.glyph_index = glyph_id;
+
+	{
+		gk.s.k.y = 0;
+		auto it = glyph_cache.find(gk.v);
+		if (it == glyph_cache.end()) {
+			if (!funcs)
+			{
+				funcs = hb_draw_funcs_create();
+				hb_draw_funcs_set_move_to_func(funcs, _hb_move_to, nullptr, nullptr);
+				hb_draw_funcs_set_line_to_func(funcs, _hb_line_to, nullptr, nullptr);
+				hb_draw_funcs_set_quadratic_to_func(funcs, _hb_quad_to, nullptr, nullptr);
+				hb_draw_funcs_set_close_path_func(funcs, _hb_close_path, nullptr, nullptr);
+			}
+			temp_path.clear();
+			hb_font_draw_glyph(font, glyph_id, funcs, &temp_path);
+
+			// 拷贝到持久内存
+			size_t bytes = temp_path.data.size() * sizeof(float);
+			float* path_copy = (float*)ac->alloc(bytes, 0);
+			memcpy(path_copy, temp_path.data.data(), bytes);
+
+			glyph_atlas_entry entry{};
+			entry.type = glyph_atlas_entry::VECTOR;
+			entry.atlas_img = nullptr;
+			entry.uv_rect = glm::ivec4(0);
+			entry.offset = glm::ivec2(0);
+			entry.advance = 0;
+			entry.path_data = path_copy;
+			entry.path_size = temp_path.data.size();
+			entry.em_units = em;
+			auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
+			ret = &it2->second;
+		}
+		else {
+			ret = &it->second;
+		}
+		if (!use_raster)return ret;
+	}
+
+	gk.s.k.y = (uint16_t)use_raster ? fontsize : 0;// 大号字符统一绑定0字号
+	auto it = glyph_cache.find(gk.v);
+	if (it != glyph_cache.end())
+		return &it->second;
+	assert(ret);
 	// ═══════════════════════════════════════════
 	// 位图路径
 	// ═══════════════════════════════════════════
 	if (use_raster) {
-		glyph_key gk;
-		gk.s.idsize.x = (uint16_t)font_id;
-		gk.s.idsize.y = (uint16_t)fontsize;
-		gk.s.glyph_index = glyph_id;
-
-		auto it = glyph_cache.find(gk.v);
-		if (it != glyph_cache.end())
-			return &it->second;
 
 		// ── 缓存未命中：光栅化 ──
 		glm::ivec4 rc = {};
@@ -682,7 +752,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		// 装箱进 image_cache_cx
 		glm::ivec2 pos = {};
 		ovg_image_data* img_data = image_cache.push_cache_size({ rc.z,rc.w }, &pos);
-		gfont_copy_image(img_data, pos.x, pos.y, -1, (hb_raster_image_t*)img, rc, true, fsc.x > 1, SubpixelLayout::RGB);
+		gfont_copy_image(img_data, pos.x, pos.y, -1, (hb_raster_image_t*)img, rc, false, fsc.x > 1, SubpixelLayout::RGB);
 
 		glyph_atlas_entry entry{};
 		entry.atlas_img = img_data;  // ovg_image_data 继承自 vg_image_t
@@ -691,59 +761,14 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 			(int)(extents.x_bearing),
 			(int)(extents.y_bearing));
 		entry.advance = (int)(extents.x_bearing);
-		entry.path_data = nullptr;
-		entry.path_size = 0;
+		entry.path_data = ret->path_data;
+		entry.path_size = ret->path_size;
 
 		auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
-		return &it2->second;
+		ret = &it2->second;
 	}
 
-	// ═══════════════════════════════════════════
-	// 矢量路径（字号无关，只提取一次）
-	// ═══════════════════════════════════════════
-	path_key pk;
-	pk.s.id = font_id;
-	pk.s.glyph_index = glyph_id;
-
-	auto it = path_cache.find(pk.v);
-	if (it != path_cache.end())
-		return &it->second;
-
-	// ── 缓存未命中：提取路径 ──
-	// 用 HarfBuzz 的 draw 接口输出路径
-
-
-	// 回调：把 hb 路径命令序列化为线性数组
-	// 格式: [cmd, x, y, ...]
-	// cmd: 0=move_to, 1=line_to, 2=quad_to, 3=close
-
-	if (!funcs)
-	{
-		funcs = hb_draw_funcs_create();
-		hb_draw_funcs_set_move_to_func(funcs, of_move_to, nullptr, nullptr);
-		hb_draw_funcs_set_line_to_func(funcs, of_line_to, nullptr, nullptr);
-		hb_draw_funcs_set_quadratic_to_func(funcs, of_quad_to, nullptr, nullptr);
-		hb_draw_funcs_set_close_path_func(funcs, of_close_path, nullptr, nullptr);
-	}
-
-	hb_font_draw_glyph(font, glyph_id, funcs, this);
-
-	// 拷贝到持久内存
-	size_t bytes = tem_vec.size() * sizeof(float);
-	float* path_copy = (float*)ac->alloc(bytes, 0);
-	memcpy(path_copy, tem_vec.data(), bytes);
-
-	glyph_atlas_entry entry{};
-	entry.type = glyph_atlas_entry::VECTOR;
-	entry.atlas_img = nullptr;
-	entry.uv_rect = glm::ivec4(0);
-	entry.offset = glm::ivec2(0);
-	entry.advance = 0;
-	entry.path_data = path_copy;
-	entry.path_size = tem_vec.size();
-
-	auto [it2, ok] = path_cache.emplace(pk.v, entry);
-	return &it2->second;
+	return ret;
 }
 struct draw_ctx_f {
 	ovg_ctx_cb* cb = 0;
@@ -812,7 +837,7 @@ static uint32_t utf8_next(const uint8_t*& p, const uint8_t* end) {
 	return r ? r : 0xFFFD;
 }
 
-void utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
+void vg_utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
 {
 	const uint8_t* p = (const uint8_t*)str8;
 	const uint8_t* end = p + len;
@@ -821,152 +846,6 @@ void utf8_to_utf32(const void* str8, size_t len, std::vector<uint32_t>* ot)
 		ot->push_back(utf8_next(p, end));
 }
 
-class text_run_cx
-{
-public:
-	std::vector<vg_text_run_t> vrun;
-	std::vector<uint32_t> utf32;
-	const font_familys_t* _familys = 0;
-public:
-	text_run_cx();
-	~text_run_cx();
-	bool init(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
-private:
-
-};
-
-text_run_cx::text_run_cx()
-{}
-
-text_run_cx::~text_run_cx()
-{}
-bool text_run_cx::init(const font_familys_t* familys, int font_size, const char* text, uint32_t length)
-{
-	if (!familys || !familys->count || !familys->familys || !text || !*text) {
-		return false;
-	}
-	if (length == -1)length = strlen(text);
-	utf32.clear();
-	utf8_to_utf32(text, length, &utf32);
-	hb_font_t* primary = familys->familys[0]->font; // 主字体（可按 script 选）
-	hb_draw_funcs_t* df = create_ovg_draw_funcs();
-	hb_buffer_t* buf = hb_buffer_create();
-	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
-	hb_buffer_guess_segment_properties(buf);
-	hb_shape(primary, buf, nullptr, 0);
-
-	uint32_t n;
-	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
-	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
-
-
-	float pen_x = 0, pen_y = 0;
-	size_t run_start = 0;
-	int h = font_size;
-	while (run_start < utf32.size()) {
-		uint32_t cp = utf32[run_start];
-		const font_family_t* ff = resolve_family(familys, cp);
-		if (!ff) ff = familys->familys[0];
-		float sc = 1.0;
-		if (h > 0)
-		{
-			hb_font_set_scale(ff->font, h, h);
-		}
-		/* 扩展 run */
-		size_t run_end = run_start + 1;
-		while (run_end < utf32.size() &&
-			resolve_family(familys, utf32[run_end]) == ff)
-			run_end++;
-
-		/* shape run */
-		hb_buffer_t* buf = hb_buffer_create();
-		hb_buffer_add_utf32(buf,
-			utf32.data() + run_start,
-			run_end - run_start,
-			0, -1);
-		hb_buffer_guess_segment_properties(buf);
-
-		/* ✅ UI：可选关闭 kerning */
-		hb_feature_t features[] = {
-			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
-		};
-		hb_shape(ff->font, buf, features, 1);
-
-		unsigned int glyph_count;
-		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
-		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
-		vg_text_run_t textRun[1] = {};
-		hb_font_extents_t fextents = {};
-		hb_font_get_extents_for_direction(ff->font, HB_DIRECTION_LTR, &fextents);
-		textRun->glyphs = (vg_glyph_info_t*)pos;
-		textRun->glyph_count = glyph_count;
-		unsigned int string_width_in_pixels = 0;
-		for (uint32_t i = 0; i < textRun->glyph_count; ++i)
-		{
-			string_width_in_pixels += textRun->glyphs[i].x_advance;
-		}
-		textRun->extents.height = fextents.ascender - fextents.descender + fextents.line_gap;
-		textRun->extents.x_advance = (float)string_width_in_pixels;
-		if (textRun->glyph_count > 0) {
-			textRun->extents.y_advance = (float)(textRun->glyphs[textRun->glyph_count - 1].y_advance);
-			textRun->extents.x_bearing = -(float)(textRun->glyphs[0].x_offset);
-			textRun->extents.y_bearing = -(float)(textRun->glyphs[0].y_offset);
-		}
-		textRun->extents.width = textRun->extents.x_advance;
-
-		/* 画 run */
-		for (unsigned i = 0; i < glyph_count; i++) {
-			//draw_ctx_f ctx = { ovg, vg };
-
-			//hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
-			//glm::ivec4 rc = {};
-			//auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc);
-			// (&imgbuf, pen_x, pen_y, 0xff0000ff, (hb_raster_image_t*)img, true);
-			//pen_x += floorf(pos[i].x_advance); // ✅ 像素对齐
-
-		}
-		run_start = run_end;
-	}
-	return true;
-}
-vgText text_run_new(const font_familys_t* familys, int font_size, const char* text) {
-	return text_run_new_with_length(familys, font_size, text, -1);
-}
-vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length) {
-	auto textRun = new text_run_cx();
-	if (textRun && !textRun->init(familys, font_size, text, length)) {
-		delete textRun;
-		textRun = 0;
-	}
-	return textRun;
-}
-void text_run_destroy(vgText textRun) {
-	if (textRun)
-		delete textRun;
-}
-void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size)
-{
-
-}
-void show_text_set(vgText textRun, const char* text, uint32_t length)
-{
-
-}
-void show_text_run(vgText textRun) {
-
-}
-void show_text_run_path(vgText textRun) {
-
-}
-void text_run_get_extents(vgText textRun, vg_text_extents_t* extents) {
-
-}
-uint32_t text_run_get_glyph_count(vgText textRun) {
-	return .0;
-}
-void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo) {
-
-}
 bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h) {
 	std::vector<uint8_t> rgb(size_t(w) * h * 4);
 	for (int y = 0; y < h; ++y) {
@@ -981,137 +860,6 @@ bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h) {
 	}
 	return stbi_write_png(path, w, h, 4, rgb.data(), w * 4) != 0;
 }
-void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* vg, const glm::uvec3& color) {
-	if (!ffs || !str8 || !len || !ovg || ffs->count == 0) return;
-	static std::vector<uint32_t> utf32;
-	utf32.clear();
-	utf8_to_utf32(str8, len, &utf32);
-	hb_font_t* primary = ffs->familys[0]->font; // 主字体（可按 script 选）
-	hb_draw_funcs_t* df = create_ovg_draw_funcs();
-	hb_buffer_t* buf = hb_buffer_create();
-	hb_buffer_add_utf32(buf, utf32.data(), utf32.size(), 0, -1);
-	hb_buffer_guess_segment_properties(buf);
-	hb_shape(primary, buf, nullptr, 0);
-
-	uint32_t n;
-	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
-	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
-
-	ovg_image_data imgbuf = {};
-	imgbuf.width = vg->width;
-	imgbuf.height = vg->height;
-	imgbuf.stride = imgbuf.width * 4;
-	imgbuf.format = 1;
-	std::vector<uint32_t> idd;
-	idd.resize(imgbuf.width * imgbuf.height);
-	imgbuf.data = idd.data();
-
-	int h = color.z;
-	float pen_x = x, pen_y = y;
-	float ry = h * 2;
-	float rx = x;
-	size_t run_start = 0;
-	while (run_start < utf32.size()) {
-		uint32_t cp = utf32[run_start];
-		const font_family_t* ff = resolve_family(ffs, cp);
-		if (!ff) ff = ffs->familys[0];
-		float sc = 1.0;
-		/* 扩展 run */
-		size_t run_end = run_start + 1;
-		while (run_end < utf32.size() &&
-			resolve_family(ffs, utf32[run_end]) == ff)
-			run_end++;
-
-		if (h > 0)
-		{
-			hb_font_set_scale(ff->font, h, h);
-		}
-		/* shape run */
-		hb_buffer_t* buf = hb_buffer_create();
-		hb_buffer_add_utf32(buf,
-			utf32.data() + run_start,
-			run_end - run_start,
-			0, -1);
-		hb_buffer_guess_segment_properties(buf);
-
-		/* ✅ UI：可选关闭 kerning */
-		hb_feature_t features[] = {
-			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
-		};
-		hb_shape(ff->font, buf, features, 1);
-		bool hascolor = ff->font;
-		glm::ivec2 fsc = { 1,1 };
-		if (h <= MINSUBPIXEL && !((vg_font*)ff)->pnt)
-		{
-			fsc.x = 3;
-		}
-		unsigned int glyph_count;
-		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
-		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
-		vg_text_run_t textRun[1] = {};
-		hb_font_extents_t fextents = {};
-		hb_font_get_extents_for_direction(ff->font, HB_DIRECTION_LTR, &fextents);
-		textRun->glyphs = (vg_glyph_info_t*)pos;
-		textRun->glyph_count = glyph_count;
-		unsigned int string_width_in_pixels = 0;
-		for (uint32_t i = 0; i < textRun->glyph_count; ++i)
-		{
-			string_width_in_pixels += textRun->glyphs[i].x_advance;
-		}
-		textRun->extents.height = fextents.ascender - fextents.descender + fextents.line_gap;
-		textRun->extents.x_advance = (float)string_width_in_pixels;
-		if (textRun->glyph_count > 0) {
-			textRun->extents.y_advance = (float)(textRun->glyphs[textRun->glyph_count - 1].y_advance);
-			textRun->extents.x_bearing = -(float)(textRun->glyphs[0].x_offset);
-			textRun->extents.y_bearing = -(float)(textRun->glyphs[0].y_offset);
-		}
-		textRun->extents.width = textRun->extents.x_advance;
-
-		/* 画 run */
-		for (unsigned i = 0; i < glyph_count; i++) {
-			draw_ctx_f ctx = { ovg, vg };
-			ovg->identity_matrix(vg);
-			ovg->translate(vg, pen_x, pen_y);
-			ovg->scale(vg, 1.0, -1.0);
-			ovg->set_source_color(vg, color.x);
-			if (h > 0)
-			{
-				hb_font_set_scale(ff->font, h, h);
-			}
-			hb_font_draw_glyph(ff->font, info[i].codepoint, df, &ctx);
-			glm::ivec4 rc = {};
-
-			auto img = build_glyph_image_hb((vg_font*)ff, info[i].codepoint, h, &rc, fsc);
-			rc.z = std::max(rc.z, h);
-			gfont_copy_image(&imgbuf, rx, ry, -1, (hb_raster_image_t*)img, rc, true, fsc.x > 1, SubpixelLayout::RGB);
-			pen_x += ceil(pos[i].x_advance); // ✅ 像素对齐
-			rx += (ceil(pos[i].x_advance)) + 4;
-			//ry += textRun->extents.height;
-			ovg->set_source_color(vg, color.x);
-			ovg->fill_preserve(vg);
-			ovg->set_source_color(vg, color.y);
-			ovg->stroke(vg);
-		}
-		hb_buffer_destroy(buf);
-		run_start = run_end;
-	}
-	std::string fn = "temp/font_test_08.png";
-	static bool savepng = true;
-	if (savepng)
-	{
-		savepng = false;
-		write_png_bgra(fn.c_str(), (uint8_t*)imgbuf.data, imgbuf.width, imgbuf.height);
-	}
-	hb_buffer_destroy(buf);
-	hb_draw_funcs_destroy(df);
-	ovg->set_source_color(vg, color.x);
-	ovg->fill_preserve(vg);
-	ovg->set_source_color(vg, color.y);
-	ovg->stroke(vg);
-	ovg->identity_matrix(vg);
-
-}
-
 
 
 void hb_res_init(vg_font* hp, hb_font_t* font) {
@@ -1178,10 +926,10 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 	int pad = 4;// ovg::align_up(font_size / 2, 2);
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
-		gext.x_bearing -= pad;
-		gext.y_bearing += pad;       // 顶部扩大
-		gext.width += 2 * pad;
-		gext.height -= 2 * pad;      // height 为负，向下也扩大
+		//gext.x_bearing -= pad;
+		//gext.y_bearing += pad;       // 顶部扩大
+		//gext.width += 2 * pad;
+		gext.height -= pad;      // height 为负，向下也扩大
 		if (pnt)
 		{
 			hb_raster_paint_set_foreground(pnt, HB_COLOR(255, 255, 255, 255));
@@ -1675,6 +1423,7 @@ public:
 		if (width < 10 || height < 10)return;
 		ptr.resize(width * height);
 		auto img = get();
+		img->format = 1;
 		img->width = width;
 		img->height = height;
 		img->valid = 1;
@@ -1876,4 +1625,261 @@ stb_packer* image_cache_cx::get_last_packer(bool isnew)
 		_data.push_back(p->get());
 	}
 	return *_packer.rbegin();
+}
+struct vg_text_run_cx0 {
+	vg_text_extents_t extents;
+	const char* text;
+	uint32_t text_len;
+	uint32_t glyph_count;
+	hb_buffer_t* hbBuf;
+	vg_glyph_info_t* glyphs;
+	vg_font* font;
+	std::vector<glyph_atlas_entry*> v;
+};
+void gen_text(const font_familys_t* ffs, const void* str8, size_t len, int fontsize) {
+	if (!ffs || !str8 || !len || ffs->count == 0) return;
+	static std::vector<uint32_t> utf32;
+	utf32.clear();
+	if (len == -1)len = strlen((char*)str8);
+	vg_utf8_to_utf32(str8, len, &utf32);
+	hb_font_t* primary = ffs->familys[0]->font; // 主字体（可按 script 选）
+	if (!primary)return;
+	auto th = (font_cache_cx*)hb_font_get_user_data(primary, (hb_user_data_key_t*)&g_font_cache_key);
+	if (!th)return;
+	std::vector<vg_text_run_cx0> runs;
+	size_t run_start = 0;
+	while (run_start < utf32.size()) {
+		uint32_t cp = utf32[run_start];
+		const font_family_t* ff = resolve_family(ffs, cp);
+		if (!ff) ff = ffs->familys[0];
+		float sc = 1.0;
+		/* 扩展 run */
+		size_t run_end = run_start + 1;
+		while (run_end < utf32.size() && resolve_family(ffs, utf32[run_end]) == ff)
+			run_end++;
+		int scale = fontsize > 0 ? fontsize : ff->upem;
+
+		hb_font_set_scale(ff->font, scale, scale);
+		vg_text_run_cx0 textRun[1] = {};
+		/* shape run */
+		hb_buffer_t* buf = hb_buffer_create();
+		textRun->hbBuf = buf;
+		textRun->font = (vg_font*)ff;
+		hb_buffer_add_utf32(buf, utf32.data() + run_start, run_end - run_start, 0, -1);
+		hb_buffer_guess_segment_properties(buf);
+
+		/* ✅ UI：可选关闭 kerning */
+		hb_feature_t features[] = {
+			{HB_TAG('k','e','r','n'), 0, 0, ~0u}
+		};
+		hb_shape(ff->font, buf, features, 1);
+		bool hascolor = ff->font;
+		glm::ivec2 fsc = { 1,1 };
+		if (scale <= MINSUBPIXEL && !((vg_font*)ff)->pnt)
+		{
+			fsc.x = 3;
+		}
+		unsigned int glyph_count;
+		hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+		hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+
+		hb_font_extents_t fextents = {};
+		hb_font_get_extents_for_direction(ff->font, HB_DIRECTION_LTR, &fextents);
+		textRun->glyphs = (vg_glyph_info_t*)pos;
+		textRun->glyph_count = glyph_count;
+		unsigned int string_width_in_pixels = 0;
+		for (uint32_t i = 0; i < textRun->glyph_count; ++i)
+		{
+			string_width_in_pixels += textRun->glyphs[i].x_advance;
+		}
+		textRun->extents.height = fextents.ascender - fextents.descender + fextents.line_gap;
+		textRun->extents.x_advance = (float)string_width_in_pixels;
+		if (textRun->glyph_count > 0) {
+			textRun->extents.y_advance = (float)(textRun->glyphs[textRun->glyph_count - 1].y_advance);
+			textRun->extents.x_bearing = -(float)(textRun->glyphs[0].x_offset);
+			textRun->extents.y_bearing = -(float)(textRun->glyphs[0].y_offset);
+		}
+		textRun->extents.width = textRun->extents.x_advance;
+		float x = 0.0f;
+		for (unsigned i = 0; i < glyph_count; i++) {
+
+			glm::ivec4 rc = {};
+			auto entry = th->get_cache_lookup_glyph(ff->font, info[i].codepoint, scale);
+			x += ceil(pos[i].x_advance);
+			textRun->v.push_back(entry);
+			//y += textRun->extents.height; 
+		}
+		runs.push_back(textRun[0]);
+		run_start = run_end;
+	}
+	return;
+}
+void text_draw_list::clear() { cmds.clear(); }
+void text_draw_list::push_raster(glyph_atlas_entry* e, float x, float y, float w, float h, const glm::vec4& uv, uint32_t c) {
+	cmds.push_back({ glyph_draw_cmd::RASTER, e, {x,y}, {w,h}, uv, c ,fontsize });
+}
+void text_draw_list::push_vector(glyph_atlas_entry* e, float x, float y, uint32_t c) {
+	cmds.push_back({ glyph_draw_cmd::VECTOR, e, {x,y}, {}, {}, c ,fontsize });
+}
+vg_text_run_cx::vg_text_run_cx() {}
+
+vg_text_run_cx::~vg_text_run_cx() {
+	free_buffer();
+	for (auto& r : _runs) {
+		if (r.buf) hb_buffer_destroy(r.buf);
+	}
+}
+
+void vg_text_run_cx::free_buffer() {
+	if (_buf) {
+		hb_buffer_destroy(_buf);
+		_buf = nullptr;
+	}
+}
+
+void vg_text_run_cx::set_font(hb_font_t* font, int fontsize) {
+	_primary_font = font;
+	_fontsize = fontsize;
+
+	// 从 font user_data 取 cache 指针
+	if (font) {
+		_cache = (font_cache_cx*)hb_font_get_user_data(font, &g_font_cache_key);
+	}
+	else {
+		_cache = nullptr;
+	}
+}
+
+void vg_text_run_cx::set_font_families(const font_familys_t* ffs, int fontsize) {
+	_ffs = ffs;
+	_fontsize = fontsize;
+	if (ffs && ffs->count > 0 && ffs->familys[0]) {
+		set_font(ffs->familys[0]->font, _fontsize);
+	}
+}
+
+void vg_text_run_cx::set_text(const void* str8, size_t len) {
+	_utf32.clear();
+	if (!str8 || len == 0) return;
+	if (len == (size_t)-1) len = strlen((const char*)str8);
+	vg_utf8_to_utf32(str8, len, &_utf32);
+}
+
+
+void vg_text_run_cx::clear_glyphs() {
+	_glyphs.clear();
+	_glyph_count = 0;
+	_extents = {};
+	for (auto& r : _runs) {
+		if (r.buf) { hb_buffer_destroy(r.buf); r.buf = nullptr; }
+	}
+	_runs.clear();
+}
+
+void vg_text_run_cx::shape() {
+	clear_glyphs();
+	if (!_primary_font || _utf32.empty()) return;
+
+	// ── 单字体简单路径（无 fallback）──
+	if (!_ffs || _ffs->count == 0) {
+		shape_run(0, _utf32.size(), _primary_font, _fontsize);
+		return;
+	}
+	// ── 多字体 fallback：按 script/coverage 切 run ──
+	size_t run_start = 0;
+	while (run_start < _utf32.size()) {
+		uint32_t cp = _utf32[run_start];
+		const font_family_t* ff = resolve_family(_ffs, cp);
+		if (!ff) ff = _ffs->familys[0];
+		size_t run_end = run_start + 1;
+		while (run_end < _utf32.size() && resolve_family(_ffs, _utf32[run_end]) == ff)
+			run_end++;
+		int scale = _fontsize > 0 ? _fontsize : ff->upem;
+		shape_run(run_start, run_end, ff->font, scale);
+		run_start = run_end;
+	}
+}
+
+void vg_text_run_cx::shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize)
+{
+	if (!font || run_start >= run_end) return;
+	hb_font_set_scale(font, fontsize, fontsize);
+	hb_buffer_t* buf = hb_buffer_create();
+	hb_buffer_add_utf32(buf, _utf32.data() + run_start, run_end - run_start, 0, -1);
+	hb_buffer_guess_segment_properties(buf);
+	// 关闭 kerning（UI 场景常见需求）
+	hb_feature_t features[] = { {HB_TAG('k','e','r','n'), 0, 0, ~0u} };
+	hb_shape(font, buf, features, 1);
+	unsigned int glyph_count = 0;
+	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
+	// 记录 run
+	_runs.push_back({ buf, font, fontsize, (uint32_t)run_start, (uint32_t)run_end });
+	// 字体度量
+	hb_font_extents_t fextents = {};
+	hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &fextents);
+	// 填充 glyph 列表
+	float x = 0;
+	for (unsigned int i = 0; i < glyph_count; ++i) {
+		vg_glyph_info_t g;
+		g.glyph_id = info[i].codepoint;
+		g.x_offset = (float)pos[i].x_offset;
+		g.y_offset = (float)pos[i].y_offset;
+		g.x_advance = (float)pos[i].x_advance;
+		g.y_advance = (float)pos[i].y_advance;
+		// 查缓存
+		if (_cache) {
+			g.cache_entry = _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize);
+		}
+		else {
+			g.cache_entry = nullptr;
+		}
+		_glyphs.push_back(g);
+		// 累加 extents
+		_extents.x_advance += g.x_advance;
+		_extents.y_advance += g.y_advance;
+	}
+	_glyph_count = (uint32_t)_glyphs.size();
+	// 行高
+	_extents.height = (float)(fextents.ascender - fextents.descender + fextents.line_gap);
+	// bearing（第一个 glyph）
+	if (!_glyphs.empty()) {
+		_extents.x_bearing = -_glyphs[0].x_offset;
+		_extents.y_bearing = -_glyphs[0].y_offset;
+	}
+	// width = x_advance 总和
+	_extents.width = _extents.x_advance;
+}
+
+void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, float origin_y, uint32_t color, render_mode mode)
+{
+	float pen_x = origin_x;
+	float pen_y = origin_y;
+	list.fontsize = _fontsize;
+	for (const auto& g : _glyphs) {
+		if (!g.cache_entry) { pen_x += g.x_advance; continue; }
+
+		auto* e = g.cache_entry;
+		float x = pen_x + (float)e->offset.x;
+		float y = pen_y - (float)e->offset.y;
+		if (mode == VECTOR_ONLY || !e->atlas_img) {
+			if (e->path_data) {
+				list.push_vector(e, x, y, color);
+			}
+		}else if (e->atlas_img) {
+			float w = (float)e->uv_rect.z;
+			float h = (float)e->uv_rect.w;
+			float atlas_w = (float)e->atlas_img->width;
+			float atlas_h = (float)e->atlas_img->height;
+			glm::vec4 uv(
+				(float)e->uv_rect.x / atlas_w,
+				(float)e->uv_rect.y / atlas_h,
+				(float)(e->uv_rect.x + e->uv_rect.z) / atlas_w,
+				(float)(e->uv_rect.y + e->uv_rect.w) / atlas_h
+			);
+			list.push_raster(e, x, y, w, h, uv, color);
+		} 
+		pen_x += g.x_advance;
+	}
+	list.extents = _extents;
 }

@@ -196,6 +196,7 @@ public:
 	ovg_canvas_cx();
 	~ovg_canvas_cx();
 
+	void add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box);
 private:
 
 };
@@ -204,6 +205,7 @@ ovg_canvas_cx::ovg_canvas_cx()
 {
 	auto a = new usp_ac_cx();
 	ac = (mem_resource_t*)a;
+	ac->ptr = this;
 	init_ovg_cb(this);
 }
 
@@ -971,21 +973,26 @@ void ovg_add_path(ovg_path_t* path, float* data, size_t count)
 		d += 3;
 		switch (t) {
 		case path_type_et::e_vmove:
-			ovg_move_to(path, x, y);
+			ovg_move_to(path, x, y);//2
 			break;
 		case path_type_et::e_vline:
-			ovg_line_to(path, x, y);
+			ovg_line_to(path, x, y);//2
 			break;
 		case path_type_et::e_vcurve:
 		{
-			ovg_quadratic_to(path, x, y, d[0], d[1]);
+			ovg_quadratic_to(path, x, y, d[0], d[1]);//5
 			d += 2;
 		}
 		break;
 		case path_type_et::e_vcubic:
 		{
-			ovg_curve_to(path, x, y, d[0], d[1], d[2], d[3]);
+			ovg_curve_to(path, x, y, d[0], d[1], d[2], d[3]);//6
 			d += 4;
+		}
+		break;
+		case path_type_et::e_close:
+		{
+			ovg_close_path(path); d -= 2; //1
 		}
 		break;
 		}
@@ -2971,7 +2978,11 @@ void ovg_paint(rvg_t* v0)
 void  ovg_add_text(rvg_t* v0, text_st_t* p, text_style_t* ts, text_box_rt* box)
 {
 	auto dc = (rvg_cx*)v0;
-	if (dc)dc->gps.add_text(p, ts, box);
+	if (dc) {
+		auto cb = (ovg_canvas_cx*)dc->ac->ptr;
+		if (cb)
+			cb->add_text(v0, p, ts, box);
+	}
 }
 // 普通图片，支持九宫格、混合颜色
 void  ovg_add_image(rvg_t* v0, ovg_image_r* r)
@@ -4420,8 +4431,13 @@ void vctx_get_clip_rect(rvg_t* v, void* rc) {
 /* ================= 高层绘制命令 ================= */
 
 // 添加文本，风格，渲染区可选
-void vctx_add_text(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box) {
-	if (dc) ovg_add_text(dc, p, ts, box);
+void vctx_add_text(rvg_t* v0, text_st_t* p, text_style_t* ts, text_box_rt* box) {
+
+	auto dc = (rvg_cx*)v0;
+	if (dc) {
+		auto cb = (ovg_ctx_cx*)dc->ac->ptr;
+
+	}
 }
 
 // 普通图片，支持九宫格、混合颜色
@@ -5577,5 +5593,384 @@ void delete_font_family(font_familys_t* p) {
 	auto p1 = (font_familys_cx*)p;
 	if (p && p1->ac) {
 		p1->ac->free_obj(p1);
+	}
+}
+
+void submit_vector_cmd(ovg_canvas_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd)
+{
+	ovg_path_t* path = cb->new_path(cb->ac);
+	vg_state_save_t* st = cb->new_state(cb->ac);
+
+	// 一次性灌入 upem 空间路径
+	cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
+
+	// upem → 像素
+	float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
+
+	cb->translate(st, cmd.pos.x, cmd.pos.y);
+	cb->scale(st, scale, scale);
+	cb->set_source_color(st, cmd.color);
+	cb->set_path(rvg, path, st);
+	cb->fill(rvg);
+
+	cb->destroy_path(path);
+	cb->state_destroy(st);
+}
+void submit_vector_cmd_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd)
+{
+	cb->save(rvg);
+	cb->new_path(rvg);
+
+	cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
+
+	float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
+	cb->translate(rvg, cmd.pos.x, cmd.pos.y);
+	cb->scale(rvg, scale, scale);
+	cb->set_source_color(rvg, cmd.color);
+	cb->fill(rvg);
+
+	cb->restore(rvg);
+}
+// 公共代码，两套都能用
+void submit_raster_glyphs(
+	const text_draw_list& list,
+	ovg_canvas_cb* cb, rvg_t* rvg)
+{
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::RASTER) continue;
+
+		float x0 = cmd.pos.x;
+		float y0 = cmd.pos.y;
+		float w = cmd.size.x;
+		float h = cmd.size.y;
+
+		float verts[8] = {
+			x0,     y0,
+			x0 + w, y0,
+			x0 + w, y0 + h,
+			x0,     y0 + h,
+		};
+		float uvs[8] = {
+			cmd.uv_rect.x, cmd.uv_rect.y,
+			cmd.uv_rect.z, cmd.uv_rect.y,
+			cmd.uv_rect.z, cmd.uv_rect.w,
+			cmd.uv_rect.x, cmd.uv_rect.w,
+		};
+		uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+		uint32_t color = cmd.color;
+
+		cb->add_geometry(rvg, cmd.entry->atlas_img,
+			verts, sizeof(float) * 2,
+			&color, 0,          // color_stride=0 表示所有顶点同色
+			uvs, sizeof(float) * 2,
+			4, idx, 6, 2, 1);   // color_type=1 (uint32_t)
+	}
+}
+void submit_vector_glyphs_object_mode(
+	const text_draw_list& list,
+	ovg_canvas_cb* cb, rvg_t* rvg,
+	float origin_x, float origin_y)
+{
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+
+		// 创建 path 和 state
+		ovg_path_t* path = cb->new_path(cb->ac);
+		vg_state_save_t* st = cb->new_state(cb->ac);
+
+		// 回放路径命令
+		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
+
+		// 设置状态
+		cb->set_source_color(st, cmd.color);
+		cb->translate(st, cmd.pos.x, cmd.pos.y);
+
+		// 绑定并提交
+		cb->set_path(rvg, path, st);
+		cb->fill(rvg);
+
+		// 清理
+		cb->destroy_path(path);
+		cb->state_destroy(st);
+	}
+}
+void submit_vector_glyphs_ctx_mode(
+	const text_draw_list& list,
+	ovg_ctx_cb* cb, rvg_t* rvg)
+{
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+
+		cb->save(rvg);
+		cb->new_path(rvg);
+
+		// 回放路径命令到 ctx 内部路径
+		cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
+
+		// 设置状态
+		cb->set_source_color(rvg, cmd.color);
+		cb->translate(rvg, cmd.pos.x, cmd.pos.y);
+
+		// 提交
+		cb->fill(rvg);
+
+		cb->restore(rvg);
+	}
+}
+// ovg_text.cpp 
+void submit_vector_glyphs_stroked(ovg_canvas_cb* cb, rvg_t* rvg,
+	const text_draw_list& list,
+	int stroke_width)
+{
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+
+		ovg_path_t* path = cb->new_path(cb->ac);
+		vg_state_save_t* st = cb->new_state(cb->ac);
+
+		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
+		//replay_path_data(path, cmd.entry, cb);
+
+		cb->set_source_color(st, cmd.color);
+		cb->set_line_width(st, (float)stroke_width);
+		cb->translate(st, cmd.pos.x, cmd.pos.y);
+		cb->set_path(rvg, path, st);
+		cb->stroke(rvg);  // ← stroke 而非 fill
+
+		cb->destroy_path(path);
+		cb->state_destroy(st);
+	}
+}
+void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg,
+	const text_draw_list& list)
+{
+	gem_info_t info2d = {};
+	info2d.blendMode = (uint8_t)blendMode_e::normal_prem;
+	info2d.topology = 0;
+	info2d.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+	info2d.frontFace = 0;
+	info2d.cullMode = 0;
+	info2d.shader = ST_NONE;
+	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
+	cb->set_geom_state(rvg, &info2d, &mat);
+
+	struct raster_batch {
+		std::vector<float>    verts;
+		std::vector<float>    uvs;
+		std::vector<uint32_t> colors;
+		std::vector<uint16_t> idx;
+	};
+	std::unordered_map<vg_image_t*, raster_batch> batches;
+
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::RASTER) continue;
+
+		auto& b = batches[cmd.entry->atlas_img];
+		uint16_t base = (uint16_t)(b.verts.size() / 2);
+
+		float x0 = cmd.pos.x;
+		float y0 = cmd.pos.y;
+		float w = cmd.size.x;
+		float h = cmd.size.y;
+
+		b.verts.push_back(x0);     b.verts.push_back(y0);
+		b.verts.push_back(x0 + w); b.verts.push_back(y0);
+		b.verts.push_back(x0 + w); b.verts.push_back(y0 + h);
+		b.verts.push_back(x0);     b.verts.push_back(y0 + h);
+
+		b.uvs.push_back(cmd.uv_rect.x); b.uvs.push_back(cmd.uv_rect.y);
+		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.y);
+		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.w);
+		b.uvs.push_back(cmd.uv_rect.x); b.uvs.push_back(cmd.uv_rect.w);
+
+		b.colors.push_back(cmd.color);
+		b.colors.push_back(cmd.color);
+		b.colors.push_back(cmd.color);
+		b.colors.push_back(cmd.color);
+
+		b.idx.push_back(base + 0);
+		b.idx.push_back(base + 1);
+		b.idx.push_back(base + 2);
+		b.idx.push_back(base + 0);
+		b.idx.push_back(base + 2);
+		b.idx.push_back(base + 3);
+	}
+
+	// 每组一次 add_geometry
+	for (auto& [atlas_img, b] : batches) {
+		if (b.verts.empty()) continue;
+		auto img = (ovg_image_data*)atlas_img;
+		vg_image_desc_t desc = {};
+		if (img->valid)
+		{
+			desc.width = img->width;
+			desc.height = img->height;
+			desc.format = VG_FORMAT_BGRA8;
+			desc.stride = desc.width * sizeof(int);
+			desc.pixels = img->data;
+			desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
+			desc.is_copy = false;
+			img->valid = false;
+			std::string fn = "temp/font_pack_ovg.png";
+			write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
+			cb->image_update(rvg, img, &desc);
+		}
+		cb->add_geometry(
+			rvg, img,
+			b.verts.data(), sizeof(float) * 2,
+			b.colors.data(), sizeof(uint32_t),
+			b.uvs.data(), sizeof(float) * 2,
+			(int)b.verts.size() / 2,
+			b.idx.data(), (int)b.idx.size(),
+			2, 1
+		);
+	}
+
+	// ── 2. 矢量 glyph：逐个提交（每个独立 path） ──
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+		submit_vector_cmd(cb, rvg, cmd);
+	}
+}
+void submit_draw_list_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list)
+{
+	gem_info_t info2d = {};
+	info2d.blendMode = (uint8_t)blendMode_e::normal_prem;
+	info2d.topology = 0;
+	info2d.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+	info2d.frontFace = 0;
+	info2d.cullMode = 0;
+	info2d.shader = ST_NONE;
+	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
+	cb->set_geom_state(rvg, &info2d, &mat);
+
+	// 位图 batch（同上，只是调用 ctx 的 add_geometry）
+	struct raster_batch {
+		std::vector<float>    verts;
+		std::vector<float>    uvs;
+		std::vector<uint32_t> colors;
+		std::vector<uint16_t> idx;
+	};
+	std::unordered_map<vg_image_t*, raster_batch> batches;
+
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::RASTER) continue;
+
+		auto& b = batches[cmd.entry->atlas_img];
+		uint16_t base = (uint16_t)(b.verts.size() / 2);
+
+		float x0 = cmd.pos.x, y0 = cmd.pos.y;
+		float w = cmd.size.x, h = cmd.size.y;
+
+		b.verts.insert(b.verts.end(), { x0,y0, x0 + w,y0, x0 + w,y0 + h, x0,y0 + h });
+		b.uvs.insert(b.uvs.end(), {
+			cmd.uv_rect.x, cmd.uv_rect.y,
+			cmd.uv_rect.z, cmd.uv_rect.y,
+			cmd.uv_rect.z, cmd.uv_rect.w,
+			cmd.uv_rect.x, cmd.uv_rect.w,
+			});
+		for (int i = 0; i < 4; i++) b.colors.push_back(cmd.color);
+		b.idx.push_back(base + 0); b.idx.push_back(base + 1); b.idx.push_back(base + 2);
+		b.idx.push_back(base + 0); b.idx.push_back(base + 2); b.idx.push_back(base + 3);
+	}
+
+	for (auto& [atlas_img, b] : batches) {
+		if (b.verts.empty()) continue;
+		auto img = (ovg_image_data*)atlas_img;
+		vg_image_desc_t desc = {};
+		if (img->valid)
+		{
+			desc.width = img->width;
+			desc.height = img->height;
+			desc.format = VG_FORMAT_BGRA8;
+			desc.stride = desc.width * sizeof(int);
+			desc.pixels = img->data;
+			desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
+			desc.is_copy = false;
+			img->valid = false;
+			//std::string fn = "temp/font_pack_ovg.png";
+			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
+			cb->image_update(rvg, img, &desc);
+		}
+		cb->add_geometry(
+			rvg, img,
+			b.verts.data(), sizeof(float) * 2,
+			b.colors.data(), sizeof(uint32_t),
+			b.uvs.data(), sizeof(float) * 2,
+			(int)b.verts.size() / 2,
+			b.idx.data(), (int)b.idx.size(),
+			2, 1
+		);
+	}
+
+	// 矢量逐个
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+		submit_vector_cmd_ctx(cb, rvg, cmd);
+	}
+}
+
+void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
+{
+	if (!p || !p->text || !ts || !ts->family) return;
+
+	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+
+	// ── 1. shape ──
+	vg_text_run_cx run;
+	run.set_font_families(ts->family, fontsize);
+	run.set_text(p->text, p->text_len);
+	run.shape();  // 内部按 fallback 切 run，lookup 缓存
+
+	if (run.glyph_count() == 0) return;
+
+	// ── 2. 布局计算 ──
+	const auto& extents = run.extents();
+
+	// 对齐偏移
+	float box_w = box && box->rc.z > 0 ? (float)box->rc.z : extents.width;
+	float box_h = box && box->rc.w > 0 ? (float)box->rc.w : extents.height;
+
+	float align_x = ts->align.x;  // 0=左, 0.5=中, 1=右
+	float align_y = ts->align.y;
+
+	float offset_x = p->pos.x + (box_w - extents.width) * align_x;
+	float offset_y = p->pos.y + (box_h - extents.height) * align_y;
+
+	// 基线位置 = offset_y + ascender
+	hb_font_extents_t fextents = {};
+	// 用主字体取 ascender
+	hb_font_t* primary = ts->family->familys[0]->font;
+	hb_font_set_scale(primary, fontsize, fontsize);
+	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
+	float baseline_y = offset_y + (float)fextents.ascender;
+
+	// ── 3. 裁剪 ──
+	if (box && box->rc.z > 0 && box->rc.w > 0) {
+		this->clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
+	}
+
+	// ── 4. 阴影 ──
+	if (ts->color_shadow & 0xFF000000) {
+		text_draw_list shadow_list;
+		run.populate_draw_list(shadow_list, offset_x + ts->shadow_pos.x, baseline_y + ts->shadow_pos.y, ts->color_shadow, vg_text_run_cx::RASTER_FIRST);
+		submit_draw_list(this, rvg, shadow_list);
+	}
+
+	// ── 5. 描边 ──
+	if (ts->stroke > 0) {
+		text_draw_list stroke_list;
+		run.populate_draw_list(stroke_list, offset_x, baseline_y, ts->color_stroke, vg_text_run_cx::VECTOR_ONLY);
+		submit_vector_glyphs_stroked(this, rvg, stroke_list, ts->stroke);
+	}
+
+	// ── 6. 主文本 ──
+	text_draw_list main_list;
+	run.populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
+	submit_draw_list(this, rvg, main_list);
+
+	// ── 7. 恢复裁剪 ──
+	if (box && box->rc.z > 0 && box->rc.w > 0) {
+		this->reset_clip(rvg, 1);
 	}
 }

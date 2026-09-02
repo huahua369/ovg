@@ -623,9 +623,10 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	ins[1] = glm::translate(glm::vec3(200, 10, 0));
 	cb->set_instance_mat(vg, ins, 2);
 	static vg_image_t img[1] = {};
-	vg_image_desc_t desc = {};
 	uint32_t pxcolord2[2] = { 0xffffffff,0xffffffff, };
 	uint32_t pxcolor2[16] = { 0xFFf55555,0xFF2c2c2c, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555, };
+
+	vg_image_desc_t desc = {};
 	desc.width = 4;
 	desc.height = 4;
 	desc.format = VG_FORMAT_RGBA8;
@@ -658,7 +659,7 @@ int main()
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Times New Roman,Consolas", 0);
-	font_ctx->get_cache_lookup_glyph(familys->familys[0]->font, 27, 18);
+
 	auto cb = new_ctx_cb(font_ctx);
 	auto vg = cb->new_rvg(cb->ac);
 	if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
@@ -676,12 +677,26 @@ int main()
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
-	auto str = u8"➗🍕☂️6bg太";
+	auto str = u8"➗🍕☂️6bg太妹";
 	auto rst = glm::mat3x2(1.0);
 	auto canvg = can->new_rvg(can->ac);
 	auto path = can->new_path(can->ac);
 	auto st = can->new_state(can->ac);
 	can->set_path(canvg, path, st);
+
+	//vg_text_run_cx run;
+
+	//// 设置字体
+	//run.set_font(0, 18);
+	//run.set_font_families(familys);
+	////gen_text(familys, u8"我123abc➗🍕☂️", -1, 18);
+	//// 设置文本 → 自动 shape
+	//run.set_text(str, -1);
+	//run.shape();
+
+	// 渲染 
+
+
 	bool testvg = false;
 	while (running) {
 		SDL_Event ev;
@@ -692,6 +707,10 @@ int main()
 		{
 			rtc.begin();
 			cb->clear(vg);
+			cb->clear(canvg);
+			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
+			glm::vec2 sf = fbo.display_size;
+			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 #if 0
 			//can->clear(canvg);
 			//can->reset_clip(canvg, 1);
@@ -699,10 +718,7 @@ int main()
 			//can->set_source_color(st, 0xffff8000);
 			//can->set_path(canvg, path, st);
 			//can->fill(canvg);
-			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
-			glm::vec2 sf = fbo.display_size;
 			//sf *= 0.5;
-			//draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
 			cb->reset_clip(vg, 1);
 			if (testvg)
 				draw(cb, vg, fbo.display_size);// 录制图元
@@ -720,19 +736,37 @@ int main()
 			render_text(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
 			cb->set_line_width(vg, 2);
 
-			cb->move_to(vg, 10.5, 400 + 0.5);
+
+#endif
+
+			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
+			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
+
+			//draw_test3d(&fbo, cb, vg);
+			text_style_t style4 = {};
+			style4.family = familys;
+			style4.fontsize = 32.0f;
+			style4.color = 0xFFf2120F;       // 白色填充
+			style4.color_stroke = 0xFF0000f0;// 黑色描边
+			style4.stroke = 1;               // 描边宽度 2px
+			style4.color_shadow = 0x44000000;
+			style4.shadow_pos = { 2.0f, 2.0f };
+
+			text_st_t text4 = {};
+			text4.text = (char*)u8"描边g文本";
+			text4.text_len = -1;
+
+			text4.pos = { 100.0f, 300.0f };
+
+			cb->move_to(vg, 0, text4.pos.y + 0.5);
 			cb->rel_line_to(vg, 1800, 0);
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
-#endif
 
-			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
-			draw_test3d(&fbo, cb, vg);
-
+			can->add_text(canvg, &text4, &style4, nullptr);
 			static int xx = 190;
 			static int yy = 400;
-			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
 			//render_text_print(familys, str, strlen((char*)str), xx, yy, can, cb, canvg, { 0xff821212,0xff0000f0,120 });
 			int ms = rtc.end();
 			/*if (ms > 0)

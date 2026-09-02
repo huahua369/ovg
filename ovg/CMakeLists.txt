@@ -21,7 +21,7 @@ target_include_directories(libovg PRIVATE "tess2/Include"})
 
 # ---- 着色器编译（自定义命令）----
 set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
-set(BUILD_DIR ${EXECUTABLE_OUTPUT_PATH})
+set(BUILD_DIR ${EXECUTABLE_OUTPUT_PATH}/shaders)
 
 # 检测 slangc
 find_program(SLANGC slangc)

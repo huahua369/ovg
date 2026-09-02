@@ -11,6 +11,17 @@ endif()
 project ("ovg")
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(platform_i)
+    set(platform_dir x64)
+ELSE()
+    set(platform_i 32)
+    set(platform_dir x86)
+ENDIF()
+if(CMAKE_BUILD_TYPE MATCHES "Debug")
+set(platform_dir "${platform_dir}d")
+endif()
 #设置执行文件输出目录
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/out/bin/${platform_dir})
 #设置库文件输出目录

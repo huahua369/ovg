@@ -30,6 +30,7 @@ extern "C" {
 #endif
 // 内存资源分配器
 struct mem_resource_t {
+	void* vf;
 	size_t _Align;
 	void* ptr;
 };
@@ -546,7 +547,7 @@ struct ovg_draw_data_t {
 // 录制
 struct ovg_recording_t;
 
-// 接口
+// 对象模式
 struct ovg_canvas_cb {
 	mem_resource_t* ac;
 	// 路径操作
@@ -783,6 +784,7 @@ void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
 
+void gen_text(const font_familys_t* ffs, const void* str8, size_t len, int fontsize);
 
 // 对象模式接口，如果没字体ctx则无法渲染文本
 ovg_canvas_cb* new_canvas_cb(font_cache_cx* fctx);
