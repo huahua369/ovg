@@ -126,6 +126,7 @@ struct glyph_atlas_entry {
 	float* path_data;		// 路径数据，不同字号共用一份
 	size_t path_size;
 	int em_units = 2048;
+	bool has_color = false;
 };
 struct path_builder {
 	std::vector<float> data;
@@ -242,8 +243,8 @@ struct glyph_draw_cmd {
 struct text_draw_list {
 	std::vector<glyph_draw_cmd> cmds;
 	vg_text_extents_t           extents;
-
 	int fontsize = 18;
+	bool has_color = false;	// 彩色启用
 	void clear();
 	void push_raster(glyph_atlas_entry* e, float x, float y, float w, float h, const glm::vec4& uv, uint32_t c);
 	void push_vector(glyph_atlas_entry* e, float x, float y, uint32_t c);

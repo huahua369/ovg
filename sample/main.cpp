@@ -753,7 +753,7 @@ int main()
 			style4.shadow_pos = { 2.0f, 2.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"描边g文本";
+			text4.text = (char*)u8"➗🍕☂️";//hy描边\n文本
 			text4.text_len = -1;
 
 			text4.pos = { 100.0f, 300.0f };

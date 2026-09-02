@@ -764,6 +764,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		entry.path_data = ret->path_data;
 		entry.path_size = ret->path_size;
 
+		entry.has_color = font_ptr->font.pnt ? true : false;
 		auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
 		ret = &it2->second;
 	}
@@ -923,12 +924,9 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
 	float x, y;
 	hb_raster_draw_get_scale_factor(rdr, &x, &y);
-	int pad = 4;// ovg::align_up(font_size / 2, 2);
+	int pad = 4; 
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
-		//gext.x_bearing -= pad;
-		//gext.y_bearing += pad;       // 顶部扩大
-		//gext.width += 2 * pad;
 		gext.height -= pad;      // height 为负，向下也扩大
 		if (pnt)
 		{
@@ -1860,13 +1858,14 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 		if (!g.cache_entry) { pen_x += g.x_advance; continue; }
 
 		auto* e = g.cache_entry;
-		float x = pen_x + (float)e->offset.x;
-		float y = pen_y - (float)e->offset.y;
+		float x = pen_x + (float)e->offset.x + g.x_offset;
+		float y = pen_y - (float)e->offset.y + g.y_offset;
 		if (mode == VECTOR_ONLY || !e->atlas_img) {
 			if (e->path_data) {
-				list.push_vector(e, x, y, color);
+				list.push_vector(e, x, y + e->offset.y, color);
 			}
-		}else if (e->atlas_img) {
+		}
+		else if (e->atlas_img) {
 			float w = (float)e->uv_rect.z;
 			float h = (float)e->uv_rect.w;
 			float atlas_w = (float)e->atlas_img->width;
@@ -1878,7 +1877,7 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 				(float)(e->uv_rect.y + e->uv_rect.w) / atlas_h
 			);
 			list.push_raster(e, x, y, w, h, uv, color);
-		} 
+		}
 		pen_x += g.x_advance;
 	}
 	list.extents = _extents;

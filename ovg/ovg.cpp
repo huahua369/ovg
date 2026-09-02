@@ -5741,8 +5741,7 @@ void submit_vector_glyphs_stroked(ovg_canvas_cb* cb, rvg_t* rvg,
 		cb->state_destroy(st);
 	}
 }
-void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg,
-	const text_draw_list& list)
+void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list& list)
 {
 	gem_info_t info2d = {};
 	info2d.blendMode = (uint8_t)blendMode_e::normal_prem;
@@ -5782,11 +5781,12 @@ void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg,
 		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.y);
 		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.w);
 		b.uvs.push_back(cmd.uv_rect.x); b.uvs.push_back(cmd.uv_rect.w);
-
-		b.colors.push_back(cmd.color);
-		b.colors.push_back(cmd.color);
-		b.colors.push_back(cmd.color);
-		b.colors.push_back(cmd.color);
+		auto color = cmd.color;
+		if (list.has_color && cmd.entry->has_color)color = -1;
+		b.colors.push_back(color);
+		b.colors.push_back(color);
+		b.colors.push_back(color);
+		b.colors.push_back(color);
 
 		b.idx.push_back(base + 0);
 		b.idx.push_back(base + 1);
@@ -5943,7 +5943,7 @@ void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_bo
 	hb_font_t* primary = ts->family->familys[0]->font;
 	hb_font_set_scale(primary, fontsize, fontsize);
 	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
-	float baseline_y = offset_y + (float)fextents.ascender;
+	float baseline_y = offset_y;// +(float)fextents.ascender;
 
 	// ── 3. 裁剪 ──
 	if (box && box->rc.z > 0 && box->rc.w > 0) {
@@ -5966,6 +5966,7 @@ void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_bo
 
 	// ── 6. 主文本 ──
 	text_draw_list main_list;
+	main_list.has_color = true;
 	run.populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
 	submit_draw_list(this, rvg, main_list);
 
