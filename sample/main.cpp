@@ -652,7 +652,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 
@@ -745,18 +745,18 @@ int main()
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
 			style4.family = familys;
-			style4.fontsize = 32.0f;
-			style4.color = 0xFFf2120F;       // 白色填充
-			style4.color_stroke = 0xFF0000f0;// 黑色描边
-			style4.stroke = 1;               // 描边宽度 2px
-			style4.color_shadow = 0x44000000;
-			style4.shadow_pos = { 2.0f, 2.0f };
+			style4.fontsize = 100;
+			style4.color = 0xFFf2120F;
+			style4.color_stroke = 0xFF0000f0;
+			style4.stroke = 4;
+			style4.color_shadow = 0x86000000;
+			style4.shadow_pos = { 5.0f, 5.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"➗🍕☂️";//hy描边\n文本
+			text4.text = (char*)u8"➗🍕☂️abg描边+阴影";
 			text4.text_len = -1;
 
-			text4.pos = { 100.0f, 300.0f };
+			text4.pos = { 10.0f, 200.0f };
 
 			cb->move_to(vg, 0, text4.pos.y + 0.5);
 			cb->rel_line_to(vg, 1800, 0);
@@ -764,6 +764,16 @@ int main()
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
 
+			can->add_text(canvg, &text4, &style4, nullptr);
+
+			style4.stroke = -2;
+			text4.pos = { 10.0f, 120 + 200.0f };
+
+			cb->move_to(vg, 0, text4.pos.y + 0.5);
+			cb->rel_line_to(vg, 1800, 0);
+			cb->set_source_color(vg, 0xff00ff00);
+			cb->set_line_width(vg, 1);
+			cb->stroke(vg);
 			can->add_text(canvg, &text4, &style4, nullptr);
 			static int xx = 190;
 			static int yy = 400;

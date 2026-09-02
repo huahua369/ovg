@@ -125,7 +125,7 @@ struct glyph_atlas_entry {
 	glm::ivec2 offset;		// 字形偏移（bearing）x_bearing/y_bearing
 	float* path_data;		// 路径数据，不同字号共用一份
 	size_t path_size;
-	int em_units = 2048;
+	int em_units = 1;
 	bool has_color = false;
 };
 struct path_builder {

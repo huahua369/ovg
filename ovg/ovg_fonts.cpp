@@ -690,8 +690,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 	auto px_w = (extents.width);
 	auto px_h = (-extents.height);
 
-	bool use_raster = (px_w <= max_raster_size && px_h <= max_raster_size
-		&& px_w > 0 && px_h > 0);
+	bool use_raster = (px_w <= max_raster_size && px_h <= max_raster_size && px_w > 0 && px_h > 0);
 
 	glyph_key gk;
 	gk.s.k.x = (uint16_t)font_id;
@@ -710,6 +709,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 				hb_draw_funcs_set_close_path_func(funcs, _hb_close_path, nullptr, nullptr);
 			}
 			temp_path.clear();
+			hb_font_set_scale(font, em, em);
 			hb_font_draw_glyph(font, glyph_id, funcs, &temp_path);
 
 			// 拷贝到持久内存
@@ -757,12 +757,11 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		glyph_atlas_entry entry{};
 		entry.atlas_img = img_data;  // ovg_image_data 继承自 vg_image_t
 		entry.uv_rect = glm::ivec4(pos.x, pos.y, px_w, px_h);
-		entry.offset = glm::ivec2(
-			(int)(extents.x_bearing),
-			(int)(extents.y_bearing));
-		entry.advance = (int)(extents.x_bearing);
+		entry.offset = glm::ivec2(rc.x, rc.y);
+		entry.advance = 0;
 		entry.path_data = ret->path_data;
 		entry.path_size = ret->path_size;
+		entry.em_units = em;
 
 		entry.has_color = font_ptr->font.pnt ? true : false;
 		auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
@@ -924,7 +923,7 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
 	float x, y;
 	hb_raster_draw_get_scale_factor(rdr, &x, &y);
-	int pad = 4; 
+	int pad = 4;
 	do {
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
 		gext.height -= pad;      // height 为负，向下也扩大
@@ -957,10 +956,10 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 		if (!ext.width || !ext.height) { img = 0; return img; }
 		if (ot)
 		{
-			ot->x = gext.x_bearing;
-			ot->y = -(gext.y_bearing);
-			ot->z = gext.width;
-			ot->w = abs(gext.height);
+			ot->x = ext.x_origin;
+			ot->y = (ext.height + ext.y_origin);
+			ot->z = ext.width;
+			ot->w = ext.height;
 		}
 	}
 	return img;
@@ -1858,11 +1857,11 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 		if (!g.cache_entry) { pen_x += g.x_advance; continue; }
 
 		auto* e = g.cache_entry;
-		float x = pen_x + (float)e->offset.x + g.x_offset;
-		float y = pen_y - (float)e->offset.y + g.y_offset;
+		float x = pen_x + g.x_offset;
+		float y = pen_y + g.y_offset;
 		if (mode == VECTOR_ONLY || !e->atlas_img) {
 			if (e->path_data) {
-				list.push_vector(e, x, y + e->offset.y, color);
+				list.push_vector(e, x, y, color);
 			}
 		}
 		else if (e->atlas_img) {

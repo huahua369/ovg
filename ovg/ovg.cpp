@@ -5683,7 +5683,9 @@ void submit_vector_glyphs_object_mode(
 
 		// 设置状态
 		cb->set_source_color(st, cmd.color);
+		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
 		cb->translate(st, cmd.pos.x, cmd.pos.y);
+		cb->scale(st, scale, scale);
 
 		// 绑定并提交
 		cb->set_path(rvg, path, st);
@@ -5709,7 +5711,9 @@ void submit_vector_glyphs_ctx_mode(
 
 		// 设置状态
 		cb->set_source_color(rvg, cmd.color);
+		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
 		cb->translate(rvg, cmd.pos.x, cmd.pos.y);
+		cb->scale(rvg, scale, scale);
 
 		// 提交
 		cb->fill(rvg);
@@ -5718,25 +5722,20 @@ void submit_vector_glyphs_ctx_mode(
 	}
 }
 // ovg_text.cpp 
-void submit_vector_glyphs_stroked(ovg_canvas_cb* cb, rvg_t* rvg,
-	const text_draw_list& list,
-	int stroke_width)
+void submit_vector_glyphs_stroked(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list& list, float stroke_width)
 {
 	for (const auto& cmd : list.cmds) {
 		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-
 		ovg_path_t* path = cb->new_path(cb->ac);
 		vg_state_save_t* st = cb->new_state(cb->ac);
-
 		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
-		//replay_path_data(path, cmd.entry, cb);
-
 		cb->set_source_color(st, cmd.color);
-		cb->set_line_width(st, (float)stroke_width);
+		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
 		cb->translate(st, cmd.pos.x, cmd.pos.y);
+		cb->scale(st, scale, scale);
+		cb->set_line_width(st, (float)stroke_width / scale);
 		cb->set_path(rvg, path, st);
 		cb->stroke(rvg);  // ← stroke 而非 fill
-
 		cb->destroy_path(path);
 		cb->state_destroy(st);
 	}
@@ -5767,8 +5766,8 @@ void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list& list)
 		auto& b = batches[cmd.entry->atlas_img];
 		uint16_t base = (uint16_t)(b.verts.size() / 2);
 
-		float x0 = cmd.pos.x;
-		float y0 = cmd.pos.y;
+		float x0 = cmd.pos.x + cmd.entry->offset.x;
+		float y0 = cmd.pos.y - cmd.entry->offset.y;
 		float w = cmd.size.x;
 		float h = cmd.size.y;
 
@@ -5859,7 +5858,8 @@ void submit_draw_list_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list
 		auto& b = batches[cmd.entry->atlas_img];
 		uint16_t base = (uint16_t)(b.verts.size() / 2);
 
-		float x0 = cmd.pos.x, y0 = cmd.pos.y;
+		float x0 = cmd.pos.x + cmd.entry->offset.x;
+		float y0 = cmd.pos.y - cmd.entry->offset.y;
 		float w = cmd.size.x, h = cmd.size.y;
 
 		b.verts.insert(b.verts.end(), { x0,y0, x0 + w,y0, x0 + w,y0 + h, x0,y0 + h });
@@ -5958,10 +5958,26 @@ void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_bo
 	}
 
 	// ── 5. 描边 ──
-	if (ts->stroke > 0) {
+	if (ts->stroke != 0) {
 		text_draw_list stroke_list;
-		run.populate_draw_list(stroke_list, offset_x, baseline_y, ts->color_stroke, vg_text_run_cx::VECTOR_ONLY);
-		submit_vector_glyphs_stroked(this, rvg, stroke_list, ts->stroke);
+		float stroke = abs(ts->stroke);
+		if (ts->stroke > 0) {
+			stroke *= 2;
+			run.populate_draw_list(stroke_list, offset_x, baseline_y, ts->color_stroke, vg_text_run_cx::VECTOR_ONLY);
+			submit_vector_glyphs_stroked(this, rvg, stroke_list, stroke);
+		}
+		else {
+			int pxx[4] = { -stroke, 0, stroke, 0 };
+			int pyy[4] = { 0, -stroke, 0, stroke };
+			for (int e = 0; e < 4; e++)
+			{
+				glm::vec2 ps1 = { offset_x, baseline_y };
+				ps1.x += pxx[e];
+				ps1.y += pyy[e];
+				run.populate_draw_list(stroke_list, ps1.x, ps1.y, ts->color_stroke, vg_text_run_cx::RASTER_FIRST);
+			}
+			submit_draw_list(this, rvg, stroke_list);
+		}
 	}
 
 	// ── 6. 主文本 ──

@@ -492,11 +492,10 @@ struct text_style_t
 	float lineheight = 0;
 	glm::vec2 align = { 0.50,0.50 };	// 文本对齐
 	glm::vec2 shadow_pos = { 1.0,1.0 };
-	int stroke = 0;						// 描边宽度
+	float stroke = 0;					// 描边宽度，正数使用矢量路径实现、负数用偏移4方向实现描边
 	uint32_t color = 0xffc2c2c2;		// 文本颜色
 	uint32_t color_stroke = 0xff000000;	// 描边颜色
 	uint32_t color_shadow = 0;			// 阴影颜色	0xcc121212;
-	bool mcolor_effect = true;			// 是否启用彩色字体参与阴影描边效果
 };
 // 文本区域
 struct text_box_rt {
