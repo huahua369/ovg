@@ -1590,14 +1590,19 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 
 void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 	if (!ctx) return;
+	SDL_WaitForGPUIdle(ctx->device->gpuDevice);
 	for (auto p : ctx->freepipe)
 	{
 		if (p) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p);
+	}
+	for (auto& [k, v] : ctx->textures) {
+		if (v) destroy_texture(v);
 	}
 	for (auto& [key, p] : ctx->geomPipelines) {
 		if (p.pipeline)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p.pipeline);
 		if (p.defaultSampler) SDL_ReleaseGPUSampler(ctx->device->gpuDevice, p.defaultSampler);
 	}
+	ctx->textures.clear();
 	ctx->freepipe.clear();
 	ctx->geomPipelines.clear();
 
@@ -2091,8 +2096,8 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	switch (c->type) {
 	case 0:
 	case 1:
-	{ draw_ct(pass, c); }
-	break;
+		draw_ct(pass, c);
+		break;
 	case 2:
 	{
 		const int bw = c->bounds.z;

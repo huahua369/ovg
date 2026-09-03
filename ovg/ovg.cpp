@@ -243,11 +243,11 @@ class ovg_ctx_cx :public ovg_ctx_cb
 {
 public:
 	font_cache_cx* font_ctx = 0;
-	ovg_canvas_cb* cav = 0;
 public:
 	ovg_ctx_cx();
 	~ovg_ctx_cx();
 
+	void add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box);
 private:
 
 };
@@ -1798,7 +1798,7 @@ public:
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
 	bool add_geometry3d(void* texture, const float* xyz, int xyz_stride, const void* color, int color_stride
 		, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
-	void add_text(text_st_t* p, text_style_t* ts, text_box_rt* box);
+
 	void add_image(ovg_image_r* r);
 };
 
@@ -3455,12 +3455,7 @@ void build_text()
 		gen3data(tex_size, ps, git._rect, {}, git.color ? git.color : color, &opt, &idx);
 	}
 }
-#endif
-void geom_primitive::add_text(text_st_t* p, text_style_t* ts, text_box_rt* box)
-{
-	if (!p || !p->text || !*p->text || !ts || !ts->family || ts->fontsize < 1)return;
-
-}
+#endif 
 
 glm::mat4 ovg_ortho(float width, float height, float znear, float zfar, bool is_top)
 {
@@ -4436,7 +4431,8 @@ void vctx_add_text(rvg_t* v0, text_st_t* p, text_style_t* ts, text_box_rt* box) 
 	auto dc = (rvg_cx*)v0;
 	if (dc) {
 		auto cb = (ovg_ctx_cx*)dc->ac->ptr;
-
+		if (cb)
+			cb->add_text(v0, p, ts, box);
 	}
 }
 
@@ -5831,6 +5827,21 @@ void submit_draw_list(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list& list)
 		submit_vector_cmd(cb, rvg, cmd);
 	}
 }
+void submit_vector_glyphs_stroked_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list, float stroke_width)
+{
+	for (const auto& cmd : list.cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
+		cb->save(rvg);
+		cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
+		cb->set_source_color(rvg, cmd.color);
+		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
+		cb->translate(rvg, cmd.pos.x, cmd.pos.y);
+		cb->scale(rvg, scale, scale);
+		cb->set_line_width(rvg, (float)stroke_width / scale);
+		cb->stroke(rvg);  // ← stroke 而非 fill	 
+		cb->restore(rvg);
+	}
+}
 void submit_draw_list_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list)
 {
 	gem_info_t info2d = {};
@@ -5869,7 +5880,9 @@ void submit_draw_list_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list
 			cmd.uv_rect.z, cmd.uv_rect.w,
 			cmd.uv_rect.x, cmd.uv_rect.w,
 			});
-		for (int i = 0; i < 4; i++) b.colors.push_back(cmd.color);
+		auto color = cmd.color;
+		if (list.has_color && cmd.entry->has_color)color = -1; 
+		for (int i = 0; i < 4; i++) b.colors.push_back(color);
 		b.idx.push_back(base + 0); b.idx.push_back(base + 1); b.idx.push_back(base + 2);
 		b.idx.push_back(base + 0); b.idx.push_back(base + 2); b.idx.push_back(base + 3);
 	}
@@ -5985,6 +5998,88 @@ void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_bo
 	main_list.has_color = true;
 	run.populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
 	submit_draw_list(this, rvg, main_list);
+
+	// ── 7. 恢复裁剪 ──
+	if (box && box->rc.z > 0 && box->rc.w > 0) {
+		this->reset_clip(rvg, 1);
+	}
+}
+
+void ovg_ctx_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
+{
+	if (!p || !p->text || !ts || !ts->family) return;
+
+	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+
+	// ── 1. shape ──
+	vg_text_run_cx run;
+	run.set_font_families(ts->family, fontsize);
+	run.set_text(p->text, p->text_len);
+	run.shape();  // 内部按 fallback 切 run，lookup 缓存
+
+	if (run.glyph_count() == 0) return;
+
+	// ── 2. 布局计算 ──
+	const auto& extents = run.extents();
+
+	// 对齐偏移
+	float box_w = box && box->rc.z > 0 ? (float)box->rc.z : extents.width;
+	float box_h = box && box->rc.w > 0 ? (float)box->rc.w : extents.height;
+
+	float align_x = ts->align.x;  // 0=左, 0.5=中, 1=右
+	float align_y = ts->align.y;
+
+	float offset_x = p->pos.x + (box_w - extents.width) * align_x;
+	float offset_y = p->pos.y + (box_h - extents.height) * align_y;
+
+	// 基线位置 = offset_y + ascender
+	hb_font_extents_t fextents = {};
+	// 用主字体取 ascender
+	hb_font_t* primary = ts->family->familys[0]->font;
+	hb_font_set_scale(primary, fontsize, fontsize);
+	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
+	float baseline_y = offset_y;// +(float)fextents.ascender;
+
+	// ── 3. 裁剪 ──
+	if (box && box->rc.z > 0 && box->rc.w > 0) {
+		this->clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
+	}
+
+	// ── 4. 阴影 ──
+	if (ts->color_shadow & 0xFF000000) {
+		text_draw_list shadow_list;
+		run.populate_draw_list(shadow_list, offset_x + ts->shadow_pos.x, baseline_y + ts->shadow_pos.y, ts->color_shadow, vg_text_run_cx::RASTER_FIRST);
+		submit_draw_list_ctx(this, rvg, shadow_list);
+	}
+
+	// ── 5. 描边 ──
+	if (ts->stroke != 0) {
+		text_draw_list stroke_list;
+		float stroke = abs(ts->stroke);
+		if (ts->stroke > 0) {
+			stroke *= 2;
+			run.populate_draw_list(stroke_list, offset_x, baseline_y, ts->color_stroke, vg_text_run_cx::VECTOR_ONLY);
+			submit_vector_glyphs_stroked_ctx(this, rvg, stroke_list, stroke);
+		}
+		else {
+			int pxx[4] = { -stroke, 0, stroke, 0 };
+			int pyy[4] = { 0, -stroke, 0, stroke };
+			for (int e = 0; e < 4; e++)
+			{
+				glm::vec2 ps1 = { offset_x, baseline_y };
+				ps1.x += pxx[e];
+				ps1.y += pyy[e];
+				run.populate_draw_list(stroke_list, ps1.x, ps1.y, ts->color_stroke, vg_text_run_cx::RASTER_FIRST);
+			}
+			submit_draw_list_ctx(this, rvg, stroke_list);
+		}
+	}
+
+	// ── 6. 主文本 ──
+	text_draw_list main_list;
+	main_list.has_color = true;
+	run.populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
+	submit_draw_list_ctx(this, rvg, main_list);
 
 	// ── 7. 恢复裁剪 ──
 	if (box && box->rc.z > 0 && box->rc.w > 0) {

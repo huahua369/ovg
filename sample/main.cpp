@@ -652,7 +652,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 
@@ -748,7 +748,7 @@ int main()
 			style4.fontsize = 100;
 			style4.color = 0xFFf2120F;
 			style4.color_stroke = 0xFF0000f0;
-			style4.stroke = 4;
+			style4.stroke = 2;
 			style4.color_shadow = 0x86000000;
 			style4.shadow_pos = { 5.0f, 5.0f };
 
@@ -764,7 +764,7 @@ int main()
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
 
-			can->add_text(canvg, &text4, &style4, nullptr);
+			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.stroke = -2;
 			text4.pos = { 10.0f, 120 + 200.0f };
@@ -774,19 +774,17 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
-			can->add_text(canvg, &text4, &style4, nullptr);
-			static int xx = 190;
-			static int yy = 400;
-			//render_text_print(familys, str, strlen((char*)str), xx, yy, can, cb, canvg, { 0xff821212,0xff0000f0,120 });
+			cb->add_text(vg, &text4, &style4, nullptr);
+
 			int ms = rtc.end();
-			/*if (ms > 0)
-				printf("draw build ms: %d\n", ms);*/
+			if (ms > 0)
+				printf("draw build ms: %d\n", ms);
 			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(canvg) };
 			rtc.begin();
 			ovg_draw_data(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
-			/*if (ms > 0)
-				printf("submit draw ms: %d\n", ms);*/
+			if (ms > 0)
+				printf("submit draw ms: %d\n", ms);
 		}
 		SDL_Delay(16);  /* ~60 FPS */
 	}
