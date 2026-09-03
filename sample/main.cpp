@@ -651,7 +651,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 
@@ -721,15 +721,15 @@ int main()
 			text_style_t style4 = {};
 			style4.family = familys;
 			style4.fontsize = 18;
-			style4.color = 0xff0000f0;
+			style4.color = 0xff0080f0;
 			style4.color_stroke = 0xFF0000f0;
 			style4.min_subpixel = 32;
 			//style4.stroke = 1;
-			//style4.color_shadow = 0x86000000;➗🍕☂️
+			//style4.color_shadow = 0x86000000;
 			style4.shadow_pos = { 5.0f, 5.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"abg亚像素-灰度";
+			text4.text = (char*)u8"➗🍕☂️abg亚像素-灰度";
 			text4.text_len = -1;
 
 			text4.pos = { 10.0f, 200.0f };
@@ -743,7 +743,7 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
-			text4.text = (char*)u8"abg灰度-亚像素";
+			text4.text = (char*)u8"➗🍕☂️abg灰度-亚像素badfdf";
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
@@ -752,6 +752,9 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
+	/*		cb->rectangle(vg, 0, text4.pos.y - 20,200,200);
+			cb->set_source_color(vg, 0xff000000);
+			cb->fill(vg);*/
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			int ms = rtc.end();
