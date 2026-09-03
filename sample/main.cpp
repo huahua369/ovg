@@ -9,8 +9,6 @@
 #include "ovg_fonts.h"
 using namespace std;
 
-// 渲染普通文本
-void render_text(const font_familys_t* ffs, const void* str8, size_t len, float x, float y, ovg_ctx_cb* ovg, rvg_t* ovg_ctx, const glm::uvec3& color);
 
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -186,7 +184,7 @@ void draw_clock_scene(ovg_ctx_cb* cb, rvg_t* ctx, int w, int h, int hh, int mm, 
 }
 void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 {
-
+	cb->save(vg);
 	cb->rounded_rectangle(vg, 20, 20, 600, 600, 10);
 	cb->clip(vg);
 	cb->set_source_color(vg, 0xff0080ff);
@@ -303,6 +301,7 @@ void draw(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec2& surfsize)
 	cb->fill(vg);// 填充
 
 
+	cb->restore(vg);
 }
 #if 1
 glm::vec3 polarToVector(float yaw, float pitch) {
@@ -697,7 +696,7 @@ int main()
 	// 渲染 
 
 
-	bool testvg = false;
+	bool testvg = true;
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -711,33 +710,9 @@ int main()
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 			glm::vec2 sf = fbo.display_size;
 			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
-#if 0
-			//can->clear(canvg);
-			//can->reset_clip(canvg, 1);
-			//can->rectangle(path, 10, 10, 200, 200);
-			//can->set_source_color(st, 0xffff8000);
-			//can->set_path(canvg, path, st);
-			//can->fill(canvg);
-			//sf *= 0.5;
 			cb->reset_clip(vg, 1);
 			if (testvg)
 				draw(cb, vg, fbo.display_size);// 录制图元
-			cb->set_matrix(vg, &rst);
-			int y = 120;
-			cb->move_to(vg, 10.5, y + 0.5);
-			cb->rel_line_to(vg, 1800, 0);
-			cb->set_source_color(vg, 0xff00ff00);
-			cb->set_line_width(vg, 1);
-			cb->stroke(vg);
-
-			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
-			render_text(familys, str, strlen((char*)str), 150, y, cb, vg, { 0xff121212,0x80000000,12 });
-			render_text(familys, str, strlen((char*)str), 190, y, cb, vg, { 0xff121212,0xff0000f0,120 });
-			render_text(familys, str, strlen((char*)str), 10, y, cb, vg, { 0xff121212,0x80000000,20 });
-			cb->set_line_width(vg, 2);
-
-
-#endif
 
 			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
 			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
@@ -777,14 +752,14 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			int ms = rtc.end();
-			if (ms > 0)
-				printf("draw build ms: %d\n", ms);
+			//if (ms > 0)
+			//	printf("draw build ms: %d\n", ms);
 			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(canvg) };
 			rtc.begin();
 			ovg_draw_data(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
-			if (ms > 0)
-				printf("submit draw ms: %d\n", ms);
+			//if (ms > 0)
+			//	printf("submit draw ms: %d\n", ms);
 		}
 		SDL_Delay(16);  /* ~60 FPS */
 	}
