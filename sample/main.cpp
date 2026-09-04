@@ -657,9 +657,9 @@ int main()
 
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
-	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"新宋体,Segoe UI Emoji,Consolas,Times New Roman", 0);
+	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman", 0);
 
-	auto cb = new_ctx_cb(font_ctx);
+	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 	if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
 		SDL_Log("Init failed: %s", SDL_GetError());
@@ -670,7 +670,7 @@ int main()
 	auto format = SDL_GetGPUSwapchainTextureFormat(g->device, g->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
-	ovg_canvas_cb* can = new_canvas_cb(font_ctx);
+	ovg_canvas_cb* can = new_canvas_cb();
 
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
 	bool running = true;
@@ -725,11 +725,11 @@ int main()
 			style4.color_stroke = 0xFF0000f0;
 			style4.min_subpixel = 32;
 			//style4.stroke = 1;
-			//style4.color_shadow = 0x86000000;
-			style4.shadow_pos = { 5.0f, 5.0f };
+			//style4.color_shadow = 0x56000000;
+			style4.shadow_pos = { 1.0f, 1.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"➗🍕☂️abg亚像素-灰度";
+			text4.text = (char*)u8"-abg亚像素-灰度➗🍕☂️";
 			text4.text_len = -1;
 
 			text4.pos = { 10.0f, 200.0f };
@@ -743,7 +743,7 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
-			text4.text = (char*)u8"➗🍕☂️abg灰度-亚像素badfdf";
+			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf";
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
@@ -752,9 +752,10 @@ int main()
 			cb->set_source_color(vg, 0xff00ff00);
 			cb->set_line_width(vg, 1);
 			cb->stroke(vg);
-	/*		cb->rectangle(vg, 0, text4.pos.y - 20,200,200);
+			cb->rectangle(vg, 0, text4.pos.y - 20, 200, 200);
 			cb->set_source_color(vg, 0xff000000);
-			cb->fill(vg);*/
+			cb->set_source_color(vg, -1);
+			cb->fill(vg);
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			int ms = rtc.end();
