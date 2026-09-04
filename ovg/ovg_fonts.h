@@ -110,11 +110,7 @@ struct path_builder {
 
 class font_cache_cx
 {
-public:
-	struct user_data_key_t {
-		/*< private >*/
-		char unused;
-	};
+public: 
 	union glyph_key {
 		struct {
 			glm::u16vec2 k;

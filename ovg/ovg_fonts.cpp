@@ -1876,3 +1876,7 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 	}
 	list.extents = _extents;
 }
+
+// bidi
+#if 1 
+#endif // 1
