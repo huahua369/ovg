@@ -7,6 +7,16 @@
 #include <cmath>
 #include <unordered_map>
 
+#ifndef fseeki64
+#ifdef _WIN32
+#define fseeki64 _fseeki64
+#define ftelli64 _ftelli64
+#else			
+#define fseeki64 fseeko64
+#define ftelli64 ftello64
+#endif // _WIN32
+#endif
+
 using namespace std;
 
 
@@ -657,7 +667,7 @@ int main()
 
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
-	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman", 0);
+	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Calibri", 0);
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
@@ -694,8 +704,19 @@ int main()
 	//run.shape();
 
 	// 渲染 
-
-
+	auto fp = fopen("E:\\1.txt", "r");
+	std::string buff;
+	if (fp) {
+		fseeki64(fp, 0L, SEEK_END);
+		auto size = ftelli64(fp);
+		fseeki64(fp, 0L, SEEK_SET);
+		buff.resize(size);
+		auto retval = fread(buff.data(), size, 1, fp);
+		assert(retval == 1);
+		fclose(fp);
+	}
+	buff += "ag";
+	buff.insert(buff.begin(), 'k');
 	bool testvg = 0;
 	while (running) {
 		SDL_Event ev;
@@ -720,16 +741,17 @@ int main()
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
 			style4.family = familys;
-			style4.fontsize = 18;
+			style4.fontsize = 38;
 			style4.color = 0xff0080f0;
 			style4.color_stroke = 0xFF0000f0;
-			style4.min_subpixel = 32;
+			style4.min_subpixel = 0;
 			//style4.stroke = 1;
 			//style4.color_shadow = 0x56000000;
 			style4.shadow_pos = { 1.0f, 1.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"-abg亚像素-灰度➗🍕☂️";
+			text4.text = (char*)u8"🍕➗☂️-abg亚像素-灰度 كيداير 好了";
+			text4.text = (char*)buff.c_str();
 			text4.text_len = -1;
 
 			text4.pos = { 10.0f, 200.0f };

@@ -17,7 +17,9 @@ extern "C" {
 	typedef struct hb_buffer_t hb_buffer_t;
 	typedef struct hb_draw_funcs_t hb_draw_funcs_t;
 
-	typedef struct _FcConfig    FcConfig;
+	typedef struct _FcConfig FcConfig;
+	typedef struct UBreakIterator UBreakIterator;
+	typedef struct UBiDi UBiDi;
 
 #ifdef __cplusplus 
 }
@@ -110,7 +112,7 @@ struct path_builder {
 
 class font_cache_cx
 {
-public: 
+public:
 	union glyph_key {
 		struct {
 			glm::u16vec2 k;
@@ -178,6 +180,7 @@ struct vg_glyph_info_t {
 	float     y_offset;
 	float     x_advance;
 	float     y_advance;
+	int line_idx;
 	// 指向缓存条目（位图或矢量）
 	glyph_atlas_entry* cache_entry;
 };
@@ -214,37 +217,73 @@ class vg_text_run_cx
 {
 public:
 	enum render_mode { RASTER_FIRST, VECTOR_ONLY };
+	struct text_segment_t {
+		int u16_start;
+		int u16_len;
+		int direction;
+		int line_idx;
+	};
+
+	struct positioned_glyph_t {
+		uint32_t gid;
+		int x;
+		int y;
+		int x_advance;
+		int y_advance;
+		int x_offset;
+		int y_offset;
+		int line_idx;
+		glyph_atlas_entry* cache_entry;
+	};
+	struct shaped_segment_t {
+		int width_px;								// 像素宽度 
+		int dir;
+		std::vector<positioned_glyph_t> glyphs;  // 相对 x=0 的局部坐标
+	};
 private:
 	const font_familys_t* _ffs = nullptr;
 	hb_font_t* _primary_font = nullptr;
 	int                   _fontsize = 16;
-	std::vector<uint32_t> _utf32;
+	std::vector<uint16_t> _utf16;
 
 	// 当前 shaping 结果
 	hb_buffer_t* _buf = nullptr;
 	vg_text_extents_t     _extents{};
-	std::vector<vg_glyph_info_t> _glyphs;
+	std::vector<vg_glyph_info_t> _glyphs0;
+	std::vector<positioned_glyph_t> _glyphs;
 	uint32_t              _glyph_count = 0;
-	int min_subpixel = 32;
+	int _min_subpixel = 32;
 	// 缓存引用
 	font_cache_cx* _cache = nullptr;
 
 	// 多 run 支持（不同 font fallback）
 	struct text_run {
-		hb_buffer_t* buf = nullptr;
 		hb_font_t* font = nullptr;
 		int          fontsize = 0;
 		uint32_t     start_cp = 0;
 		uint32_t     end_cp = 0;
 	};
 	std::vector<text_run> _runs;
+	std::vector<glm::uvec3> visual_runs;
+
+	UBiDi* _bidi = 0;
+	UBreakIterator* _line_brk = 0;
+	struct layout_options {
+		std::string _locale;				// 中文传"zh_CN"，英文传 "en 
+		text_box_rt _box = {};
+		uint8_t para_dir = 0;				// 段落方向，0=UBIDI_DEFAULT_LTR, 1=UBIDI_DEFAULT_RTL
+		float max_width = 0.0f;
+		bool enable_bidi = true;
+	};
+	layout_options _layout;
 public:
 	vg_text_run_cx();
 	~vg_text_run_cx();
 	void set_min_subpixel(int sp);
 	// 设置文本（UTF-8），触发重新 shape
 	void set_text(const void* str8, size_t len = -1);
-
+	// max_width>0 时启用换行，enable_bidi 启用双向文本，para_dir=0/1=LTR/RTL
+	void set_layout_mode(const text_box_rt& box, float max_width, bool enable_bidi, uint8_t para_dir = 0, const char* locale = nullptr);
 	// 设置字体参数
 	void set_font(hb_font_t* font, int fontsize);
 
@@ -253,6 +292,7 @@ public:
 
 	// 执行 shape + 缓存 lookup（内部调 set_text/set_font 后自动调）
 	void shape();
+	void shape_old();
 
 	// 清除所有缓存引用（字体变了时调用，不释放 atlas 数据）
 	void clear_glyphs();
@@ -260,13 +300,13 @@ public:
 	void populate_draw_list(text_draw_list& list, float origin_x, float origin_y, uint32_t color, render_mode m);
 	// 访问结果
 	const vg_text_extents_t& extents() const { return _extents; }
-	const std::vector<vg_glyph_info_t>& glyphs() const { return _glyphs; }
+	//const std::vector<vg_glyph_info_t>& glyphs() const { return _glyphs; }
 	uint32_t glyph_count() const { return _glyph_count; }
 
 private:
 	void free_buffer();
 	void shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize);
-
+	void shape_segment(int u16_start, int u16_len, int dir, hb_font_t* font, int fontsize, shaped_segment_t& out);
 };
 
 bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h);

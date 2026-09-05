@@ -11,7 +11,7 @@ set(OVG_SOURCES
 
 find_package(glm CONFIG REQUIRED)
 find_package(harfbuzz CONFIG REQUIRED) 
-find_package(Fontconfig REQUIRED)
+find_package(Fontconfig REQUIRED) 
 pkg_check_modules(HARFBUZZ_RASTER REQUIRED IMPORTED_TARGET harfbuzz-raster)
 
 add_library(libovg STATIC ${OVG_SOURCES})

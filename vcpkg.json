@@ -28,6 +28,10 @@
       "name": "vulkan-memory-allocator"
     },
     {
+      "name": "icu",
+      "version>=": "78.3#2"
+    },
+    {
       "name": "harfbuzz",
       "version>=": "14.3.1",
       "features": [ "icu" ]
