@@ -180,7 +180,6 @@ struct vg_glyph_info_t {
 	float     y_offset;
 	float     x_advance;
 	float     y_advance;
-	int line_idx;
 	// 指向缓存条目（位图或矢量）
 	glyph_atlas_entry* cache_entry;
 };

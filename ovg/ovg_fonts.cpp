@@ -278,7 +278,7 @@ icu_lib_t* get_icu(int v)
 #define mxv 1000
 	if (!icub)
 	{
-		try {
+		do {
 			std::string dlln = "libicuuc";
 			std::string dlln0 = "icudt";
 			int v1 = v;
@@ -286,7 +286,7 @@ icu_lib_t* get_icu(int v)
 			if (!so) {
 				so = loadso("libicu");
 				if (!so)
-					throw std::runtime_error("-1");
+					break;
 			}
 			std::string n;
 			void* uc = 0;
@@ -329,16 +329,7 @@ icu_lib_t* get_icu(int v)
 			else {
 				destroy_so(so);
 			}
-		}
-		catch (const std::exception& e)
-		{
-			auto ew = e.what();
-			if (ew)
-			{
-				printf(ew);
-				printf("load icu error!\n");
-			}
-		}
+		} while (0);
 	}
 	return icub;
 }
@@ -2428,17 +2419,15 @@ void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_fon
 	out.glyphs.reserve(count);
 	const float scale = 1.0f;
 	float x = 0.0f;
-
+	hb_position_t ix, iy;
 	for (unsigned int i = 0; i < count; ++i) {
 		vg_glyph_info_t g;
 		g.glyph_id = info[i].codepoint;
 		g.x_offset = (float)pos[i].x_offset * scale;
-		g.y_offset = (float)pos[i].y_offset * scale;
+		g.y_offset = (float)-pos[i].y_offset * scale;
 		g.x_advance = (float)pos[i].x_advance * scale;
 		g.y_advance = (float)pos[i].y_advance * scale;
-		//g.x = x + g.x_offset;
-		//g.y = g.y_offset;
-		//g.line_idx = 0;
+		hb_font_get_glyph_advance_for_direction(font, g.glyph_id, dir ? HB_DIRECTION_RTL : HB_DIRECTION_LTR, &ix, &iy);
 		g.cache_entry = _cache ? _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize) : nullptr;
 		out.glyphs.push_back(g);
 		x += g.x_advance;
