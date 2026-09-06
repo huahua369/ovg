@@ -1087,15 +1087,20 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		// 装箱进 image_cache_cx
 		auto hp = &font_ptr->font;
 		raster_image_t img_ds = {};
-
 		{
 			hb_raster_image_t* img = build_glyph_image_hb(&font_ptr->font, glyph_id, fontsize, &rc, fsc);
-			hb_raster_image_get_extents(img, (hb_raster_extents_t*)&img_ds);
-			img_ds.fmt = hb_raster_image_get_format(img);
-			img_ds.data = (uint8_t*)hb_raster_image_get_buffer(img);
+			if (img) {
+				hb_raster_image_get_extents(img, (hb_raster_extents_t*)&img_ds);
+				img_ds.fmt = hb_raster_image_get_format(img);
+				img_ds.data = (uint8_t*)hb_raster_image_get_buffer(img);
+			}
+			else {
+				return ret;
+			}
 		}
 		int ow = rc.z / fsc.x;
-		if (ow == 26)
+
+		if (ow > fontsize)//|| rc.w > fontsize)
 			ow++;
 		ovg_image_data* img_data = image_cache.push_cache_size({ ow,rc.w }, &pos);
 
@@ -1250,7 +1255,7 @@ bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h) {
 			dst[x * 4 + 1] = src[x * 4 + 1]; // G
 			dst[x * 4 + 2] = src[x * 4 + 0]; // B
 			auto a = src[x * 4 + 3];
-			dst[x * 4 + 3] = 0xff; // A
+			dst[x * 4 + 3] = a;// 0xff; // A
 		}
 	}
 	return stbi_write_png(path, w, h, 4, rgb.data(), w * 4) != 0;
@@ -1328,14 +1333,14 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 	float gx = 0.0, gy = 0.0;
 	float pmin_x = 1e30f, pmin_y = 1e30f;
 	float pmax_x = -1e30f, pmax_y = -1e30f;
-	float margin = 1;
+	float margin = 2;
 	do {
 		hb_font_set_scale(font, font_size * scale.x, font_size * scale.y);
 		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
 		ext->x_origin = gext.x_bearing;
 		ext->y_origin = -(gext.y_bearing + margin);
-		ext->width = abs(gext.x_bearing) + gext.width + margin;
-		ext->height = abs(gext.height) + gext.y_bearing;// +margin * 2;
+		ext->width = ovg::align_up(abs(gext.x_bearing) + gext.width + margin * 2, 2);
+		ext->height = ovg::align_up(abs(gext.height) + abs(gext.y_bearing), 2);
 		ext->stride = 0;
 		if (pnt)
 		{
@@ -1371,7 +1376,7 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 			ot->x = gext0.x_bearing;
 			ot->y = gext0.y_bearing;
 			ot->z = ext.width;
-			ot->w = ext.height;
+			ot->w = ovg::align_up(abs(gext0.height) + margin * 2, 4);
 		}
 	}
 	return img;
@@ -2194,7 +2199,25 @@ void vg_text_run_cx::shape_old() {
 	}
 
 }
-
+// 找到 y == 1 的连续段起点/终点执行置反
+void reverse1(std::vector<glm::ivec2>& v)
+{
+	size_t i = 0;
+	const size_t n = v.size();
+	while (i < n)
+	{
+		if (v[i].y != 1)
+		{
+			++i;
+			continue;
+		}
+		size_t start = i;
+		while (i < n && v[i].y == 1)
+			++i;
+		size_t end = i;
+		std::reverse(v.begin() + start, v.begin() + end);
+	}
+}
 void vg_text_run_cx::shape() {
 	clear_glyphs();
 	if (!_primary_font || _utf16.empty()) return;
@@ -2313,6 +2336,9 @@ void vg_text_run_cx::shape() {
 	std::vector<subseg_t> subsegs;
 	uint16_t* base = _utf16.data();
 
+	_indexs.clear();
+	_indexs.reserve(512);
+	int cidx = 0;
 	for (const auto& seg : segments) {
 		uint16_t* p = base + seg.x;
 		uint16_t* end = p + seg.y;
@@ -2341,23 +2367,23 @@ void vg_text_run_cx::shape() {
 
 			subsegs.push_back({ (int32_t)(sub_start - base), (int32_t)(sub_end - sub_start), (UBiDiDirection)seg.z, font, scale });
 
+			_indexs.push_back({ cidx++ ,seg.z });
 			p = sub_end;
 		}
 	}
-
+	reverse1(_indexs);
 	// ═══════════════════════════════════════════════════════════
 	//  Step 5: Pass 1 — shape 每个 subsegment
 	// ═══════════════════════════════════════════════════════════
-	struct shaped_seg {
-		float                        width_px = 0.0f;
-		std::vector<positioned_glyph_t> glyphs;
-	};
-	std::vector<shaped_segment_t> shaped;
-	shaped.reserve(subsegs.size());
+	_shaped.clear();
+	_shaped.reserve(subsegs.size());
+	_glyphs.clear();
 	std::vector<int> vmsize;
 	int tdir = 0;
 	vmsize.push_back(0);
-	for (const auto& ss : subsegs) {
+	for (const auto& it : _indexs)
+	{
+		auto& ss = subsegs[it.x];
 		shaped_segment_t out;
 		shape_segment(ss.start, ss.len, ss.dir, ss.font, ss.fontsize, out);
 		if (tdir == out.dir) {
@@ -2367,66 +2393,16 @@ void vg_text_run_cx::shape() {
 			vmsize.push_back(out.width_px);
 			tdir = out.dir;
 		}
-		shaped.push_back(std::move(out));
+		for (const auto& g : out.glyphs) {
+			_glyphs.push_back(g);
+		}
+		_shaped.push_back(std::move(out));
 	}
-
-	// ═══════════════════════════════════════════════════════════
-	//  Step 6: Pass 2 — 按 max_width 折行 + emit → _glyphs
-	// ═══════════════════════════════════════════════════════════
-	_glyphs.clear();
-	_extents = {};
-
-	float cursor_x = 0.0f;
-	float cursor_y = 0.0f;
-	int32_t line_idx = 0;
-
-	// 行高：从第一个 shaped segment 的 extents 拿，或 fallback
-	float line_height = _extents.height > 0 ? _extents.height : (float)_fontsize * 1.2f;
-	tdir = shaped[0].dir;
-	int idxx = 0;
-	int rx = 0;
-	for (const auto& ss : shaped) {
-		if (tdir != ss.dir) {
-			tdir = ss.dir; idxx++;
-			rx = vmsize[idxx] + cursor_x;
-			//if (!tdir)
-			//	cursor_x += vmsize[idxx - 1];
-		}
-
-		// 折行判断
-		if (_layout.max_width > 0 && cursor_x + ss.width_px > _layout.max_width && cursor_x > 0.5f)
-		{
-			cursor_x = 0.0f;
-			cursor_y += line_height;
-			line_idx++;
-		}
-		// emit
-		if (ss.glyphs.empty()) continue;
-		if (ss.dir) {
-			rx -= ss.width_px;
-		}
-		else
-			cursor_x += ss.width_px;
-		for (const auto& g : ss.glyphs) {
-			positioned_glyph_t fg = g;
-			fg.x = cursor_x + g.x + rx;
-			fg.y = cursor_y + g.y;
-			fg.line_idx = line_idx;
-			_glyphs.push_back(fg);
-		}
-	}
-
-	// ═══════════════════════════════════════════════════════════
-	//  Step 7: 最终 extents
-	// ═══════════════════════════════════════════════════════════
-	_extents.width = cursor_x;
-	_extents.height = cursor_y + line_height;
-	_extents.x_advance = cursor_x;
-	_extents.y_advance = _extents.height;
+	// todo 计算_extents
 	_glyph_count = (uint32_t)_glyphs.size();
 
 }
-void vg_text_run_cx::shape_segment(int32_t u16_start, int32_t u16_len, int  dir0, hb_font_t* font, int fontsize, shaped_segment_t& out)
+void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_font_t* font, int fontsize, shaped_segment_t& out)
 {
 	out.dir = dir0;
 	out.glyphs.clear();
@@ -2454,15 +2430,15 @@ void vg_text_run_cx::shape_segment(int32_t u16_start, int32_t u16_len, int  dir0
 	float x = 0.0f;
 
 	for (unsigned int i = 0; i < count; ++i) {
-		positioned_glyph_t g;
-		g.gid = info[i].codepoint;
+		vg_glyph_info_t g;
+		g.glyph_id = info[i].codepoint;
 		g.x_offset = (float)pos[i].x_offset * scale;
 		g.y_offset = (float)pos[i].y_offset * scale;
 		g.x_advance = (float)pos[i].x_advance * scale;
 		g.y_advance = (float)pos[i].y_advance * scale;
-		g.x = x + g.x_offset;
-		g.y = g.y_offset;
-		g.line_idx = 0;
+		//g.x = x + g.x_offset;
+		//g.y = g.y_offset;
+		//g.line_idx = 0;
 		g.cache_entry = _cache ? _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize) : nullptr;
 		out.glyphs.push_back(g);
 		x += g.x_advance;
@@ -2507,12 +2483,12 @@ void vg_text_run_cx::shape_run(size_t run_start, size_t run_end, hb_font_t* font
 		else {
 			g.cache_entry = nullptr;
 		}
-		_glyphs0.push_back(g);
+		_glyphs.push_back(g);
 		// 累加 extents
 		_extents.x_advance += g.x_advance;
 		_extents.y_advance += g.y_advance;
 	}
-	_glyph_count = (uint32_t)_glyphs0.size();
+	_glyph_count = (uint32_t)_glyphs.size();
 	// 行高
 	_extents.height = (float)(fextents.ascender - fextents.descender + fextents.line_gap);
 	// bearing（第一个 glyph）
@@ -2533,8 +2509,8 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 		if (!g.cache_entry) { pen_x += g.x_advance; continue; }
 
 		auto* e = g.cache_entry;
-		float x = pen_x + /*g.x_offset +*/ g.x;
-		float y = pen_y + /*g.y_offset +*/ g.y;
+		float x = pen_x + g.x_offset;
+		float y = pen_y + g.y_offset;
 		if (mode == VECTOR_ONLY || !e->atlas_img) {
 			if (e->path_data) {
 				list.push_vector(e, x, y, color);
@@ -2553,7 +2529,7 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 			);
 			list.push_raster(e, x, y, w, h, uv, color);
 		}
-		//pen_x += g.x_advance;
+		pen_x += g.x_advance;
 	}
 	list.extents = _extents;
 }

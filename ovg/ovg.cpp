@@ -5870,7 +5870,80 @@ void submit_draw_list_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list& list
 		submit_vector_cmd_ctx(cb, rvg, cmd);
 	}
 }
+#if 0
+void layout_text_run(flex_run* ctx, std::vector<vg_text_run_cx::shaped_segment_t>* segments, float origin_x, float origin_y, std::vector<glyph_item_t>& out_glyphs)
+{
+	if (!segments || segments->empty())
+		return;
 
+	const size_t seg_count = segments->size();
+
+	// 1. 构造 flex 输入节点
+	std::vector<node_dt> nodes(seg_count);
+
+	for (size_t i = 0; i < seg_count; ++i) {
+		const vg_text_run_cx::shaped_segment_t& seg = (*segments)[i];
+		node_dt& nd = nodes[i];
+
+		nd.index = i;
+		nd.child = nullptr;
+		nd.child_count = 0;
+
+		// 文本段尺寸
+		nd.size.x = static_cast<float>(seg.width_px);
+		nd.size.y = seg.glyphs.empty() ? 0.0f
+			: seg.glyphs[0].cache_entry->metrics.ascent
+			+ seg.glyphs[0].cache_entry->metrics.descent;
+
+		nd.baseline = static_cast<float>(seg.glyphs[0].cache_entry->metrics.ascent);
+		nd.position = static_cast<int>(flex_position::POS_RELATIVE);
+		nd.frame = glm::vec4(0.0f);
+	}
+
+	// 2. 构造根节点（文本容器）
+	node_dt root{};
+	root.index = seg_count; // 根节点放在最后
+	root.child = nodes.data();
+	root.child_count = seg_count;
+	root.size = glm::vec2(
+		ctx->fd.width,   // 容器宽度（NAN 也可，flex_run_layout 应支持）
+		ctx->fd.height
+	);
+	root.baseline = 0.0f;
+	root.position = static_cast<int>(flex_position::POS_RELATIVE);
+
+	// 3. 执行 flex 排版
+	// 注意：这里假设你已经把 flex_data 填好（direction / wrap / align 等）
+	flex_run_layout(ctx, &ctx->fd, seg_count + 1, &root, 1);
+
+	// 4. 展开 glyph
+	out_glyphs.reserve(out_glyphs.size() + 1024);
+
+	for (size_t i = 0; i < seg_count; ++i) {
+		const shaped_segment_t& seg = (*segments)[i];
+		const node_dt& nd = nodes[i];
+
+		// segment 排版后的位置
+		float seg_x = nd.frame.x;
+		float seg_y = nd.frame.y;
+
+		// 基线对齐：flex 以 top 为原点，文本需要 baseline
+		seg_y += nd.baseline;
+
+		for (const vg_glyph_info_t& g : seg.glyphs) {
+			glyph_item_t gi{};
+			gi.g = const_cast<vg_glyph_info_t*>(&g);
+			gi.x = origin_x + seg_x + g.x_offset;
+			gi.y = origin_y + seg_y + g.y_offset;
+
+			out_glyphs.push_back(gi);
+
+			seg_x += g.x_advance;
+			seg_y += g.y_advance;
+		}
+	}
+}
+#endif
 void ovg_canvas_cx::add_text(rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
 {
 	if (!p || !p->text || !ts || !ts->family) return;

@@ -661,13 +661,13 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
-	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Calibri", 0);
+	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Calibri,Noto Serif Devanagari", 0);
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
@@ -715,8 +715,6 @@ int main()
 		assert(retval == 1);
 		fclose(fp);
 	}
-	buff += "ag";
-	buff.insert(buff.begin(), 'k');
 	bool testvg = 0;
 	while (running) {
 		SDL_Event ev;
@@ -765,7 +763,7 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
-			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf";
+			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf球菌回馈宇腾中天置地古城一直在画材别想吸铝";
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
@@ -778,6 +776,9 @@ int main()
 			cb->set_source_color(vg, 0xff000000);
 			cb->set_source_color(vg, -1);
 			cb->fill(vg);
+			cb->add_text(vg, &text4, &style4, nullptr);
+			text4.text = (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
+			text4.pos.y += 50;
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			int ms = rtc.end();
