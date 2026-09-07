@@ -667,7 +667,7 @@ int main()
 
 	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
-	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Calibri,Noto Serif Devanagari", 0);
+	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Tahoma,Calibri,Noto Serif Devanagari", 0);
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
@@ -778,6 +778,7 @@ int main()
 			cb->fill(vg);
 			cb->add_text(vg, &text4, &style4, nullptr);
 			text4.text = (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
+			text4.text = (char*)u8"อยากจับเมาส์";
 			text4.pos.y += 50;
 			cb->add_text(vg, &text4, &style4, nullptr);
 

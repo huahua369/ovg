@@ -2068,6 +2068,28 @@ vg_text_run_cx::~vg_text_run_cx() {
 
 }
 
+void vg_text_run_cx::clear()
+{
+	_ffs = nullptr;
+	_primary_font = nullptr;
+	_fontsize = 16;
+	_utf16.clear(); 
+	_extents = {};
+	_glyphs.clear();
+	_glyph_count = 0;
+	_min_subpixel = 0;
+	_cache = nullptr;
+	_runs.clear();
+	visual_runs.clear();
+	//_buf = 0;			// 可复用对象不用清除
+	//_bidi = 0;
+	//_line_brk = 0;
+	_layout = {};
+	_shaped.clear();
+	_indexs.clear();
+	drawable.clear();
+}
+
 void vg_text_run_cx::set_min_subpixel(int sp)
 {
 	_min_subpixel = sp;
@@ -2523,7 +2545,31 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 	list.extents = _extents;
 }
 
-#if 1  
+vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts, text_box_rt* box)
+{
+	if (!p || !p->text || !ts || !ts->family) return 0;
 
+	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+	// ── 1. shape ──
+	vg_text_run_cx* run = ptr ? ptr : new vg_text_run_cx();
+	if (!run)
+		return 0;
+	run->clear();
+	run->st = *ts;
+	if (box)
+		run->box = *box;
+	run->tt = *p;
+	run->set_min_subpixel(ts->min_subpixel);
+	run->set_font_families(ts->family, fontsize);
+	run->set_text(p->text, p->text_len);
+	run->shape();  // 内部按 fallback 切 run，lookup 缓存
 
-#endif // 1
+	return run;
+}
+void free_text_run(vg_text_run_cx* ptr)
+{
+	if (ptr)
+	{
+		delete ptr;
+	}
+}

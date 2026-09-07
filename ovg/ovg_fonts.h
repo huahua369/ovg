@@ -236,7 +236,7 @@ private:
 
 	// 当前 shaping 结果
 	hb_buffer_t* _buf = nullptr;
-	vg_text_extents_t     _extents{};
+	vg_text_extents_t     _extents = {};
 	std::vector<vg_glyph_info_t> _glyphs;
 	uint32_t              _glyph_count = 0;
 	int _min_subpixel = 32;
@@ -262,13 +262,19 @@ private:
 		float max_width = 0.0f;
 		bool enable_bidi = true;
 	};
-	layout_options _layout;
+	layout_options _layout = {};
 	// 布局用
 	std::vector<shaped_segment_t> _shaped;
 	std::vector<glm::ivec2> _indexs;
 public:
+	text_draw_list drawable;
+	text_style_t st = {};
+	text_box_rt box = {};
+	text_st_t tt = {};
+public:
 	vg_text_run_cx();
 	~vg_text_run_cx();
+	void clear();
 	void set_min_subpixel(int sp);
 	// 设置文本（UTF-8），触发重新 shape
 	void set_text(const void* str8, size_t len = -1);
@@ -298,6 +304,9 @@ private:
 	void shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize);
 	void shape_segment(int u16_start, int u16_len, int dir, hb_font_t* font, int fontsize, shaped_segment_t& out);
 };
+
+vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts, text_box_rt* box);
+void free_text_run(vg_text_run_cx* ptr);
 
 bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h);
 struct glyph_item_t {
