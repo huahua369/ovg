@@ -1047,6 +1047,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 			entry.path_data = path_copy;
 			entry.path_size = temp_path.data.size();
 			entry.em_units = em;
+			entry.font = font;
 			auto [it2, ok] = glyph_cache.emplace(gk.v, entry);
 			ret = &it2->second;
 		}
@@ -1105,7 +1106,7 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		entry.path_data = ret->path_data;
 		entry.path_size = ret->path_size;
 		entry.em_units = em;
-
+		entry.font = font;
 		entry.has_color = font_ptr->font.pnt ? true : false;
 		auto [it2, ok] = gca->emplace(gk.v, entry);
 		ret = &it2->second;

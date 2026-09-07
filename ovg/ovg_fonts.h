@@ -93,6 +93,7 @@ private:
 struct glyph_atlas_entry {
 	enum { RASTER, VECTOR } type = RASTER;
 	int advance;			// 水平步进
+	hb_font_t* font;
 	vg_image_t* atlas_img;	// 指向字体 atlas 纹理
 	glm::ivec4 uv_rect;		// (x, y, w, h) 在 atlas 中的像素区域
 	glm::ivec2 offset;		// 字形偏移（bearing）x_bearing/y_bearing
@@ -303,7 +304,6 @@ class text_run_dst_cx
 public:
 	text_style_t _st = {};
 	text_box_rt _box = {};
-	text_st_t _tt = {};
 	layout_options _layout = {};
 	std::u16string _utf16;
 	hb_buffer_t* _buf = nullptr;
