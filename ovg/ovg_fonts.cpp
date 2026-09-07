@@ -1365,7 +1365,7 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 		if (ot)
 		{
 			ot->x = gext0.x_bearing;
-			ot->y = gext0.y_bearing;
+			ot->y = gext0.y_bearing + margin;
 			ot->z = ext.width;
 			ot->w = ovg::align_up(abs(gext0.height) + margin * 2, 4);
 		}
@@ -2073,7 +2073,7 @@ void vg_text_run_cx::clear()
 	_ffs = nullptr;
 	_primary_font = nullptr;
 	_fontsize = 16;
-	_utf16.clear(); 
+	_utf16.clear();
 	_extents = {};
 	_glyphs.clear();
 	_glyph_count = 0;
@@ -2167,51 +2167,6 @@ void vg_text_run_cx::clear_glyphs() {
 	_runs.clear();
 }
 
-void vg_text_run_cx::shape_old() {
-	clear_glyphs();
-	if (!_primary_font || _utf16.empty()) return;
-
-	uint16_t* p = _utf16.data();
-	uint16_t* end = p + _utf16.size();
-	size_t len = _utf16.size();
-
-	// ── 单字体简单路径（无 fallback）──
-	if (!_ffs || _ffs->count == 0) {
-		shape_run(0, _utf16.size(), _primary_font, _fontsize);
-		return;
-	}
-	// ── 多字体 fallback：按 script/coverage 切 run ──
-
-	while (p < end) {
-		// 解码当前字符
-		const uint16_t* run_start_ptr = p;
-		uint32_t cp = utf16_next(p, end);
-
-		const font_family_t* ff = resolve_family(_ffs, cp);
-		if (!ff) ff = _ffs->familys[0];
-
-		// 找同字体连续区间
-		uint16_t* run_end_ptr = p;
-		while (run_end_ptr < end) {
-			uint16_t* look = run_end_ptr;
-			uint32_t next_cp = utf16_next(look, end);
-			const font_family_t* next_ff = resolve_family(_ffs, next_cp);
-			if (!next_ff) next_ff = _ffs->familys[0];
-			if (next_ff != ff) break;
-			run_end_ptr = look;
-		}
-
-		// 转回索引给 shape_run
-		size_t u16_start = run_start_ptr - _utf16.data();
-		size_t u16_end = run_end_ptr - _utf16.data();
-
-		int scale = _fontsize > 0 ? _fontsize : ff->upem;
-		shape_run(u16_start, u16_end, ff->font, scale);
-
-		p = run_end_ptr;
-	}
-
-}
 // 找到 y == 1 的连续段起点/终点执行置反
 void reverse1(std::vector<glm::ivec2>& v)
 {
@@ -2455,60 +2410,6 @@ void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_fon
 		x += g.x_advance;
 	}
 	out.width_px = x;
-}
-void vg_text_run_cx::shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize)
-{
-	if (!font || run_start >= run_end) return;
-	if (_cache) {
-		_cache->min_subpixel = _min_subpixel;
-	}
-	auto buf = _buf;
-	hb_font_set_scale(font, fontsize, fontsize);
-	hb_buffer_reset(buf);
-	hb_buffer_add_utf16(buf, _utf16.data() + run_start, run_end - run_start, 0, -1);
-	hb_buffer_guess_segment_properties(buf);
-	// 关闭 kerning（UI 场景常见需求）
-	hb_feature_t features[] = { {HB_TAG('k','e','r','n'), 0, 0, ~0u} };
-	hb_shape(font, buf, features, 1);
-	unsigned int glyph_count = 0;
-	hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &glyph_count);
-	hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, nullptr);
-	// 记录 run
-	_runs.push_back({ font, fontsize, (uint32_t)run_start, (uint32_t)run_end });
-	// 字体度量
-	hb_font_extents_t fextents = {};
-	hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &fextents);
-	// 填充 glyph 列表
-	float x = 0;
-	for (unsigned int i = 0; i < glyph_count; ++i) {
-		vg_glyph_info_t g;
-		g.glyph_id = info[i].codepoint;
-		g.x_offset = (float)pos[i].x_offset;
-		g.y_offset = (float)pos[i].y_offset;
-		g.x_advance = (float)pos[i].x_advance;
-		g.y_advance = (float)pos[i].y_advance;
-		// 查缓存
-		if (_cache) {
-			g.cache_entry = _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize);
-		}
-		else {
-			g.cache_entry = nullptr;
-		}
-		_glyphs.push_back(g);
-		// 累加 extents
-		_extents.x_advance += g.x_advance;
-		_extents.y_advance += g.y_advance;
-	}
-	_glyph_count = (uint32_t)_glyphs.size();
-	// 行高
-	_extents.height = (float)(fextents.ascender - fextents.descender + fextents.line_gap);
-	// bearing（第一个 glyph）
-	if (!_glyphs.empty()) {
-		_extents.x_bearing = -_glyphs[0].x_offset;
-		_extents.y_bearing = -_glyphs[0].y_offset;
-	}
-	// width = x_advance 总和
-	_extents.width = _extents.x_advance;
 }
 
 void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, float origin_y, uint32_t color, render_mode mode)

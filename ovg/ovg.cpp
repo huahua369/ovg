@@ -6009,6 +6009,7 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 		ovg_clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
 	}
 	text_draw_list& main_list = run->drawable;
+	main_list.has_color = false;
 	// ── 4. 阴影 ──
 	if (ts->color_shadow & 0xFF000000) {
 		main_list.clear();

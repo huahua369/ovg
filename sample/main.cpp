@@ -739,13 +739,13 @@ int main()
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
 			style4.family = familys;
-			style4.fontsize = 38;
+			style4.fontsize = 58;
 			style4.color = 0xff0080f0;
 			style4.color_stroke = 0xFF0000f0;
 			style4.min_subpixel = 0;
-			//style4.stroke = 1;
-			//style4.color_shadow = 0x56000000;
-			style4.shadow_pos = { 1.0f, 1.0f };
+			style4.stroke = 1;
+			//style4.color_shadow = 0xa6000000;
+			style4.shadow_pos = { 2.0f, 2.0f };
 
 			text_st_t text4 = {};
 			text4.text = (char*)u8"🍕➗☂️-abg亚像素-灰度 كيداير 好了";
@@ -764,7 +764,7 @@ int main()
 
 			style4.min_subpixel = 0;
 			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf球菌回馈宇腾中天置地古城一直在画材别想吸铝";
-			//style4.stroke = -1;
+			style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
 			cb->move_to(vg, 0, text4.pos.y + 0.5);

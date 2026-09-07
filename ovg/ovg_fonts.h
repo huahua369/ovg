@@ -287,8 +287,7 @@ public:
 	void set_font_families(const font_familys_t* ffs, int fontsize);
 
 	// 执行 shape + 缓存 lookup（内部调 set_text/set_font 后自动调）
-	void shape();
-	void shape_old();
+	void shape(); 
 
 	// 清除所有缓存引用（字体变了时调用，不释放 atlas 数据）
 	void clear_glyphs();
@@ -300,8 +299,7 @@ public:
 	uint32_t glyph_count() const { return _glyph_count; }
 
 private:
-	void free_buffer();
-	void shape_run(size_t run_start, size_t run_end, hb_font_t* font, int fontsize);
+	void free_buffer(); 
 	void shape_segment(int u16_start, int u16_len, int dir, hb_font_t* font, int fontsize, shaped_segment_t& out);
 };
 
