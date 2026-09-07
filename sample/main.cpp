@@ -18,7 +18,7 @@
 #endif
 
 using namespace std;
-
+#include "ovg_fonts.h"
 
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -715,6 +715,27 @@ int main()
 		assert(retval == 1);
 		fclose(fp);
 	}
+	text_run_dst_cx* run_dst = new text_run_dst_cx();
+	{
+		text_style_t style4 = {};
+		style4.family = familys;
+		style4.fontsize = 58;
+		style4.color = 0xff0080f0;
+		style4.color_stroke = 0xFF0000f0;
+		style4.min_subpixel = 0;
+		//style4.stroke = 1;
+		//style4.color_shadow = 0xa6000000;
+		style4.shadow_pos = { 2.0f, 2.0f };
+
+		text_st_t text4 = {};
+		text4.text = (char*)u8"🍕➗☂️-abgyh彩色渐变字体";
+		//text4.text = (char*)buff.c_str();
+		text4.text_len = -1;
+
+		text4.pos = { 10.0f, 200.0f };
+		run_dst->set_layout_mode(&style4, nullptr, true);
+		run_dst->text_shape(&text4);
+	}
 	bool testvg = 0;
 	while (running) {
 		SDL_Event ev;
@@ -743,13 +764,13 @@ int main()
 			style4.color = 0xff0080f0;
 			style4.color_stroke = 0xFF0000f0;
 			style4.min_subpixel = 0;
-			style4.stroke = 1;
+			//style4.stroke = 1;
 			//style4.color_shadow = 0xa6000000;
 			style4.shadow_pos = { 2.0f, 2.0f };
 
 			text_st_t text4 = {};
-			text4.text = (char*)u8"🍕➗☂️-abg亚像素-灰度 كيداير 好了";
-			text4.text = (char*)buff.c_str();
+			text4.text = (char*)u8"🍕➗☂️-abgyh彩色渐变字体";
+			//text4.text = (char*)buff.c_str();
 			text4.text_len = -1;
 
 			text4.pos = { 10.0f, 200.0f };
@@ -764,7 +785,7 @@ int main()
 
 			style4.min_subpixel = 0;
 			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf球菌回馈宇腾中天置地古城一直在画材别想吸铝";
-			style4.stroke = -1;
+			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
 			cb->move_to(vg, 0, text4.pos.y + 0.5);
@@ -794,7 +815,7 @@ int main()
 		}
 		SDL_Delay(16);  /* ~60 FPS */
 	}
-
+	if (run_dst)delete run_dst;
 	SDL_WaitForGPUIdle(g->device);
 	/* Cleanup */
 

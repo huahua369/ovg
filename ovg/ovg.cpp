@@ -44,9 +44,11 @@
 #define VG_FILL_NZ_GLUTESS2
 #endif
 
+#if (__has_include("ovg_fonts.h"))
+#include "ovg_fonts.h"
 #include <harfbuzz/hb.h> 
 #include <fontconfig/fontconfig.h>
-#include "ovg_fonts.h"
+#endif
 
 void init_ovg_cb(ovg_canvas_cb* cb);
 void init_ovg_ctx_cb(ovg_ctx_cb* cb);
@@ -188,10 +190,14 @@ public:
 
 #endif // !MEMAC_PMR
 
+struct text_draw_list;
+
 class ovg_canvas_cx :public ovg_canvas_cb
 {
 public:
+#ifdef OVG_FONT_H
 	vg_text_run_cx text_run;
+#endif
 public:
 	ovg_canvas_cx();
 	~ovg_canvas_cx();
@@ -236,7 +242,9 @@ void free_canvas_cb(ovg_canvas_cb* p) {
 class ovg_ctx_cx :public ovg_ctx_cb
 {
 public:
+#ifdef OVG_FONT_H
 	vg_text_run_cx text_run;
+#endif
 public:
 	ovg_ctx_cx();
 	~ovg_ctx_cx();
@@ -5492,6 +5500,7 @@ void vg_split(std::string str, const std::string& pattern, std::vector<std::stri
 }
 font_cache_cx* new_font_cache()
 {
+#ifdef OVG_FONT_H
 	auto p = new font_cache_cx();
 	if (p)
 	{
@@ -5506,19 +5515,24 @@ font_cache_cx* new_font_cache()
 		}
 	}
 	return p;
+#endif
+	return 0;
 }
 void free_font_cache(font_cache_cx* p)
 {
+#ifdef OVG_FONT_H
 	if (p) {
 		p->references--;
 		if (p->references > 0) return;
 		if (p->ac)delete p->ac;
 		delete p;
 	}
+#endif
 }
 font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const char* styles) {
 	if (!ctx || !familys || !*familys)return nullptr;
 	font_familys_cx* p = 0;
+#ifdef OVG_FONT_H
 	auto ac = (usp_ac_cx*)ctx->ac;
 	do {
 		std::vector<std::string> v, st;
@@ -5554,6 +5568,7 @@ font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const c
 		p->count = p->v.size();
 		p->ac = ac;
 	} while (0);
+#endif
 	return p;
 }
 void delete_font_family(font_familys_t* p) {
@@ -5563,6 +5578,7 @@ void delete_font_family(font_familys_t* p) {
 	}
 }
 
+#ifdef OVG_FONT_H
 void submit_vector_cmd(ovg_canvas_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd)
 {
 	ovg_path_t* path = cb->new_path(cb->ac);
@@ -5598,6 +5614,7 @@ void submit_vector_cmd_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd
 
 	cb->restore(rvg);
 }
+#if 0
 // 公共代码，两套都能用
 void submit_raster_glyphs(
 	const text_draw_list& list,
@@ -5688,6 +5705,7 @@ void submit_vector_glyphs_ctx_mode(
 		cb->restore(rvg);
 	}
 }
+#endif
 // ovg_text.cpp 
 void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
 {
@@ -5981,8 +5999,8 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	auto ctxp = (ovg_ctx_cx*)ctx;
 	auto ocbp = (ovg_canvas_cx*)ocb;
 	if (run->glyph_count() == 0) return;
-	auto ts = &run->st;
-	auto box = &run->box;
+	auto ts = &run->_st;
+	auto box = &run->_box;
 	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
 	// ── 2. 布局计算 ──
 	const auto& extents = run->extents();
@@ -5994,8 +6012,8 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	float align_x = ts->align.x;  // 0=左, 0.5=中, 1=右
 	float align_y = ts->align.y;
 
-	float offset_x = run->tt.pos.x + (box_w - extents.width) * align_x;
-	float offset_y = run->tt.pos.y + (box_h - extents.height) * align_y;
+	float offset_x = run->_tt.pos.x + (box_w - extents.width) * align_x;
+	float offset_y = run->_tt.pos.y + (box_h - extents.height) * align_y;
 
 	// 基线位置 = offset_y + ascender
 	hb_font_extents_t fextents = {};
@@ -6081,3 +6099,20 @@ void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, 
 	if (ptr && run->glyph_count() == 0) return;
 	vg_add_text_run(ocb, ctx, rvg, run);
 }
+#else
+
+void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
+{}
+void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
+{}
+
+void ovg_ctx_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
+{}
+void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
+{}
+void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
+{
+	if (!p || !p->text || !ts || !ts->family || (!ocb && !ctx)) return;
+
+}
+#endif
