@@ -226,9 +226,10 @@ struct text_segment_t {
 };
 
 struct shaped_segment_t {
+	std::vector<vg_glyph_info_t> glyphs;  // 相对 x=0 的局部坐标
 	int width_px;								// 像素宽度 
 	int dir;
-	std::vector<vg_glyph_info_t> glyphs;  // 相对 x=0 的局部坐标
+	bool is_line_break = false;
 };
 struct layout_options {
 	std::string _locale;				// 中文传"zh_CN"，英文传 "en 
@@ -245,7 +246,7 @@ public:
 private:
 	const font_familys_t* _ffs = nullptr;
 	int                   _fontsize = 16;
-	std::vector<uint16_t> _utf16;
+	std::u16string _utf16;
 
 	// 当前 shaping 结果
 	hb_buffer_t* _buf = nullptr;

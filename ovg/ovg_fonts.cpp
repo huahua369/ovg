@@ -2191,7 +2191,7 @@ void vg_text_run_cx::shape() {
 	clear_glyphs();
 	if (!_ffs || _ffs->count < 1 || _utf16.empty()) return;
 
-	uint16_t* p = _utf16.data();
+	uint16_t* p = (uint16_t*)_utf16.data();
 	uint16_t* end = p + _utf16.size();
 	size_t len = _utf16.size();
 	auto icu = get_icu(U_ICU_VERSION_MAJOR_NUM);
@@ -2234,7 +2234,7 @@ void vg_text_run_cx::shape() {
 	}
 
 	std::vector<int32_t> breaks;
-	if (_layout.max_width > 0)
+	if (_box.word_wrap >= 0)
 	{
 		if (!_line_brk) {
 			_line_brk = icu->_ubrk_open(
@@ -2301,9 +2301,10 @@ void vg_text_run_cx::shape() {
 		UBiDiDirection dir;
 		hb_font_t* font;
 		int            fontsize;
+		char16_t* str;
 	};
 	std::vector<subseg_t> subsegs;
-	uint16_t* base = _utf16.data();
+	uint16_t* base = (uint16_t*)_utf16.data();
 
 	_indexs.clear();
 	_indexs.reserve(512);
@@ -2333,8 +2334,9 @@ void vg_text_run_cx::shape() {
 				if (nff->font != font) break;
 				sub_end = nlook;
 			}
-
-			subsegs.push_back({ (int32_t)(sub_start - base), (int32_t)(sub_end - sub_start), (UBiDiDirection)seg.z, font, scale });
+			auto first = (sub_start - base);
+			char16_t* str = _utf16.data() + first;
+			subsegs.push_back({ (int32_t)first, (int32_t)(sub_end - sub_start), (UBiDiDirection)seg.z, font, scale,str });
 
 			_indexs.push_back({ cidx++ ,seg.z });
 			p = sub_end;
@@ -2362,6 +2364,10 @@ void vg_text_run_cx::shape() {
 			vmsize.push_back(out.width_px);
 			tdir = out.dir;
 		}
+		char16_t* ch = (char16_t*)base + ss.start;
+		if (*ch == '\n') {
+			out.is_line_break = true;
+		}
 		for (const auto& g : out.glyphs) {
 			_glyphs.push_back(g);
 		}
@@ -2385,7 +2391,7 @@ void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_fon
 	hb_buffer_reset(buf);
 
 	hb_buffer_set_direction(buf, dir == UBIDI_RTL ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
-	hb_buffer_add_utf16(buf, _utf16.data() + u16_start, u16_len, 0, -1);
+	hb_buffer_add_utf16(buf, (uint16_t*)_utf16.data() + u16_start, u16_len, 0, -1);
 	hb_buffer_guess_segment_properties(buf);
 	hb_feature_t features[] = { {HB_TAG('k','e','r','n'), 0, 0, ~0u} };
 	hb_shape(font, buf, features, 1);
@@ -2418,31 +2424,37 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 	float pen_x = origin_x;
 	float pen_y = origin_y;
 	list.fontsize = _fontsize;
-	for (const auto& g : _glyphs) {
-		if (!g.cache_entry) { pen_x += g.x_advance; continue; }
+	for (auto& seg : _shaped) {
+		for (const auto& g : seg.glyphs) {
+			if (!g.cache_entry || !g.glyph_id) { pen_x += g.x_advance; continue; }
 
-		auto* e = g.cache_entry;
-		float x = pen_x + g.x_offset;
-		float y = pen_y + g.y_offset;
-		if (mode == VECTOR_ONLY || !e->atlas_img) {
-			if (e->path_data) {
-				list.push_vector(e, x, y, color);
+			auto* e = g.cache_entry;
+			float x = pen_x + g.x_offset;
+			float y = pen_y + g.y_offset;
+			if (mode == VECTOR_ONLY || !e->atlas_img) {
+				if (e->path_data) {
+					list.push_vector(e, x, y, color);
+				}
 			}
+			else if (e->atlas_img) {
+				float w = (float)e->uv_rect.z;
+				float h = (float)e->uv_rect.w;
+				float atlas_w = (float)e->atlas_img->width;
+				float atlas_h = (float)e->atlas_img->height;
+				glm::vec4 uv(
+					(float)e->uv_rect.x / atlas_w,
+					(float)e->uv_rect.y / atlas_h,
+					(float)(e->uv_rect.x + e->uv_rect.z) / atlas_w,
+					(float)(e->uv_rect.y + e->uv_rect.w) / atlas_h
+				);
+				list.push_raster(e, x, y, w, h, uv, color);
+			}
+			pen_x += g.x_advance;
 		}
-		else if (e->atlas_img) {
-			float w = (float)e->uv_rect.z;
-			float h = (float)e->uv_rect.w;
-			float atlas_w = (float)e->atlas_img->width;
-			float atlas_h = (float)e->atlas_img->height;
-			glm::vec4 uv(
-				(float)e->uv_rect.x / atlas_w,
-				(float)e->uv_rect.y / atlas_h,
-				(float)(e->uv_rect.x + e->uv_rect.z) / atlas_w,
-				(float)(e->uv_rect.y + e->uv_rect.w) / atlas_h
-			);
-			list.push_raster(e, x, y, w, h, uv, color);
+		if (seg.is_line_break)
+		{
+			pen_y += _st.lineheight; pen_x = origin_x;
 		}
-		pen_x += g.x_advance;
 	}
 	list.extents = _extents;
 }
@@ -2462,6 +2474,19 @@ vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts
 		run->_box = *box;
 	run->_tt = *p;
 	run->set_font_families(ts->family, fontsize);
+	int lh = run->_st.lineheight;
+	if (!lh)
+	{
+		hb_font_extents_t extents;
+		for (int i = 0; i < ts->family->count; i++) {
+			auto font = ts->family->familys[i]->font;
+			hb_font_set_scale(font, fontsize, fontsize);
+			hb_font_get_extents_for_direction(font, HB_DIRECTION_LTR, &extents);
+			lh = std::max(lh, extents.ascender - extents.descender + extents.line_gap);
+			break;
+		}
+		run->_st.lineheight = lh;
+	}
 	run->set_text(p->text, p->text_len);
 	run->shape();  // 内部按 fallback 切 run，lookup 缓存
 
@@ -2515,7 +2540,7 @@ void text_run_dst_cx::set_layout_mode(const text_style_t* ts, const text_box_rt*
 		_layout._locale.clear();
 	}
 	_layout.para_dir = para_dir;
-	 
+
 	if (_st.family && _st.family->count > 0 && _st.family->familys[0]) {
 		auto font = _st.family->familys[0]->font;
 		if (font) {
