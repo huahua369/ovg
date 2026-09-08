@@ -2187,6 +2187,17 @@ void reverse1(std::vector<glm::ivec2>& v)
 		std::reverse(v.begin() + start, v.begin() + end);
 	}
 }
+bool find_br(const char16_t* p, int n)
+{
+	if (!p || !p[0] || n < 1)return false;
+	for (int i = 0; i < n; i++) {
+		if (p[i] == '\n')
+		{
+			return true;
+		}
+	}
+	return false;
+}
 void vg_text_run_cx::shape() {
 	clear_glyphs();
 	if (!_ffs || _ffs->count < 1 || _utf16.empty()) return;
@@ -2233,10 +2244,14 @@ void vg_text_run_cx::shape() {
 		visual_runs.push_back(glm::uvec3(0, len, (UBiDiDirection)_layout.para_dir));
 	}
 
-	std::vector<int32_t> breaks;
+	std::vector<int> breaks;
 	if (_box.word_wrap >= 0)
 	{
+		if (_line_brk && current_word_wrap != _box.word_wrap) {
+			icu->_ubrk_close(_line_brk); _line_brk = nullptr;
+		}
 		if (!_line_brk) {
+			current_word_wrap = _box.word_wrap;
 			_line_brk = icu->_ubrk_open(
 				(UBreakIteratorType)_box.word_wrap,
 				_layout._locale.size() ? _layout._locale.c_str() : nullptr,
@@ -2254,11 +2269,16 @@ void vg_text_run_cx::shape() {
 		}
 		else {
 			// 收集断点（UTF-16 索引）
-			breaks.push_back(0);
+			breaks.push_back({});
 			int32_t pos = icu->_ubrk_first(_line_brk);
 			while (pos != UBRK_DONE) {
 				if (pos > 0 && pos < (int32_t)len)
+				{
+					auto rs = icu->_ubrk_getRuleStatus(_line_brk);
+					bool br = rs >= UBRK_LINE_HARD;
+
 					breaks.push_back(pos);
+				}
 				pos = icu->_ubrk_next(_line_brk);
 			}
 			breaks.push_back((int32_t)len);
@@ -2281,8 +2301,8 @@ void vg_text_run_cx::shape() {
 			UBiDiDirection dir = (UBiDiDirection)run.z;
 			// 找和这个 run 重叠的断点区间
 			for (size_t k = 0; k < breaks.size() - 1; ++k) {
-				int32_t b0 = breaks[k];
-				int32_t b1 = breaks[k + 1];
+				auto b0 = breaks[k];
+				auto b1 = breaks[k + 1];
 				int32_t seg_start = std::max(b0, run_start);
 				int32_t seg_end = std::min(b1, run_end);
 				if (seg_start < seg_end) {
@@ -2365,9 +2385,10 @@ void vg_text_run_cx::shape() {
 			tdir = out.dir;
 		}
 		char16_t* ch = (char16_t*)base + ss.start;
-		if (*ch == '\n') {
-			out.is_line_break = true;
-		}
+		auto yb = find_br(ch, ss.len);
+		if (yb)
+			yb = yb;
+		out.new_line = yb;
 		for (const auto& g : out.glyphs) {
 			_glyphs.push_back(g);
 		}
@@ -2451,7 +2472,7 @@ void vg_text_run_cx::populate_draw_list(text_draw_list& list, float origin_x, fl
 			}
 			pen_x += g.x_advance;
 		}
-		if (seg.is_line_break)
+		if (seg.new_line)
 		{
 			pen_y += _st.lineheight; pen_x = origin_x;
 		}
@@ -2644,10 +2665,14 @@ void text_run_dst_cx::text_shape(text_st_t* pt)
 		visual_runs.push_back(glm::uvec3(0, len, (UBiDiDirection)_layout.para_dir));
 	}
 
-	std::vector<int32_t> breaks;
+	std::vector<int> breaks;
 	if (_layout.max_width > 0)
 	{
+		if (_line_brk && current_word_wrap != _box.word_wrap) {
+			icu->_ubrk_close(_line_brk); _line_brk = nullptr;
+		}
 		if (!_line_brk) {
+			current_word_wrap = _box.word_wrap;
 			_line_brk = icu->_ubrk_open(
 				(UBreakIteratorType)_box.word_wrap,
 				_layout._locale.size() ? _layout._locale.c_str() : nullptr,
@@ -2665,11 +2690,15 @@ void text_run_dst_cx::text_shape(text_st_t* pt)
 		}
 		else {
 			// 收集断点（UTF-16 索引）
-			breaks.push_back(0);
+			breaks.push_back({});
 			int32_t pos = icu->_ubrk_first(_line_brk);
 			while (pos != UBRK_DONE) {
 				if (pos > 0 && pos < (int32_t)len)
+				{
+					auto rs = icu->_ubrk_getRuleStatus(_line_brk);
+					bool br = rs >= UBRK_LINE_HARD;
 					breaks.push_back(pos);
+				}
 				pos = icu->_ubrk_next(_line_brk);
 			}
 			breaks.push_back((int32_t)len);
@@ -2689,8 +2718,8 @@ void text_run_dst_cx::text_shape(text_st_t* pt)
 			UBiDiDirection dir = (UBiDiDirection)run.z;
 			// 找和这个 run 重叠的断点区间
 			for (size_t k = 0; k < breaks.size() - 1; ++k) {
-				int32_t b0 = breaks[k];
-				int32_t b1 = breaks[k + 1];
+				auto b0 = breaks[k];
+				auto b1 = breaks[k + 1];
 				int32_t seg_start = std::max(b0, run_start);
 				int32_t seg_end = std::min(b1, run_end);
 				if (seg_start < seg_end) {
@@ -2770,6 +2799,9 @@ void text_run_dst_cx::text_shape(text_st_t* pt)
 			vmsize.push_back(out.width_px);
 			tdir = out.dir;
 		}
+		char16_t* ch = (char16_t*)base + ss.start;
+		auto yb = find_br(ch, ss.len);
+		out.new_line = yb;
 		for (const auto& g : out.glyphs) {
 			_glyphs.push_back(g);
 		}

@@ -229,7 +229,7 @@ struct shaped_segment_t {
 	std::vector<vg_glyph_info_t> glyphs;  // 相对 x=0 的局部坐标
 	int width_px;								// 像素宽度 
 	int dir;
-	bool is_line_break = false;
+	bool new_line = false;
 };
 struct layout_options {
 	std::string _locale;				// 中文传"zh_CN"，英文传 "en 
@@ -261,7 +261,7 @@ private:
 
 	UBiDi* _bidi = 0;
 	UBreakIterator* _line_brk = 0;
-
+	int current_word_wrap = 0;
 	layout_options _layout = {};
 	// 布局用
 	std::vector<shaped_segment_t> _shaped;
@@ -310,6 +310,7 @@ public:
 	hb_buffer_t* _buf = nullptr;
 	UBiDi* _bidi = 0;
 	UBreakIterator* _line_brk = 0;
+	int current_word_wrap = 0;
 	font_cache_cx* _cache = nullptr;
 	std::vector<vg_glyph_info_t> _glyphs;
 	std::vector<glm::uvec3> visual_runs;
