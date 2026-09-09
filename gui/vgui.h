@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 /*
 struct mouse_move_et;
 struct mouse_button_et;
@@ -12,9 +13,8 @@ struct finger_et;
 struct ole_drop_et;
 */
 
-#ifndef KM_CTRL
-
-enum class event_type2 :uint32_t {
+// 控件事件类型
+enum class event_type_e :uint32_t {
 	none = 0,
 	mouse_move,		// 鼠标移动，
 	mouse_down,		// 鼠标按下
@@ -72,11 +72,12 @@ struct mouse_wheel_et	// 滚轮消息
 	int x, y;
 	uint8_t which;
 };
+#ifndef KM_CTRL
 #define KM_CTRL 1
 #define KM_SHIFT 2
 #define KM_ALT 4
 #define KM_GUI 8
-
+#endif
 struct keyboard_et
 {
 	uint16_t scancode;  // SDL physical key code - see ::SDL_Scancode for details 
@@ -105,18 +106,7 @@ struct finger_et {
 	int tid, touchId;
 	float x, y, pressure; // 坐标、压力
 	int t;	// FINGERDOWN=1 UP=2 MOTION=3 
-
 };
-// 多手势
-struct mgesture_et {
-	int touchId;
-	float dTheta;
-	float dDist;
-	float x;
-	float y;
-	uint16_t numFingers;
-};
-
 // 接收ole拖动，结束数据count大于0
 struct ole_drop_et
 {
@@ -128,8 +118,20 @@ struct ole_drop_et
 	int* has;			// 是否接收, 0不接收，1接收
 
 };
-class form_x;
-struct et_un_t
+// 窗口设备事件
+enum class dev_event_type_e :uint32_t {
+	none = 0,
+	mouse_move_e,
+	mouse_button_e,
+	mouse_wheel_e,
+	keyboard_e,
+	text_editing_e,
+	text_input_e,
+	finger_e,
+	ole_drop_e,
+	max_det
+};
+struct dev_event_t
 {
 	union
 	{
@@ -141,37 +143,10 @@ struct et_un_t
 		struct text_input_et* t;
 		struct finger_et* f;
 		struct ole_drop_et* d;
-	}v;
-	form_x* form = 0;
+	}v = {};
+	dev_event_type_e type = dev_event_type_e::none;
 	uint8_t ret = 0;
 };
-enum class devent_type_e :uint32_t {
-	none = 0,
-	mouse_move_e,
-	mouse_button_e,
-	mouse_wheel_e,
-	keyboard_e,
-	text_editing_e,
-	text_input_e,
-	finger_e,
-	mgesture_e,
-	ole_drop_e,
-	max_det
-};
-#else
-struct et_un_t;
-#endif
-
-
-#ifndef INPUT_STATE_TH
-#define INPUT_STATE_TH
-struct input_state_t
-{
-	void* ptr = 0;
-	std::function<void(uint32_t type, et_un_t* e, void* ud)> cb = nullptr;
-	int x, y, w, h;
-};
-#endif
 
 enum class cursor_st :uint32_t
 {
@@ -183,7 +158,7 @@ enum class cursor_st :uint32_t
 	cursor_hand,
 };
 
-struct mouse_state_t
+struct gui_ctx_t
 {
 	float       DeltaTime;
 	glm::vec2   MouseDelta;
@@ -196,4 +171,51 @@ struct mouse_state_t
 	bool        KeyAlt;
 	bool        KeySuper;
 	bool		WantCaptureMouse;
+};
+// 发起拖放文件
+void do_dragdrop_file(const char** fn, int count);
+// 发起拖放文本
+void do_dragdrop_str(const char* str, int count);
+
+// 动画
+enum class interpolation_e:uint8_t
+{
+	linear = 0,
+	step = 1,
+	cubicspline = 2
+};
+enum class easing_e :uint8_t
+{
+	linear = 0,
+	ease_in_quad = 1,
+	ease_out_quad = 2,
+	ease_in_out_quad = 3,
+	ease_in_cubic = 4,
+	ease_out_cubic = 5,
+	step = 6
+};
+struct sampler_t
+{
+	float *input;		// 时间点
+	float *output;		// 采样值
+	size_t count;		// 采样点数量
+	easing_e easing;	// 0=linear, 1=ease_in_quad, 2=ease_out_quad, 3=ease_in_out_quad, 4=ease_in_cubic, 5=ease_out_cubic, 6=step
+	interpolation_e interpolation;	// 0=linear, 1=step, 2=cubicspline
+	uint8_t path;		// 不保存
+	uint8_t dim;		// 不保存，采样维度，1=标量，2=向量2，3=向量3，4=向量4
+};
+struct channel_t
+{
+	sampler_t* sampler;	// 采样数据
+	int path;			// 类型 property
+	int target_node;	// 节点索引 target
+};
+struct animation_t
+{
+	std::string name;
+	std::vector<channel_t> channels;
+	std::vector<sampler_t> samplers;
+	int loop = 0;	// 0=none, 1=loop, 2=pingpong
+	float start_time = 0.0f;
+	float end_time = 0.0f;
 };

@@ -19,6 +19,9 @@
 
 using namespace std;
 #include "ovg_fonts.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -737,6 +740,13 @@ int main()
 		run_dst->text_shape(&text4);
 	}
 	bool testvg = 0;
+	ovg_image_data img[1] = {};
+	int channels = 0;
+	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
+	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
+
+	SDL_ShowWindow(g->window);
+
 	while (running) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
@@ -801,13 +811,32 @@ int main()
 			text4.text = (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
 			text4.pos.y += 260;
 			cb->add_text(vg, &text4, &style4, nullptr);
-
+			ovg_image_r rimg = {};
+			rimg.img = img;
+			rimg.dst = { 108,108,img->width * 2.8,img->height * 1.5 };
+			rimg.rc = { 0,0,img->width,img->height };
+			rimg.sliced = { 4,4,4,4 };
+			rimg.color = -1;
+			cb->add_image(vg, &rimg);
+			if (img->valid)
+			{
+				vg_image_desc_t desc = {};
+				desc.width = img->width;
+				desc.height = img->height;
+				desc.format = VG_FORMAT_RGBA8;
+				desc.stride = desc.width * sizeof(int);
+				desc.pixels = img->data;
+				desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
+				desc.is_copy = true;
+				img->valid = false;
+				cb->image_update(vg, img, &desc);
+			}
 			int ms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
 			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(canvg) };
 			rtc.begin();
-			ovg_draw_data(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
+			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);

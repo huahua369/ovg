@@ -10,9 +10,10 @@ find_package(Fontconfig REQUIRED)
 set(SRC
     main.cpp
     ${OVG_SOURCES}
+    ../gui/anim.cpp
 )
 set(SRC_TEXT
-    ../ovg/ovg_fonts.cpp  
+    ../ovg/ovg_fonts.cpp 
 )
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
