@@ -794,7 +794,9 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
-			text4.text = (char*)u8"-+abg➗🍕☂️灰度-亚像素badfdf球菌\n回馈宇腾中天置地古城一\n直在画材别想吸铝";
+			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起سأصبح غنياً";
+
+
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 

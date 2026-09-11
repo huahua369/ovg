@@ -1,6 +1,7 @@
 #pragma once
 /*
 动画
+	结构：json+数据
 */
 #include <string>
 #include <vector>
@@ -48,7 +49,25 @@ struct animation_t
 	std::vector<sampler_t> samplers;
 	int loop = 0;	// 0=none, 1=loop, 2=pingpong
 	float start_time = 0.0;	// 开始时间
-	float duration = 0.0f;	// 时长
+	float end_time = 0.0;	// 结束时间 
+};
+class anim_ctx
+{
+public:
+	std::unordered_map<std::string, animation_t*> as;
+	std::vector<float> data_input;		// 时间点
+	std::vector<float> data_output;		// 采样值
+public:
+	anim_ctx();
+	~anim_ctx();
+	// 清空所有数据
+	void clear();
+	// 增加一个空动画
+	animation_t* add_anim(const std::string& name);
+	animation_t* find_anim(const std::string& name);
+	void load(const std::string& file);
+	void save(const std::string& file);
+private:
 
 };
 

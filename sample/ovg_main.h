@@ -7,12 +7,12 @@
 
 // TODO: 在此处引用程序需要的其他标头。
 
-#ifndef GLM_FORCE_XYZW_ONLY 
-#define GLM_ENABLE_EXPERIMENTAL
 //#define GLM_FORCE_ALIGNED
 //#define GLM_FORCE_INTRINSICS
 // 定义glm启用simd
 //#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
+#ifndef GLM_FORCE_XYZW_ONLY 
+#define GLM_ENABLE_EXPERIMENTAL
 #define GLM_FORCE_XYZW_ONLY
 #include <glm/glm.hpp>  
 

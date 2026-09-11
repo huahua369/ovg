@@ -310,7 +310,7 @@ namespace hz
 
 	std::vector<std::string> browse_openfile(const std::string& title, const std::string& strCurrentPath, std::string filter, void* hWnd, bool multi_select);
 	// 打开资源管理器
-	bool open_folder_select_file(std::string n);
+	bool open_folder_select_file(const std::string& n);
 
 
 	std::string gbk_to_u8(const std::string& str);

@@ -43,8 +43,8 @@
 #include <sys/timeb.h>
 #include <direct.h>
 #include <io.h>
-#define mkdir(a, b) _mkdir(a)
-#define mkdirw(a, b) _wmkdir(a)
+#define mkdir(a,b) _mkdir(a)
+#define mkdirw(a,b) _wmkdir(a)
 #else
 #include <sys/stat.h>
 #include <sys/inotify.h>
@@ -903,7 +903,7 @@ namespace hz
 				continue;
 			}
 #ifdef _WIN32
-			mkdir(file_name, mod);
+			auto r = mkdir(file_name, mod);
 #else
 #ifndef __ANDROID__
 			mkdir(file_name, mod);
@@ -943,7 +943,7 @@ namespace hz
 				continue;
 			}
 #ifdef _WIN32
-			mkdirw(file_name, mod);
+			auto r = mkdirw(file_name, mod);
 #else
 #ifndef __ANDROID__
 			mkdir(file_name, mod);
@@ -1096,7 +1096,7 @@ namespace hz
 			if (path == last)break;
 			last = path;
 		}
-
+		int mhr = 0;
 		for (auto it = vs.rbegin(); it != vs.rend(); it++)
 		{
 			auto c = it->c_str();
@@ -1105,7 +1105,7 @@ namespace hz
 				continue;
 			}
 #ifdef _WIN32
-			mkdir(c);
+			mhr = mkdir(c, 0);
 #else
 			unsigned int mod = S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH;
 			mkdir(c, mod);
@@ -2070,7 +2070,7 @@ namespace hz
 
 
 #ifdef _WIN32
-	BOOL OpenFolderAndSelectFile(LPSTR lpszFilePath)
+	BOOL OpenFolderAndSelectFile0(LPSTR lpszFilePath)
 	{
 		//
 		// GetFolder
@@ -2132,7 +2132,7 @@ namespace hz
 			}
 			LPCITEMIDLIST pidlFile = pidl;
 
-			CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+			auto hri = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 			hr = SHOpenFolderAndSelectItems(pidlFolder, 1, &pidlFile, 0);
 
 			pDesktopFolder->Release();
@@ -2144,11 +2144,28 @@ namespace hz
 		}
 		return FALSE;
 	}
+	BOOL OpenFolderAndSelectFile(LPCWSTR pszFilePath)
+	{
+		if (!pszFilePath) return FALSE;
+
+		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+		LPITEMIDLIST pidl = ILCreateFromPathW(pszFilePath);
+		if (!pidl) return FALSE;
+
+		HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+
+		ILFree(pidl);
+		CoUninitialize();
+		return SUCCEEDED(hr);
+	}
 #endif
-	bool open_folder_select_file(std::string n)
+	bool open_folder_select_file(const std::string &n)
 	{
 #ifdef _WIN32
-		return n.size() ? OpenFolderAndSelectFile((LPSTR)n.c_str()) : false;
+		auto w = md::u8_w(n);
+ 
+		return n.size() ? OpenFolderAndSelectFile(w.c_str()) : false;
 #endif
 		return false;
 	}

@@ -18,6 +18,7 @@
     {
       "name": "glm"
     },
+    { "name": "nlohmann-json" },
     {
       "name": "glslang"
     },

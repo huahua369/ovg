@@ -18,8 +18,15 @@
 #include <glm/gtx/euler_angles.hpp>
 #endif
 
+#include <nlohmann/json.hpp>
+#if defined( NLOHMANN_JSON_HPP) || defined(INCLUDE_NLOHMANN_JSON_HPP_)
+using njson = nlohmann::json;			// key有序
+using njson0 = nlohmann::ordered_json;	// key无序
+#define NJSON_H
+#endif
 
 #include "anim.h"
+#include <mapView.h>
 
 float apply_easing(easing_e easing, float t) {
 	switch (easing) {
@@ -292,12 +299,12 @@ void update_animation(animation_t* anim, float deltaTime, float* dst, int dst_co
 	if (!anim || !dst || dst_count <= 0)
 		return;
 	auto sampler = anim->samplers.data();
-	int inc = dst_count;
+	int inc = dst_count; float duration = anim->end_time - anim->start_time;
 	for (size_t i = 0; i < anim->channels.size(); i++)
 	{
 		auto& it = anim->channels[i];
 		auto& s = sampler[it.sampler];
-		auto v = interpolator_ns::interpolate(&s, deltaTime, anim->start_time, anim->duration, it.dim, it.type, anim->loop, dst);
+		auto v = interpolator_ns::interpolate(&s, deltaTime, anim->start_time, duration, it.dim, it.type, anim->loop, dst);
 		dst += it.dim;
 		inc -= it.dim;
 		if (inc <= 0)
@@ -305,4 +312,50 @@ void update_animation(animation_t* anim, float deltaTime, float* dst, int dst_co
 			dst = 0;// 超出输出缓冲区了
 		}
 	}
+}
+
+
+anim_ctx::anim_ctx()
+{}
+
+anim_ctx::~anim_ctx()
+{}
+
+void anim_ctx::clear()
+{
+	for (auto& pair : as)
+	{
+		delete pair.second;
+	}
+	as.clear();
+	data_input.clear();
+	data_output.clear();
+}
+
+animation_t* anim_ctx::add_anim(const std::string& name)
+{
+	if (name.empty() || as.find(name) != as.end())
+		return nullptr;
+	auto p = new animation_t();
+	as[name] = p;
+	return p;
+}
+
+animation_t* anim_ctx::find_anim(const std::string& name)
+{
+	auto it = as.find(name);
+	if (it != as.end())
+		return it->second;
+	return nullptr;
+}
+
+void anim_ctx::load(const std::string& file)
+{
+	hz::mfile_t mf;
+}
+
+void anim_ctx::save(const std::string& file)
+{
+	if (file.empty() || !file[0] || data_input.empty() || data_output.empty() || as.empty())
+		return;
 }

@@ -10,7 +10,9 @@ find_package(Fontconfig REQUIRED)
 set(SRC
     main.cpp
     ${OVG_SOURCES}
+    mapView.cpp
     ../gui/anim.cpp
+    ../gui/win_core.cpp
 )
 set(SRC_TEXT
     ../ovg/ovg_fonts.cpp 
