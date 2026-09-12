@@ -197,6 +197,39 @@ bool wMessageHook(void* userdata, MSG* msg) {
 }
 #endif
 
+
+//判断“点是否在某个 popup 内”
+bool point_in_popup(os_window* popup, SDL_Window* target_win, const glm::ivec2& pos) {
+	if (!popup || !popup->window) return false;
+	if (popup->window != target_win) return false;
+	int w, h;
+	SDL_GetWindowSize(popup->window, &w, &h);
+	return pos.x >= 0 && pos.x < w && pos.y >= 0 && pos.y < h;
+}
+bool is_child_popup(os_window* child, os_window* ancestor) {
+	while (child) {
+		if (child == ancestor) return true;
+		child = child->parent;
+	}
+	return false;
+}
+void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
+	if (!node) return;
+
+	if (node->type == WindowType::PopupMenu) {
+		out.push_back(node);
+	}
+
+	for (auto* child : node->children) {
+		collect_popups_recursive(child, out);
+	}
+}
+
+
+
+os_window::~os_window() {
+	window = 0;
+}
 WindowMgr::WindowMgr()
 {
 	SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, false);
@@ -211,6 +244,8 @@ WindowMgr::WindowMgr()
 	SDL_SetHintWithPriority(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1", SDL_HINT_OVERRIDE);
 	SDL_SetHintWithPriority(SDL_HINT_TOUCH_MOUSE_EVENTS, "1", SDL_HINT_OVERRIDE);
 #endif
+
+	UpdateMonitors();
 }
 WindowMgr::~WindowMgr() { shutdown(); }
 
@@ -283,9 +318,7 @@ void WindowMgr::kncdown()
 	if (nc_down)
 	{
 		for (auto& it : windows_) {
-			if (it->parent_id) {
-				auto parent = SDL_GetWindowParent(it->window);
-				assert(parent);
+			if (it->parent) {
 				pce::show_window(it->window, false);
 			}
 		}
@@ -332,7 +365,7 @@ os_window* WindowMgr::create2(const char* title, int x, int y, int w, int h, uin
 	if (iflags & ef_tooltip || iflags & ef_popup)
 	{
 		SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-		handle = SDL_CreatePopupWindow(parent ? parent->window : nullptr, x, y, w, h, flags | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+		handle = SDL_CreatePopupWindow(parent ? parent->window : nullptr, x, y, w, h, flags | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_NOT_FOCUSABLE);
 		SDL_SetWindowAlwaysOnTop(handle, true);
 	}
 	else {
@@ -344,12 +377,19 @@ os_window* WindowMgr::create2(const char* title, int x, int y, int w, int h, uin
 	{
 		auto win = std::make_unique<os_window>();
 		win->window = handle;
-		pce::set_property(handle, "osw.ptr", win.get());
-		win->id = SDL_GetWindowID(handle);
-		win->is_popup = (iflags & ef_tooltip || iflags & ef_popup);
-		win->parent_id = parent ? parent->id : 0;
-		SDL_ClaimWindowForGPUDevice(device, handle);
 		p = win.get();
+		pce::set_property(handle, "osw.ptr", p);
+		win->id = SDL_GetWindowID(handle);
+		if (iflags & ef_popup)
+			win->type = WindowType::PopupMenu;
+		if (iflags & ef_tooltip)
+			win->type = WindowType::Tooltip;
+
+		if (parent) {
+			parent->children.push_back(p);
+			win->parent = parent;
+		}
+		SDL_ClaimWindowForGPUDevice(device, handle);
 		windows_.push_back(std::move(win));
 	}
 	return p;
@@ -364,9 +404,10 @@ os_window* WindowMgr::find(uint32_t id) {
 
 void WindowMgr::destroy(uint32_t id) {
 	for (auto it = windows_.begin(); it != windows_.end(); ++it) {
-		if ((*it)->id == id && (*it)->parent_id == 0) {
-			SDL_ReleaseWindowFromGPUDevice(device, (*it)->window);
-			SDL_DestroyWindow((*it)->window);
+		if ((*it)->id == id) {
+			SDL_ReleaseWindowFromGPUDevice(device, it->get()->window);
+			if ((*it)->parent == 0)
+				SDL_DestroyWindow(it->get()->window);
 			windows_.erase(it);
 			return;
 		}
@@ -378,7 +419,8 @@ void WindowMgr::shutdown() {
 		SDL_WaitForGPUIdle(device);
 	for (auto& w : windows_) {
 		SDL_ReleaseWindowFromGPUDevice(device, w->window);
-		SDL_DestroyWindow(w->window);
+		if (!w->parent)
+			SDL_DestroyWindow(w->window);
 	}
 	windows_.clear();
 	if (device) {
@@ -390,3 +432,69 @@ void WindowMgr::shutdown() {
 size_t WindowMgr::window_count() const { return windows_.size(); }
 
 std::vector<std::unique_ptr<os_window>>& WindowMgr::windows() { return windows_; }
+
+void WindowMgr::UpdateMonitors()
+{
+	WantUpdateMonitors = false;
+	int display_count;
+	SDL_DisplayID* displays = SDL_GetDisplays(&display_count);
+	for (int n = 0; n < display_count; n++)
+	{
+		// Warning: the validity of monitor DPI information on Windows depends on the application DPI awareness settings, which generally needs to be set in the manifest or at runtime.
+		SDL_DisplayID display_id = displays[n];
+		PlatformMonitor monitor = {};
+		SDL_Rect r;
+		SDL_GetDisplayBounds(display_id, &r);
+		monitor.MainPos = monitor.WorkPos = glm::vec2((float)r.x, (float)r.y);
+		monitor.MainSize = monitor.WorkSize = glm::vec2((float)r.w, (float)r.h);
+		if (SDL_GetDisplayUsableBounds(display_id, &r) && r.w > 0 && r.h > 0)
+		{
+			monitor.WorkPos = glm::vec2((float)r.x, (float)r.y);
+			monitor.WorkSize = glm::vec2((float)r.w, (float)r.h);
+		}
+		monitor.DpiScale = SDL_GetDisplayContentScale(display_id); // See https://wiki.libsdl.org/SDL3/README-highdpi for details.
+		monitor.PlatformHandle = (void*)(intptr_t)n;
+		if (monitor.DpiScale <= 0.0f)
+			continue; // Some accessibility applications are declaring virtual monitors with a DPI of 0, see #7902.
+		monitors.push_back(monitor);
+	}
+	SDL_free(displays);
+}
+void WindowMgr::process_event(const SDL_Event& e)
+{
+
+}
+int WindowMgr::get_event()
+{
+	int ts = 0;
+	SDL_Event e = {};
+	while (SDL_PollEvent(&e) != 0)
+	{
+		if (e.type == SDL_EVENT_QUIT) {
+			ts = -1; break;
+		}
+		if (e.type == SDL_EVENT_KEY_DOWN/* && e.key.repeat*/)
+		{
+			SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, 0);
+			ts = 2;
+		}
+		if (e.type == SDL_EVENT_KEY_UP) {
+			SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, 1);
+		}
+		switch (e.type)
+		{
+		case SDL_EVENT_DISPLAY_ORIENTATION:
+		case SDL_EVENT_DISPLAY_ADDED:
+		case SDL_EVENT_DISPLAY_REMOVED:
+		case SDL_EVENT_DISPLAY_MOVED:
+		case SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED:
+		{
+			WantUpdateMonitors = true;
+			UpdateMonitors();
+			break;
+		}
+		}
+		process_event(e);
+	}
+	return ts;
+}

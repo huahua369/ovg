@@ -36,18 +36,6 @@ struct vg_fbo_t {
 	bool hasStencil;// 是否有模板附件
 };
 
-
-// 几何信息结构体
-struct gem_info_t0 {
-	uint32_t topology : 5;   // VK_PRIMITIVE_TOPOLOGY_*
-	uint32_t polygon : 2;   // VK_POLYGON_MODE_*
-	uint32_t frontFace : 1;   // 0=CW, 1=CCW
-	uint32_t shader : 3;   // shader 索引
-	uint32_t blendMode : 4;   // blendMode_e
-	uint32_t flags : 8;   // depth_stencil_State 标志
-	float    lineWidth;
-};
-
 // 管道状态（SDL3 GPU 版本）
 struct pipelinestate_p {
 	SDL_GPUGraphicsPipeline* pipeline;

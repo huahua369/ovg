@@ -757,9 +757,9 @@ int main()
 	SDL_ShowWindow(form1->window);
 
 	while (running) {
-		SDL_Event ev;
-		while (SDL_PollEvent(&ev)) {
-			if (ev.type == SDL_EVENT_QUIT) running = false;
+		if (wg->get_event() < 0)
+		{
+			running = false;
 		}
 		if (ovg_get_window_swapchain(ctx, &fbo))
 		{
