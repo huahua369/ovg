@@ -64,8 +64,9 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 void       free_ovgctx_sdl3(ovg_ctx_t* ctx);
 
 // FBO，创建与ovg_ctx兼容格式纹理，绑定窗口可选
-vg_fbo_t    new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
-void        free_vgfbo_sdl3(vg_fbo_t* fbo);
+vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
+void free_vgfbo_sdl3(vg_fbo_t* fbo);
+void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height);
 
 SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
 // 绘制一帧，提交命令到GPU

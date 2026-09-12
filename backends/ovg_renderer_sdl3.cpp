@@ -1642,7 +1642,13 @@ void free_vgfbo_sdl3(vg_fbo_t* fbo) {
 	if (fbo->colorTexMS) { destroy_texture((sdl3gpu_texture*)fbo->colorTexMS);   fbo->colorTexMS = nullptr; }
 	if (fbo->depthStencilTex) { destroy_texture((sdl3gpu_texture*)fbo->depthStencilTex); fbo->depthStencilTex = nullptr; }
 }
-
+void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height) {
+	if (fbo) {
+		free_vgfbo_sdl3(fbo);
+		*fbo = new_vgfbo_sdl3(fbo->ctx, width, height, fbo->window);
+		fbo->display_size = { width, height };
+	}
+}
 // ========================================================================
 // MSAA 解析
 // ========================================================================
@@ -2195,7 +2201,7 @@ SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 	if (!cmd)return 0;
 	uint32_t sw = 0, sh = 0;
 	SDL_GPUTexture* swapchain = NULL;
-	for (;;) {
+	do {
 		if (fbo->window)
 		{
 			bool aq = SDL_AcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh);
@@ -2207,18 +2213,10 @@ SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 			if (fbo->width != sw || fbo->height != sh)
 			{
 				SDL_WaitForGPUSwapchain(ctx->device->gpuDevice, fbo->window);
-				auto newfbo = new_vgfbo_sdl3(ctx, sw, sh, fbo->window);
-				free_vgfbo_sdl3(fbo);
-				*fbo = newfbo;
-				fbo->display_size = { sw,sh };
-			}
-			else {
-				break;
+				reset_vgfbo_sdl3(fbo, sw, sh);
 			}
 		}
-		else { break; }
-	}
-
+	} while (0);
 	fbo->swapchain = swapchain;
 	fbo->cmd = cmd;
 	return cmd;

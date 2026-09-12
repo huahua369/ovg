@@ -668,24 +668,33 @@ int main()
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 
-	ovg_sdl3_ctx g[1] = {};
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Tahoma,Calibri,Noto Serif Devanagari", 0);
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
-	if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
-		SDL_Log("Init failed: %s", SDL_GetError());
-		return 1;
-	}
-	auto dev = new_sdl3gpu_device(g->device);
+
+	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+#ifdef __ANDROID__
+	f |= SDL_INIT_HAPTIC;
+#endif
+	int kr = SDL_Init(f);
+
+	auto wg = new WindowMgr();
+	if (!wg->init_gpu(true))return -1;
+	auto form1 = wg->create("SDL3 GPU Vector Graphics", surfsize.x, surfsize.y, 0);
+	//if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
+	//	SDL_Log("Init failed: %s", SDL_GetError());
+	//	return 1;
+	//}
+	auto dev = new_sdl3gpu_device(wg->device);
 	assert(dev);
-	auto format = SDL_GetGPUSwapchainTextureFormat(g->device, g->window);
+	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, form1->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
 	ovg_canvas_cb* can = new_canvas_cb();
 
-	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, g->window);
+	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
@@ -745,7 +754,7 @@ int main()
 	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
 	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
 
-	SDL_ShowWindow(g->window);
+	SDL_ShowWindow(form1->window);
 
 	while (running) {
 		SDL_Event ev;
@@ -846,16 +855,12 @@ int main()
 		SDL_Delay(16);  /* ~60 FPS */
 	}
 	if (run_dst)delete run_dst;
-	SDL_WaitForGPUIdle(g->device);
+	SDL_WaitForGPUIdle(wg->device);
 	/* Cleanup */
 
 	free_vgfbo_sdl3(&fbo);
 	free_ovgctx_sdl3(ctx);
 	free_sdl3gpu_device(dev);
-
-	SDL_DestroyGPUDevice(g->device);
-	SDL_DestroyWindow(g->window);
-	SDL_Quit();
 
 	delete_font_family(familys);
 	free_font_cache(font_ctx);
@@ -863,5 +868,10 @@ int main()
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
 	if (can)free_canvas_cb(can);
+	//SDL_DestroyGPUDevice(g->device);
+	//SDL_DestroyWindow(g->window);
+	delete wg;
+	SDL_Quit();
+
 	return 0;
 }
