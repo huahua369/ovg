@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+
 /*
 struct mouse_move_et;
 struct mouse_button_et;
@@ -52,12 +53,24 @@ enum class event_type_e :uint32_t {
 
 	et_max_num
 };
+#if 1
+
+enum class cursor_st :uint32_t
+{
+	cursor_null,
+	cursor_arrow,
+	cursor_ibeam,
+	cursor_wait,
+	cursor_no,
+	cursor_hand,
+};
+
 struct mouse_move_et
 {
 	int x, y;			// 鼠标移动坐标
 	int xrel, yrel;		// The relative motion in the XY direction 
 	uint8_t which;		// 鼠标实例 
-	int cursor;			// 切换鼠标
+	cursor_st cursor;	// 切换鼠标光标用
 };
 struct mouse_button_et		// 鼠标弹起
 {
@@ -148,23 +161,17 @@ struct dev_event_t
 	uint8_t ret = 0;
 };
 
-enum class cursor_st :uint32_t
-{
-	cursor_null,
-	cursor_arrow,
-	cursor_ibeam,
-	cursor_wait,
-	cursor_no,
-	cursor_hand,
-};
+#endif // 1
 
-struct gui_ctx_t
+// gui事件管理
+struct gui_io_state_t
 {
 	float       DeltaTime;
 	glm::vec2   MouseDelta;
 	glm::vec2   MousePos;
 	bool        MouseDown[5];
 	glm::vec2   wheel;
+	glm::ivec4* ime_rect = 0;
 	bool        KeysDown[512];
 	bool        KeyCtrl;
 	bool        KeyShift;
@@ -172,6 +179,7 @@ struct gui_ctx_t
 	bool        KeySuper;
 	bool		WantCaptureMouse;
 };
+
 // 发起拖放文件
 void do_dragdrop_file(const char** fn, int count);
 // 发起拖放文本

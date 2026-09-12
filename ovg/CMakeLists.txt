@@ -4,12 +4,10 @@ FILE(GLOB_RECURSE TESS2_SRC
 )
 set(OVG_SOURCES 
     ovg.cpp
-    ovg_renderer_sdl3.cpp
     ${TESS2_SRC}
     ovg_fonts.cpp
 )
 
-find_package(glm CONFIG REQUIRED)
 find_package(harfbuzz CONFIG REQUIRED) 
 find_package(Fontconfig REQUIRED) 
 pkg_check_modules(HARFBUZZ_RASTER REQUIRED IMPORTED_TARGET harfbuzz-raster)

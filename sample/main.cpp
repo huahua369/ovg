@@ -21,7 +21,7 @@ using namespace std;
 #include "ovg_fonts.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
-
+#include <vgui_sdl3.h>
 
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
