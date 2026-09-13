@@ -176,7 +176,7 @@ public:
 #ifdef _WIN32
 
 bool wMessageHook(void* userdata, MSG* msg) {
-	auto app = (WindowMgr*)userdata;
+	auto app = (app_mgr*)userdata;
 	if (app && msg)
 	{
 		switch (msg->message)
@@ -226,11 +226,97 @@ void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
 }
 
 
+void gui_viewport::trigger(dev_event_t* e)
+{
 
+}
 os_window::~os_window() {
 	window = 0;
 }
-WindowMgr::WindowMgr()
+void os_window::set_capture()
+{
+	SDL_CaptureMouse(1);
+}
+void os_window::release_capture()
+{
+	SDL_CaptureMouse(0);
+}
+void os_window::start_text_input()
+{
+	if (!SDL_TextInputActive(window))
+		SDL_StartTextInput(window);
+}
+void os_window::stop_text_input()
+{
+	if (SDL_TextInputActive(window))
+		SDL_StopTextInput(window);
+}
+bool os_window::text_input_active()
+{
+	return SDL_TextInputActive(window);
+}
+// 设置输入法坐标
+void os_window::set_ime_pos(const glm::ivec4& r) {
+	do
+	{
+		if (!(r.w >= 0 && r.z > 0))break;
+#ifdef _WIN320
+		auto hWnd = (HWND)pce::get_windowptr(window);
+		if (!hWnd)break;
+		HIMC hIMC = ::ImmGetContext(hWnd);
+		if (hIMC)
+		{
+			COMPOSITIONFORM cf;
+			cf.dwStyle = CFS_POINT;
+			RECT rc = { 0 };
+			if (r.x > 0 || r.y > 0)
+			{
+				rc.left = r.x;
+				rc.top = r.y;
+			}
+			cf.rcArea.top = cf.rcArea.left = cf.rcArea.right = cf.rcArea.bottom = 0;
+			cf.ptCurrentPos.x = rc.left;//输入法坐标
+			cf.ptCurrentPos.y = rc.top;
+			::ImmSetCompositionWindow(hIMC, &cf);
+			::ImmReleaseContext(hWnd, hIMC);
+		}
+#else 
+		SDL_Rect rect = { r.x,r.y, r.z, r.w }; //ime_pos;
+		//printf("ime pos: %d,%d\n", r.x, r.y);
+		SDL_SetTextInputArea(window, &rect, 0);
+#endif
+	} while (0);
+}
+// 禁用窗口鼠标键盘操作。模态窗口用
+void os_window::enable_window(bool bEnable)
+{
+	//#ifdef _WIN32
+	//	auto hWnd = (HWND)pce::get_windowptr(window);
+	//	EnableWindow(hWnd, bEnable);
+	//#endif
+	SDL_SetWindowModal(window, bEnable);
+}
+// 移动鼠标到窗口指定位置
+void os_window::set_mouse_pos(const glm::ivec2& pos)
+{
+	SDL_WarpMouseInWindow(window, pos.x, pos.y);
+}
+void os_window::set_mouse_pos_global(const glm::ivec2& pos)
+{
+	SDL_WarpMouseGlobal(pos.x, pos.y);
+}
+// 显示/隐藏鼠标
+void os_window::show_cursor()
+{
+	SDL_ShowCursor();
+}
+void os_window::hide_cursor()
+{
+	SDL_HideCursor();
+}
+
+
+app_mgr::app_mgr()
 {
 	SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, false);
 	SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, false);
@@ -247,9 +333,9 @@ WindowMgr::WindowMgr()
 
 	UpdateMonitors();
 }
-WindowMgr::~WindowMgr() { shutdown(); }
+app_mgr::~app_mgr() { shutdown(); }
 
-bool WindowMgr::init_gpu(bool is_vulkan)
+bool app_mgr::init_gpu(bool is_vulkan)
 {
 	bool debugmode = false;
 #ifdef _DEBUG
@@ -313,7 +399,7 @@ bool WindowMgr::init_gpu(bool is_vulkan)
 	return true;
 }
 
-void WindowMgr::kncdown()
+void app_mgr::kncdown()
 {
 	if (nc_down)
 	{
@@ -325,7 +411,7 @@ void WindowMgr::kncdown()
 		nc_down = false;
 	}
 }
-bool WindowMgr::has_maximized(void* nwptr)
+bool app_mgr::has_maximized(void* nwptr)
 {
 	int ret = 1;
 	for (auto& it : windows_) {
@@ -340,7 +426,7 @@ bool WindowMgr::has_maximized(void* nwptr)
 	}
 	return ret;
 }
-os_window* WindowMgr::create(const char* title, int w, int h, uint32_t iflags) {
+os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags) {
 	SDL_Window* handle = 0;
 	auto flags = pce::get_flags(iflags);
 	SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
@@ -359,7 +445,7 @@ os_window* WindowMgr::create(const char* title, int w, int h, uint32_t iflags) {
 	}
 	return p;
 }
-os_window* WindowMgr::create2(const char* title, int x, int y, int w, int h, uint32_t iflags, os_window* parent) {
+os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint32_t iflags, os_window* parent) {
 	SDL_Window* handle = 0;
 	auto flags = pce::get_flags(iflags);
 	if (iflags & ef_tooltip || iflags & ef_popup)
@@ -396,13 +482,13 @@ os_window* WindowMgr::create2(const char* title, int x, int y, int w, int h, uin
 }
 
 
-os_window* WindowMgr::find(uint32_t id) {
+os_window* app_mgr::find(uint32_t id) {
 	for (auto& w : windows_)
 		if (w->id == id) return w.get();
 	return nullptr;
 }
 
-void WindowMgr::destroy(uint32_t id) {
+void app_mgr::destroy(uint32_t id) {
 	for (auto it = windows_.begin(); it != windows_.end(); ++it) {
 		if ((*it)->id == id) {
 			SDL_ReleaseWindowFromGPUDevice(device, it->get()->window);
@@ -414,7 +500,7 @@ void WindowMgr::destroy(uint32_t id) {
 	}
 }
 
-void WindowMgr::shutdown() {
+void app_mgr::shutdown() {
 	if (device)
 		SDL_WaitForGPUIdle(device);
 	for (auto& w : windows_) {
@@ -429,11 +515,11 @@ void WindowMgr::shutdown() {
 	}
 }
 
-size_t WindowMgr::window_count() const { return windows_.size(); }
+size_t app_mgr::window_count() const { return windows_.size(); }
 
-std::vector<std::unique_ptr<os_window>>& WindowMgr::windows() { return windows_; }
+std::vector<std::unique_ptr<os_window>>& app_mgr::windows() { return windows_; }
 
-void WindowMgr::UpdateMonitors()
+void app_mgr::UpdateMonitors()
 {
 	WantUpdateMonitors = false;
 	int display_count;
@@ -460,11 +546,290 @@ void WindowMgr::UpdateMonitors()
 	}
 	SDL_free(displays);
 }
-void WindowMgr::process_event(const SDL_Event& e)
+// todo event
+
+void et2key(const SDL_Event* e, keyboard_et* ekm)
 {
+	if (!e || !(e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_KEY_UP))return;
+	int ks = 0;
+	auto pk = SDL_GetKeyboardState(&ks);
+	int key = (int)e->key.scancode;
+	ekm->sym = (e->key.key);
+	ekm->keycode = SDL_GetKeyFromScancode(e->key.scancode, e->key.mod, 1);
+	ekm->scancode = key;      /**< SDL physical key code - see ::SDL_Scancode for details */
+	ekm->mod = e->key.mod;                 /**< current key modifiers */
+	ekm->down = e->key.down;        /**< ::SDL_PRESSED or ::SDL_RELEASED */
+	ekm->repeat = e->key.repeat;       /**< Non-zero if this is a key repeat */
+	static int64_t ts = 0, ts1 = 0;
+
+	if (ekm->repeat > 0) {
+		ts += (e->button.timestamp - ts1) * 0.000001;
+		ekm->repeat = ekm->repeat;
+		//printf("ms: %d\n", ts); ts = 0; ts1 = e->button.timestamp;
+	}
+	else {
+		ts = 0; ts1 = e->button.timestamp;
+	}
+	int f1 = SDLK_F1;
+	int ms = SDL_GetModState();
+	static int kcs[] = { SDLK_END, SDLK_DOWN, SDLK_PAGEDOWN, SDLK_LEFT, 0, SDLK_RIGHT, SDLK_HOME, SDLK_UP, SDLK_PAGEUP, SDLK_INSERT, SDLK_DELETE };
+	if ((!(key<SDL_SCANCODE_KP_1 || key> SDL_SCANCODE_KP_PERIOD)) && !(ms & SDL_KMOD_NUM))
+	{
+		ekm->keycode = kcs[key - SDL_SCANCODE_KP_1];
+	}
+	//ekm->kn = SDL_GetKeyName(ekm->keycode);
+	if (ms & SDL_KMOD_LCTRL || ms & SDL_KMOD_RCTRL)
+	{
+		ekm->kmod |= KM_CTRL;
+	}
+	if (ms & SDL_KMOD_LSHIFT || ms & SDL_KMOD_RSHIFT)
+	{
+		ekm->kmod |= KM_SHIFT;
+	}
+	if (ms & SDL_KMOD_LALT || ms & SDL_KMOD_RALT)
+	{
+		ekm->kmod |= KM_ALT;
+	}
+	if (ms & SDL_KMOD_LGUI || ms & SDL_KMOD_RGUI)
+	{
+		ekm->kmod |= KM_GUI;
+	}
 
 }
-int WindowMgr::get_event()
+gui_io_state_t* app_mgr::io()
+{
+	return active_viewport_ ? &active_viewport_->io : nullptr;
+}
+void app_mgr::process_event(const SDL_Event* e)
+{
+	dev_event_t dev = {};
+	dev.type = dev_event_type_e::none;
+	auto pw = find(e->window.windowID);
+	if (pw) {
+		active_viewport_ = pw->viewport;
+	}
+	auto pwio = io();
+	bool viewports_enabled = docking().viewports_enabled;
+	auto viewport = active_viewport_;
+	if (!viewport || !pwio)return;
+	switch (e->type) {
+	case SDL_EVENT_MOUSE_MOTION:
+	{
+		//auto afp = ctx->get_activate_form();
+		mouse_move_et mt = {};
+		glm::ivec2 mouse_pos = { e->motion.x,e->motion.y };
+		mt.xrel = e->motion.xrel;
+		mt.yrel = e->motion.yrel;		// The relative motion in the XY direction 
+		mt.which = e->motion.which;		// 鼠标实例 
+		if (viewports_enabled)
+		{
+			int window_x = 0, window_y = 0;
+			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
+			mouse_pos.x += window_x;
+			mouse_pos.y += window_y;
+		}
+		mt.x = mouse_pos.x;
+		mt.y = mouse_pos.y;			// 鼠标移动坐标
+
+		//pw->hittest(mouse_pos);
+		if (pwio) {
+			pwio->MousePos = mouse_pos;
+			pwio->MouseDelta = { mt.xrel,mt.yrel };
+
+			//int ms = SDL_GetModState();
+			//pwio->mks->KeyCtrl = (ms & SDL_KMOD_LCTRL || ms & SDL_KMOD_RCTRL);
+			//pwio->mks->KeyShift = (ms & SDL_KMOD_LSHIFT || ms & SDL_KMOD_RSHIFT);
+			//pwio->mks->KeyAlt = (ms & SDL_KMOD_LALT || ms & SDL_KMOD_RALT);
+			//pwio->mks->KeySuper = (ms & SDL_KMOD_LGUI || ms & SDL_KMOD_RGUI);
+		}
+		if (viewport->_last_pos != mouse_pos)
+		{
+			dev.v.m = &mt;
+			viewport->trigger(&dev);
+		}
+		else
+		{
+		}
+		viewport->_last_pos = mouse_pos;
+		if ((int)mt.cursor > 0) {
+			set_defcursor(mt.cursor);
+		}
+	}
+	break;
+	case SDL_EVENT_MOUSE_WHEEL:
+	{
+		mouse_wheel_et t = {};
+		t.which = e->wheel.which;
+		int dir = e->wheel.direction;
+		t.x = e->wheel.x;
+		t.y = e->wheel.y;
+		float preciseX = e->wheel.mouse_x;// preciseX;
+		float preciseY = e->wheel.mouse_y;
+		if (pwio /*&& !pw->_HitTest*/) {
+			pwio->wheel = { t.x,t.y };
+		}
+		dev.v.w = &t;
+		viewport->trigger(&dev);
+	}
+	break;
+	case SDL_EVENT_FINGER_DOWN:
+	case SDL_EVENT_FINGER_UP:
+	case SDL_EVENT_FINGER_MOTION:
+	{
+		finger_et ft = {};
+		ft.t = e->type - SDL_EVENT_FINGER_DOWN + 1;
+		ft.tid = e->tfinger.fingerID;
+		ft.touchId = e->tfinger.fingerID;
+		ft.x = e->tfinger.x; ft.y = e->tfinger.y;
+		ft.pressure = e->tfinger.pressure;
+		if (e->type == SDL_EVENT_FINGER_DOWN)
+		{
+			//pw->hide_child();
+		}
+		dev.v.f = &ft;
+		viewport->trigger(&dev);
+
+	}break;
+	//case SDL_TOUCH_MOUSEID: 
+	case SDL_EVENT_MOUSE_BUTTON_DOWN:	//1
+	case SDL_EVENT_MOUSE_BUTTON_UP:		//0
+	{
+		mouse_button_et t = {};
+		t.which = e->button.which;
+		t.button = e->button.button;
+		t.down = e->button.down; //SDL_PRESSED; SDL_RELEASED;
+		t.clicks = e->button.clicks;
+		t.x = e->button.x;
+		t.y = e->button.y;
+		if (t.down)
+		{
+			//pw->hide_child();
+		}
+		if (pwio) {
+			pwio->MouseDown[t.button - 1] = t.down;
+		}
+
+		dev.v.b = &t;
+		viewport->trigger(&dev);
+
+		if (pw && capture_type)
+		{
+			if (t.down)
+			{
+				pw->set_capture();		// 锁定鼠标	
+			}
+			else {
+				pw->release_capture();	// 释放鼠标			
+				// 开始输入法
+				if (pwio->WantTextInput)
+				{
+					pw->start_text_input();
+					pw->set_ime_pos(*pwio->ime_rect);
+				}
+			}
+		}
+	}
+	break;
+	case SDL_EVENT_TEXT_INPUT:
+	{
+		text_input_et t = {};
+		t.text = (char*)e->text.text;
+		dev.v.t = &t;
+		viewport->trigger(&dev);
+		auto irc = (glm::ivec4*)&t.x;
+		pw->set_ime_pos(*irc);
+	}
+	break;
+	case SDL_EVENT_TEXT_EDITING:
+	{
+		text_editing_et t = {};
+		t.text = (char*)e->edit.text;
+		t.start = e->edit.start;
+		t.length = e->edit.length;
+		dev.v.e = &t;
+		viewport->trigger(&dev);
+		auto irc = (glm::ivec4*)&t.x;
+		pw->set_ime_pos(*irc);
+	}
+	break;
+	case SDL_EVENT_KEY_DOWN:
+	case SDL_EVENT_KEY_UP:
+	{
+		keyboard_et t = {};
+		et2key(e, &t);
+		auto kn = SDL_GetKeyName(t.keycode);
+		pwio->mks->KeysDown[*kn] = t.down;
+		pwio->mks->KeysDown[VK_SHIFT] = (t.kmod & KM_SHIFT);
+		pwio->mks->KeyShift = (t.kmod & KM_SHIFT);
+		pwio->mks->KeyAlt = (t.kmod & KM_ALT);
+		pwio->mks->KeyCtrl = (t.kmod & KM_CTRL);
+		pwio->mks->KeySuper = (t.kmod & KM_GUI);
+
+		dev.v.k = &t;
+		viewport->trigger(&dev);
+	}
+	break;
+	case SDL_EVENT_DROP_BEGIN:
+		viewport->drop_text.clear();
+		break;
+	case SDL_EVENT_DROP_POSITION:
+	{
+		ole_drop_et t = {};
+		t.x = e->drop.x;
+		t.y = e->drop.y;
+		if (viewports_enabled)
+		{
+			int window_x = 0, window_y = 0;
+			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
+			t.x += window_x;
+			t.y += window_y;
+		}
+		dev.v.d = &t;
+		viewport->trigger(&dev);
+		//printf("pos\n");
+	}break;
+	case SDL_EVENT_DROP_COMPLETE:
+	{
+		ole_drop_et t = {};
+		t.x = e->drop.x;
+		t.y = e->drop.y;//结束
+		if (viewports_enabled)
+		{
+			int window_x = 0, window_y = 0;
+			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
+			t.x += window_x;
+			t.y += window_y;
+		}
+		if (viewport->drop_text.size()) {
+			if ('\n' == *viewport->drop_text.rbegin())
+				viewport->drop_text.pop_back();
+			auto str = viewport->drop_text.data();
+			t.str = (const char**)&str;
+			t.count = 1;
+			dev.v.d = &t;
+			viewport->trigger(&dev);
+		}
+	}break;
+	case SDL_EVENT_DROP_TEXT:
+	{
+		if (e->drop.data)
+		{
+			viewport->drop_text += (char*)e->drop.data;	viewport->drop_text.push_back('\n');
+		}
+	}
+	break;
+	case SDL_EVENT_DROP_FILE:
+	{
+		if (e->drop.data)
+		{
+			viewport->drop_text += (char*)e->drop.data;	viewport->drop_text.push_back('\n');
+		}
+	}
+	break;
+	}
+
+}
+int app_mgr::get_event()
 {
 	int ts = 0;
 	SDL_Event e = {};
@@ -494,7 +859,47 @@ int WindowMgr::get_event()
 			break;
 		}
 		}
-		process_event(e);
+		process_event(&e);
 	}
 	return ts;
+}
+
+docking_mgr& app_mgr::docking() { return docking_; }
+
+void app_mgr::set_syscursor(int type)
+{
+	if (type < 0)type = 0;
+	if (type < SDL_SYSTEM_CURSOR_COUNT)
+	{
+		auto& psc = system_cursor[type];
+		if (!psc)
+			psc = SDL_CreateSystemCursor((SDL_SystemCursor)type);
+		if (psc)
+		{
+			SDL_SetCursor(psc);
+		}
+	}
+}
+void app_mgr::set_defcursor(cursor_st t)
+{
+	switch (t)
+	{
+	case cursor_st::cursor_arrow:
+		set_syscursor(SDL_SYSTEM_CURSOR_DEFAULT);
+		break;
+	case cursor_st::cursor_ibeam:
+		set_syscursor(SDL_SYSTEM_CURSOR_TEXT);
+		break;
+	case cursor_st::cursor_wait:
+		set_syscursor(SDL_SYSTEM_CURSOR_WAIT);
+		break;
+	case cursor_st::cursor_no:
+		set_syscursor(SDL_SYSTEM_CURSOR_NOT_ALLOWED);
+		break;
+	case cursor_st::cursor_hand:
+		set_syscursor(SDL_SYSTEM_CURSOR_POINTER);
+		break;
+	default:
+		break;
+	}
 }

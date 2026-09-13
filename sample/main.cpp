@@ -680,9 +680,11 @@ int main()
 #endif
 	int kr = SDL_Init(f);
 
-	auto wg = new WindowMgr();
+	auto wg = new app_mgr();
 	if (!wg->init_gpu(true))return -1;
+	auto vp = new gui_viewport();
 	auto form1 = wg->create("SDL3 GPU Vector Graphics", surfsize.x, surfsize.y, 0);
+	form1->viewport = vp;
 	//if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
 	//	SDL_Log("Init failed: %s", SDL_GetError());
 	//	return 1;

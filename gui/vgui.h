@@ -164,20 +164,25 @@ struct dev_event_t
 #endif // 1
 
 // gui事件管理
+struct gui_io_mk_state {
+	bool KeysDown[512]; 
+	bool KeyCtrl : 1;
+	bool KeyShift : 1;
+	bool KeyAlt : 1;
+	bool KeySuper : 1;
+};
 struct gui_io_state_t
 {
-	float       DeltaTime;
-	glm::vec2   MouseDelta;
-	glm::vec2   MousePos;
-	bool        MouseDown[5];
-	glm::vec2   wheel;
-	glm::ivec4* ime_rect = 0;
-	bool        KeysDown[512];
-	bool        KeyCtrl;
-	bool        KeyShift;
-	bool        KeyAlt;
-	bool        KeySuper;
-	bool		WantCaptureMouse;
+	gui_io_mk_state* mks;
+	glm::vec2 MouseDelta;
+	glm::vec2 MousePos;
+	glm::vec2 wheel;
+	glm::ivec4* ime_rect = 0; 
+	bool MouseDown[8] = {};
+	float deltaTime = 0.0f;
+	bool WantCaptureMouse : 1 = false;
+	bool WantCaptureKey : 1 = false;
+	bool WantTextInput : 1 = false;
 };
 
 // 发起拖放文件

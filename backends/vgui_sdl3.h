@@ -63,9 +63,18 @@ struct PlatformMonitor
 	float DpiScale;					// 1.0f = 96 DPI
 	void* PlatformHandle;			// Backend dependant data (e.g. HMONITOR, GLFWmonitor*, SDL Display Index, NSScreen*)
 };
+struct gui_viewport {
+	gui_io_state_t io = {};
+	std::string drop_text;
+	glm::ivec2 _last_pos = {};
+	glm::ivec4 _ime_rect = {};
+public:
+	void trigger(dev_event_t* e);
+};
 struct os_window {
 	SDL_Window* window = nullptr;
 	os_window* parent = 0;      // 0 = 顶级窗口
+	gui_viewport* viewport = nullptr;
 	uint32_t id = 0;
 	WindowType type = WindowType::Regular;
 	bool close_with_parent = true;
@@ -76,26 +85,55 @@ struct os_window {
 	std::function<void()> on_close;
 	std::vector<os_window*> children;
 	~os_window();
+	// 锁定/释放鼠标
+	void set_capture();
+	void release_capture();
+	// 开始输入法
+	void start_text_input();
+	void stop_text_input();
+	bool text_input_active();
+	// 设置输入法坐标
+	void set_ime_pos(const glm::ivec4& r);
+	// 禁用窗口鼠标键盘操作。模态窗口用
+	void enable_window(bool bEnable);
+	// 移动鼠标到窗口指定位置
+	void set_mouse_pos(const glm::ivec2& pos);
+	void set_mouse_pos_global(const glm::ivec2& pos);
+	// 显示/隐藏鼠标
+	void show_cursor();
+	void hide_cursor();
 };
 struct PointerState {
 	SDL_Window* window = nullptr;
 	glm::ivec2  pos{};
 	bool pressed = false;
 };
-class WindowMgr
+class docking_mgr {
+public:
+	bool viewports_enabled = false; // 默认关闭，Docking 才开
+public:
+	void set_viewports_enabled(bool v) { viewports_enabled = v; }
+
+private:
+};
+class app_mgr
 {
 public:
 	SDL_GPUDevice* device = nullptr;
 	SDL_Cursor* system_cursor[SDL_SYSTEM_CURSOR_COUNT] = {};
 	std::vector<PlatformMonitor> monitors;
 	os_window* main_window = 0;
+	gui_io_mk_state _mouse_key = {};
+	gui_viewport* active_viewport_ = 0;
+	docking_mgr docking_ = {};
 	bool nc_down = false;
 	bool WantUpdateMonitors = true;
+	bool capture_type = true;
 private:
 	std::vector<std::unique_ptr<os_window>> windows_;
 public:
-	WindowMgr();
-	~WindowMgr();
+	app_mgr();
+	~app_mgr();
 
 	bool init_gpu(bool is_vulkan);
 	// 创建主窗口、普通窗口
@@ -114,5 +152,10 @@ public:
 	bool has_maximized(void* nwptr);
 	void UpdateMonitors();
 	int get_event();
-	void process_event(const SDL_Event& e);
+	void process_event(const SDL_Event* e);
+	gui_io_state_t* io();
+	docking_mgr& docking();
+	void set_defcursor(cursor_st t);
+private:
+	void set_syscursor(int type);
 };
