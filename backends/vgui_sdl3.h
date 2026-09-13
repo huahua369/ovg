@@ -65,7 +65,7 @@ struct gui_viewport {
 	std::string drop_text;
 	glm::ivec2 _last_pos = {};
 	glm::ivec4 _ime_rect = {};
-	std::unordered_map<int,void(*)()> ed;
+	std::vector<dispatcher_cx*> ed;
 public:
 	void trigger(dev_event_t* e);
 };

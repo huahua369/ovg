@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <set>
 
 /*
 struct mouse_move_et;
@@ -18,6 +19,19 @@ struct ole_drop_et;
 #define BIT_INC(x) (1<<x)
 #endif
 
+// 窗口设备事件
+enum class dev_event_type_e :uint32_t {
+	none = 0,
+	mouse_move_e,
+	mouse_button_e,
+	mouse_wheel_e,
+	keyboard_e,
+	text_editing_e,
+	text_input_e,
+	finger_e,
+	ole_drop_e,
+	max_det
+};
 // 控件事件类型
 enum class event_type_e :uint32_t {
 	none = 0,
@@ -135,19 +149,6 @@ struct ole_drop_et
 	int* has;			// 是否接收, 0不接收，1接收
 
 };
-// 窗口设备事件
-enum class dev_event_type_e :uint32_t {
-	none = 0,
-	mouse_move_e,
-	mouse_button_e,
-	mouse_wheel_e,
-	keyboard_e,
-	text_editing_e,
-	text_input_e,
-	finger_e,
-	ole_drop_e,
-	max_det
-};
 struct dev_event_t
 {
 	union
@@ -208,45 +209,52 @@ enum class BTN_STATE :uint8_t
 	STATE_FOCUS = BIT_INC(3),
 	STATE_DISABLE = BIT_INC(4),
 };
-struct widget_t
+struct event_entity_t
 {
 public:
-	int id = 0;
-	int wtype = 0;
-	int dindex = 0;			// 渲染排序用
-	int _bst = 1;			// 鼠标状态
-	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标
+	void* ptr = 0;
 	glm::ivec2 _pos = {};	// 控件坐标
 	glm::ivec2 _size = {};	// 控件大小
 	glm::ivec2 fpos = {};	// 窗口坐标 
-
-	std::function<void(dev_event_t* dv, const glm::vec2& pos)> on_event_cb;	//自定义事件处理
-	std::function<void(void* p, event_type_e type, const glm::vec2& mps)> mevent_cb;	//通用事件处理
-
-
-	widget_t* parent = 0;
-	glm::ivec2 hscroll = { 1,1 };// x=1则受水平滚动条影响，y=1则受垂直滚动条影响
-	int _old_bst = 0;			 // 鼠标状态 
-	//int cks = 0;				// 鼠标点击状态
-	glm::ivec2 cursor = { 0,-1 };			// 光标坐标
-	bool has_drag = false;	// 是否有拖动事件 
-	bool outer_scroll = false;	// 鼠标不在范围内也响应滚轮事件
+	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标
+	glm::ivec4 input_pos = {};
+	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响
+	int _bst = 1;					// 鼠标状态
+	int _old_bst = 0;				// 鼠标状态  
+	glm::ivec2 cursor = { 0,-1 };	// 光标坐标
+	bool has_drag = false;			// 是否有拖动事件 
+	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
 	bool is_input = false;
+	std::unordered_map<int, std::function<void()>> calls[2];
+	dev_event_t* cde = 0;		// 临时指针
+	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
+	event_type_e etype = {};	// on事件类型
+	glm::ivec2 mouse_pos = {};	// 处理后的鼠标坐标
 public:
-	widget_t();
-	virtual ~widget_t();
-
-	virtual void set_pos(const glm::ivec2& ps);
-	virtual void set_size(const glm::vec2& ss);
-	virtual glm::vec2 get_size();
-	virtual bool on_mevent(event_type_e type, const glm::vec2& mps, void* e);
-	virtual void on_event(uint32_t type, dev_event_t* ep);
-	virtual bool update(float delta);
-	virtual void draw(ovg_ctx_cb* rv, rvg_t* p); ;
-	virtual glm::ivec4 input_pos();
-	virtual void add_text(const char* str, int len);
-	virtual void set_editing(const char* str, int len, int start);
-	virtual void set_family(font_family_t* family, int fontsize);
+	event_entity_t();
+	virtual ~event_entity_t();
+	// event_type_e::none则监听所有
+	void set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb);
+	void set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb);
+	void set_on_text(std::function<void(text_input_et* t)> cb);
+	void set_on_editing(std::function<void(text_editing_et* te)> cb);
+	void remove(dev_event_type_e e);
+	void remove(event_type_e e);
+	// 删除on_text和on_editing事件监听
+	void remove_text();
+	void call(int idx, int type);
 };
+class dispatcher_cx
+{
+public:
+	glm::ivec2 pos = {};			// 这批事件区的父级坐标
+	std::vector<event_entity_t*> v;
+public:
+	dispatcher_cx();
+	~dispatcher_cx();
+	void add(event_entity_t* p);
+	bool trigger(dev_event_t* d);
+private:
 
-bool on_gui_event(widget_t* pw, dev_event_t* dv, const glm::ivec2& ppos);
+};
+ 

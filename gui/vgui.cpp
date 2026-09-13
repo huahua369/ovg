@@ -3,46 +3,302 @@ gui实现
 
 创建日期：2026-9-12
 */
- 
+
 #include "pch.h"
 #include "vgui.h"
 
-widget_t::widget_t()
+event_entity_t::event_entity_t()
 {}
 
-widget_t::~widget_t()
+event_entity_t::~event_entity_t()
 {}
-void widget_t::set_pos(const glm::ivec2 & ps)
-{}
-void widget_t::set_size(const glm::vec2 & ss)
-{}
-glm::vec2 widget_t::get_size()
+void event_entity_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb)
 {
-	return glm::vec2();
+	if (cb)
+		calls[0][(int)e] = [=]() { cb(cde); };
+	else
+		calls[0].erase((int)e);
 }
-bool widget_t::on_mevent(event_type_e type, const glm::vec2& mps, void* e)
+void event_entity_t::set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb)
 {
-	return false;
-}
-void widget_t::on_event(uint32_t type, dev_event_t* ep)
-{}
-bool widget_t::update(float delta)
-{
-	return false;
-}
-void widget_t::draw(ovg_ctx_cb* rv, rvg_t* p)
-{}
-glm::ivec4 widget_t::input_pos()
-{
-	return glm::ivec4();
+	if (cb)
+		calls[1][(int)e] = [=]() { cb(etype, mouse_pos); };
 }
 
-void widget_t::add_text(const char* str, int len)
+void event_entity_t::set_on_text(std::function<void(text_input_et*)> cb)
+{
+	if (cb)
+		set_event_dev(dev_event_type_e::text_input_e, [=](dev_event_t* dv) {cb(dv->v.t); });
+}
+
+void event_entity_t::set_on_editing(std::function<void(text_editing_et*)> cb)
+{
+	if (cb)
+		set_event_dev(dev_event_type_e::text_editing_e, [=](dev_event_t* dv) {cb(dv->v.e); });
+}
+
+void event_entity_t::remove(dev_event_type_e e)
+{
+	calls[0].erase((int)e);
+}
+
+void event_entity_t::remove(event_type_e e)
+{
+	calls[1].erase((int)e);
+}
+
+void event_entity_t::remove_text()
+{
+	calls[0].erase((int)dev_event_type_e::text_input_e);
+	calls[0].erase((int)dev_event_type_e::text_editing_e);
+}
+
+void event_entity_t::call(int idx, int type)
+{
+	if (idx >= 0 && idx < 2) {
+		auto& c = calls[idx];
+		auto it = c.find(type);
+		if (it != c.end() && it->second) {
+			it->second();
+		}
+	}
+}
+
+
+
+bool in_rect_box(const glm::ivec4& rect, const glm::ivec2& mousePos) {
+	return mousePos.x >= rect.x && mousePos.x <= (rect.x + rect.z) && mousePos.y >= rect.y && mousePos.y <= (rect.y + rect.w);
+}
+glm::ivec2 check_box_cr1(const glm::vec2& p, const glm::vec4* d, size_t count, int stride)
+{
+	bool ret = false;
+	if (!d)
+	{
+		return {};
+	}
+	glm::ivec2 rs = {};
+	auto t = (char*)d;
+	for (size_t i = 0; i < count; i++, t += stride)
+	{
+		auto c = (glm::vec4*)t;
+		if ((int)c->w > 0)
+		{
+			auto r = *c;
+			ret = in_rect_box(r, p); //!((p.x < r.x) || (p.y < r.y) || (p.x > r.x + r.z /*- 1*/) || (p.y > r.y + r.w /*- 1*/));
+			if (ret)
+			{
+				rs.x = ret;
+				rs.y = i;
+				break;
+			}
+		}
+		else {
+			//计算点p和 当前圆圆心c 的距离
+			int dis = distance(p, glm::vec2(c->x, c->y));
+			auto r = c->z /*- 1*/; if (ret)
+			{
+				//和半径比较
+				ret = (dis <= r * r);
+				rs.x = ret;
+				rs.y = i;
+				break;
+			}
+		}
+	}
+	return  rs;
+}
+// 通用控件鼠标事件处理 type有on_move/on_scroll/on_drag/on_down/on_up/on_click/on_dblclick/on_tripleclick
+bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
+	bool hover = false;
+	if (!wp)return hover;
+	auto e = &dv->v;
+	auto t = dv->type;
+	if (t == dev_event_type_e::mouse_move_e)
+	{
+		auto p = e->m;
+		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
+		auto gpos = wp->_pos;
+		// 判断是否鼠标进入 
+		glm::vec4 trc = { gpos + wp->fpos, wp->_size };
+		auto k = check_box_cr1(mps, &trc, 1, sizeof(glm::vec4));
+		if (k.x) {
+			bool hoverold = wp->_bst & (int)BTN_STATE::STATE_HOVER;
+			wp->_bst |= (int)BTN_STATE::STATE_HOVER;   hover = true;
+			if (!(wp->_bst & (int)BTN_STATE::STATE_ACTIVE))// 不是鼠标则独占
+				dv->ret = 1;
+			if (!hoverold)
+			{
+				// 鼠标进入
+				wp->etype = event_type_e::on_enter;
+				wp->mouse_pos = mps;
+				wp->call(1, (int)wp->etype);
+			}
+		}
+		else {
+			if (wp->_bst & (int)BTN_STATE::STATE_HOVER)
+			{
+				wp->_bst &= ~(int)BTN_STATE::STATE_HOVER;
+				// 鼠标离开
+				wp->etype = event_type_e::on_leave;
+				wp->mouse_pos = mps;
+				wp->call(1, (int)wp->etype);
+			}
+		}
+
+		{
+			if (wp->_bst & (int)BTN_STATE::STATE_HOVER)
+			{
+				wp->etype = event_type_e::on_move;
+				wp->mouse_pos = mps;
+				wp->call(1, (int)wp->etype);
+			}
+			if (wp->_bst & (int)BTN_STATE::STATE_ACTIVE) {
+				auto dps = mps - wp->curpos;
+				bool first = !wp->has_drag;
+				wp->has_drag = true;
+				if (first) {
+					wp->etype = event_type_e::on_dragstart;
+					wp->mouse_pos = mps;
+					wp->call(1, (int)wp->etype);
+				}
+				else
+				{
+					wp->etype = event_type_e::on_drag;
+					wp->mouse_pos = mps;
+					wp->call(1, (int)wp->etype);
+				}
+			}
+		}
+	}
+	return hover;
+}
+
+void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
+	if (!wp)return;
+	auto e = &dv->v;
+	auto t = dv->type;
+	//wp->form = ep->form;
+	switch (t)
+	{
+	case dev_event_type_e::mouse_move_e:
+		widget_on_move(wp, dv, pos);
+		break;
+	case dev_event_type_e::mouse_button_e:
+	{
+		auto p = e->b;
+		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
+		//bool isd = wp->cmpos == mps; // 判断坐标是否改变
+		//wp->cmpos = mps;
+		//auto dv = dynamic_cast<div_cx*>(wp);
+		//bool cs = false;
+		//if (dv) {
+		//	cs = dv->hittest(mps + (glm::ivec2)pos);
+		//}
+		void* cs = 0;
+		if (!cs && wp->_bst & (int)BTN_STATE::STATE_HOVER) {
+			if (p->down == 1)
+			{
+				dv->ret = 1;
+			}
+			if (p->button == 1) {
+				if (p->down == 1) {
+					wp->_bst |= (int)BTN_STATE::STATE_ACTIVE;
+					wp->curpos = mps - (glm::ivec2)wp->_pos;
+					//wp->cks = 0;
+
+					wp->etype = event_type_e::on_down;
+					wp->mouse_pos = mps;
+					wp->call(1, (int)wp->etype);
+				}
+				else {
+					if (wp->_bst & (int)BTN_STATE::STATE_ACTIVE)
+					{
+						//wp->cks = p->clicks;
+						if (wp->has_drag)
+						{
+						}
+						else
+						{
+							wp->etype = event_type_e::on_up;
+							wp->mouse_pos = mps;
+							wp->call(1, (int)wp->etype);
+							event_type_e tc = event_type_e::on_click; //左键单击
+							if (p->clicks == 2) { tc = event_type_e::on_dblclick; }
+							else if (p->clicks == 3) { tc = event_type_e::on_tripleclick; }
+
+							wp->etype = tc;
+							wp->mouse_pos = mps;
+							wp->call(1, (int)wp->etype);
+						}
+					}
+					wp->_bst &= ~(int)BTN_STATE::STATE_ACTIVE;
+				}
+			}
+		}
+		if (p->down == 0) {
+			wp->_bst &= ~(int)BTN_STATE::STATE_ACTIVE;
+			wp->_bst |= (int)BTN_STATE::STATE_NOMAL;
+			if (wp->has_drag)
+			{
+				wp->etype = event_type_e::on_dragend;
+				wp->mouse_pos = mps;
+				wp->call(1, (int)wp->etype);
+			}
+			wp->has_drag = false;
+
+			wp->etype = event_type_e::mouse_up;
+			wp->mouse_pos = mps;
+			wp->call(1, (int)wp->etype);
+		}
+	}
+	break;
+	case dev_event_type_e::mouse_wheel_e:
+	{
+		auto p = e->w;
+		glm::vec2 mps = { p->x, p->y };
+		if (wp->_bst & (int)BTN_STATE::STATE_HOVER || wp->outer_scroll)
+		{
+			wp->etype = event_type_e::on_scroll;
+			wp->mouse_pos = mps;
+			wp->call(1, (int)wp->etype);
+			dv->ret = 1;
+		}
+	}
+	break;
+	default:
+		break;
+	}
+
+}
+
+bool on_gui_event(event_entity_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
+{
+	bool r = false;
+	auto e = &dv->v;
+	auto t = dv->type;
+	widget_on_event(pw, dv, ppos);
+	pw->cde = dv;
+	pw->call(0, (int)dv->type);
+	return (dv->ret);
+}
+
+dispatcher_cx::dispatcher_cx()
 {}
 
-void widget_t::set_editing(const char* str, int len, int start)
+dispatcher_cx::~dispatcher_cx()
 {}
+inline void dispatcher_cx::add(event_entity_t* p)
+{
+	v.push_back(p);
+}
 
-void widget_t::set_family(font_family_t * family, int fontsize)
-{}
-
+bool dispatcher_cx::trigger(dev_event_t* d)
+{
+	bool ret = false;
+	for (auto& it : v) {
+		ret = on_gui_event(it, d, pos);
+		if (ret)
+			break;
+	}
+	return ret;
+}
