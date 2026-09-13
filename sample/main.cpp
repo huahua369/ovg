@@ -23,7 +23,77 @@ using namespace std;
 #include <stb_image.h>
 #include <vgui_sdl3.h>
 
+// timeline_components.h
+struct CTimeline {
+	float duration = 10.0f;   // 总时长（秒）
+	float cursor = 0.0f;    // 当前播放头位置
+	float zoom = 1.0f;    // 时间缩放
+	float scroll_x = 0.0f;    // 水平滚动
+	float track_height = 24.0f;
+	float header_height = 20.0f;
+	int   active_track = 0;
+};
 
+struct CTimelineTrack {
+	int  track_index = 0;
+	bool expanded = true;
+};
+
+struct CTimelineClip {
+	float start = 0.0f;
+	float end = 1.0f;
+	uint32_t color = 0xFF4FA3FF; // ABGR
+};
+void timeline_draw_system(CTimeline* tl, CTimelineTrack* tk, int tkcount, ovg_ctx_cb* ovg, rvg_t* vg, font_familys_t* familys)
+{
+	if (!tl) return;
+	// 1. 背景
+	ovg->rectangle(vg, 0, 0, 800, 600);
+	ovg->set_source_color(vg, 0xFF222222);
+	ovg->fill(vg);
+	// 2. 时间刻度
+	float px_per_sec = 60.0f * tl->zoom;
+	int first_tick = (int)(tl->scroll_x / px_per_sec);
+	int last_tick = (int)((tl->scroll_x + 800) / px_per_sec) + 1;
+
+	ovg->set_source_color(vg, 0xFF444444);
+	for (int i = first_tick; i <= last_tick; ++i) {
+		float x = i * px_per_sec - tl->scroll_x;
+		ovg->move_to(vg, x, tl->header_height);
+		ovg->line_to(vg, x, 600);
+		ovg->stroke(vg);
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.1fs", (float)i);
+		text_style_t style4 = {};
+		style4.family = familys;
+		style4.fontsize = 12;
+		style4.color = 0xff0080f0;
+		style4.color_stroke = 0xFF0000f0;
+		text_st_t text4 = {};
+		text4.text = (char*)buf;
+		text4.text_len = -1;
+		text4.pos = { x + 2,30 };
+		ovg->add_text(vg, &text4, &style4, nullptr);
+	}
+
+	// 3. Tracks
+	for (size_t i = 0; i < tkcount; i++)
+	{
+		auto* track = tk + i;
+		float y = tl->header_height + track->track_index * tl->track_height;
+		ovg->rectangle(vg, 0, y, 4, tl->track_height);
+		ovg->set_source_color(vg, track->track_index % 2 ? 0xFF2A2A2A : 0xFF303030);
+		ovg->fill(vg);
+	}
+
+
+	// 5. 播放头
+	float cx = tl->cursor * px_per_sec - tl->scroll_x;
+	ovg->move_to(vg, cx, 0);
+	ovg->line_to(vg, cx, 600);
+	ovg->set_source_color(vg, 0xFFFF0000);
+	ovg->stroke(vg);
+}
 int main()
 {
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
@@ -82,7 +152,11 @@ int main()
 	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
 
 	SDL_ShowWindow(form1->window);
-
+	CTimeline tl[2] = {}; CTimelineTrack tk[10] = {}; int tkcount = 10;
+	for (size_t i = 0; i < tkcount; i++)
+	{
+		tk[i].track_index = i;
+	}
 	while (running) {
 		if (wg->get_event() < 0)
 		{
@@ -165,6 +239,7 @@ int main()
 				img->valid = false;
 				cb->image_update(vg, img, &desc);
 			}
+			timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			int ms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);

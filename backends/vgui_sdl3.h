@@ -20,9 +20,6 @@ namespace hz {
 	class drop_regs;
 }
 
-#ifndef BIT_INC
-#define BIT_INC(x) (1<<x)
-#endif
 
 enum form_flags_e
 {
@@ -68,6 +65,7 @@ struct gui_viewport {
 	std::string drop_text;
 	glm::ivec2 _last_pos = {};
 	glm::ivec4 _ime_rect = {};
+	std::unordered_map<int,void(*)()> ed;
 public:
 	void trigger(dev_event_t* e);
 };

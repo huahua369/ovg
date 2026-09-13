@@ -14,6 +14,10 @@ struct finger_et;
 struct ole_drop_et;
 */
 
+#ifndef BIT_INC
+#define BIT_INC(x) (1<<x)
+#endif
+
 // 控件事件类型
 enum class event_type_e :uint32_t {
 	none = 0,
@@ -165,7 +169,7 @@ struct dev_event_t
 
 // gui事件管理
 struct gui_io_mk_state {
-	bool KeysDown[512]; 
+	bool KeysDown[512];
 	bool KeyCtrl : 1;
 	bool KeyShift : 1;
 	bool KeyAlt : 1;
@@ -177,7 +181,7 @@ struct gui_io_state_t
 	glm::vec2 MouseDelta;
 	glm::vec2 MousePos;
 	glm::vec2 wheel;
-	glm::ivec4* ime_rect = 0; 
+	glm::ivec4* ime_rect = 0;
 	bool MouseDown[8] = {};
 	float deltaTime = 0.0f;
 	bool WantCaptureMouse : 1 = false;
@@ -189,3 +193,60 @@ struct gui_io_state_t
 void do_dragdrop_file(const char** fn, int count);
 // 发起拖放文本
 void do_dragdrop_str(const char* str, int count);
+
+struct font_family_t;
+struct ovg_ctx_cb;
+struct rvg_t;
+/*
+1.普通状态2，鼠标hover状态  3.active 点击状态  4.focus 取得焦点状态  4.disable禁用状态
+*/
+enum class BTN_STATE :uint8_t
+{
+	STATE_NOMAL = BIT_INC(0),
+	STATE_HOVER = BIT_INC(1),
+	STATE_ACTIVE = BIT_INC(2),
+	STATE_FOCUS = BIT_INC(3),
+	STATE_DISABLE = BIT_INC(4),
+};
+struct widget_t
+{
+public:
+	int id = 0;
+	int wtype = 0;
+	int dindex = 0;			// 渲染排序用
+	int _bst = 1;			// 鼠标状态
+	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标
+	glm::ivec2 _pos = {};	// 控件坐标
+	glm::ivec2 _size = {};	// 控件大小
+	glm::ivec2 fpos = {};	// 窗口坐标 
+
+	std::function<void(dev_event_t* dv, const glm::vec2& pos)> on_event_cb;	//自定义事件处理
+	std::function<void(void* p, event_type_e type, const glm::vec2& mps)> mevent_cb;	//通用事件处理
+
+
+	widget_t* parent = 0;
+	glm::ivec2 hscroll = { 1,1 };// x=1则受水平滚动条影响，y=1则受垂直滚动条影响
+	int _old_bst = 0;			 // 鼠标状态 
+	//int cks = 0;				// 鼠标点击状态
+	glm::ivec2 cursor = { 0,-1 };			// 光标坐标
+	bool has_drag = false;	// 是否有拖动事件 
+	bool outer_scroll = false;	// 鼠标不在范围内也响应滚轮事件
+	bool is_input = false;
+public:
+	widget_t();
+	virtual ~widget_t();
+
+	virtual void set_pos(const glm::ivec2& ps);
+	virtual void set_size(const glm::vec2& ss);
+	virtual glm::vec2 get_size();
+	virtual bool on_mevent(event_type_e type, const glm::vec2& mps, void* e);
+	virtual void on_event(uint32_t type, dev_event_t* ep);
+	virtual bool update(float delta);
+	virtual void draw(ovg_ctx_cb* rv, rvg_t* p); ;
+	virtual glm::ivec4 input_pos();
+	virtual void add_text(const char* str, int len);
+	virtual void set_editing(const char* str, int len, int start);
+	virtual void set_family(font_family_t* family, int fontsize);
+};
+
+bool on_gui_event(widget_t* pw, dev_event_t* dv, const glm::ivec2& ppos);
