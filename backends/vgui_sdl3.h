@@ -159,3 +159,5 @@ public:
 private:
 	void set_syscursor(int type);
 };
+
+

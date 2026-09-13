@@ -17,7 +17,7 @@ vgui sdl3实现
 #include <ole2.h>
 #include <win_core.h>
 #endif  
-
+#include <typeindex>
 #include <mutex>
 #include <vgui.h>
 #include "vgui_sdl3.h"
@@ -663,7 +663,7 @@ void app_mgr::process_event(const SDL_Event* e)
 		int dir = e->wheel.direction;
 		t.x = e->wheel.x;
 		t.y = e->wheel.y;
-		float preciseX = e->wheel.mouse_x;// preciseX;
+		float preciseX = e->wheel.mouse_x;
 		float preciseY = e->wheel.mouse_y;
 		if (pwio /*&& !pw->_HitTest*/) {
 			pwio->wheel = { t.x,t.y };
@@ -690,7 +690,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		viewport->trigger(&dev);
 
 	}break;
-	//case SDL_TOUCH_MOUSEID: 
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:	//1
 	case SDL_EVENT_MOUSE_BUTTON_UP:		//0
 	{
@@ -705,9 +704,7 @@ void app_mgr::process_event(const SDL_Event* e)
 		{
 			//pw->hide_child();
 		}
-		if (pwio) {
-			pwio->MouseDown[t.button - 1] = t.down;
-		}
+		pwio->MouseDown[t.button - 1] = t.down;
 
 		dev.v.b = &t;
 		viewport->trigger(&dev);
@@ -903,3 +900,4 @@ void app_mgr::set_defcursor(cursor_st t)
 		break;
 	}
 }
+
