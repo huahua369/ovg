@@ -606,7 +606,8 @@ void app_mgr::process_event(const SDL_Event* e)
 	auto pwio = io();
 	bool viewports_enabled = docking().viewports_enabled;
 	auto viewport = active_viewport_;
-	if (!viewport || !pwio)return;
+	if (!viewport || !pwio)
+		return;
 	dev.io = pwio;
 	switch (e->type) {
 	case SDL_EVENT_MOUSE_MOTION:

@@ -1,19 +1,12 @@
 #pragma once
-
+/*
+事件
+widget_t
+*/
 #include <functional>
 #include <string>
 #include <set>
 
-/*
-struct mouse_move_et;
-struct mouse_button_et;
-struct mouse_wheel_et;
-struct keyboard_et;
-struct text_editing_et;
-struct text_input_et;
-struct finger_et;
-struct ole_drop_et;
-*/
 
 #ifndef BIT_INC
 #define BIT_INC(x) (1<<x)
@@ -224,13 +217,14 @@ public:
 	int _bst = 1;					// 鼠标状态
 	int _old_bst = 0;				// 鼠标状态  
 	glm::ivec2 cursor = { 0,-1 };	// 光标坐标
-	bool has_drag = false;			// 是否有拖动事件 
-	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
-	std::unordered_map<int, std::function<void()>> calls[2];
+	std::unordered_map<int, std::function<void()>>* calls = 0;
 	dev_event_t* cde = 0;		// 临时指针
 	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
 	event_type_e etype = {};	// on事件类型
 	glm::ivec2 mouse_pos = {};	// 处理后的鼠标坐标
+	bool has_drag = false;			// 是否有拖动事件 
+	bool is_drag = false;			// 拖动状态
+	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
 public:
 	event_entity_t();
 	virtual ~event_entity_t();
@@ -245,6 +239,7 @@ public:
 	void remove_text();
 	void call(int idx, int type);
 	bool hittest(const glm::ivec2& mpos);
+	std::unordered_map<int, std::function<void()>>& get_cbs(int i);
 };
 class dispatcher_cx
 {

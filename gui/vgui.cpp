@@ -11,18 +11,23 @@ event_entity_t::event_entity_t()
 {}
 
 event_entity_t::~event_entity_t()
-{}
+{
+	if (calls)delete[] calls;
+	calls = 0;
+}
 void event_entity_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb)
 {
+	auto cbs = get_cbs(0);
 	if (cb)
-		calls[0][(int)e] = [=]() { cb(cde); };
+		cbs[(int)e] = [=]() { cb(cde); };
 	else
-		calls[0].erase((int)e);
+		cbs.erase((int)e);
 }
 void event_entity_t::set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb)
 {
+	auto cbs = get_cbs(1);
 	if (cb)
-		calls[1][(int)e] = [=]() { cb(etype, mouse_pos); };
+		cbs[(int)e] = [=]() { cb(etype, mouse_pos); };
 }
 
 void event_entity_t::set_on_text(std::function<void(text_input_et*)> cb)
@@ -39,23 +44,28 @@ void event_entity_t::set_on_editing(std::function<void(text_editing_et*)> cb)
 
 void event_entity_t::remove(dev_event_type_e e)
 {
-	calls[0].erase((int)e);
+	if (calls)
+		calls[0].erase((int)e);
 }
 
 void event_entity_t::remove(event_type_e e)
 {
-	calls[1].erase((int)e);
+	if (calls)
+		calls[1].erase((int)e);
 }
 
 void event_entity_t::remove_text()
 {
-	calls[0].erase((int)dev_event_type_e::text_input_e);
-	calls[0].erase((int)dev_event_type_e::text_editing_e);
+	if (calls)
+	{
+		calls[0].erase((int)dev_event_type_e::text_input_e);
+		calls[0].erase((int)dev_event_type_e::text_editing_e);
+	}
 }
 
 void event_entity_t::call(int idx, int type)
 {
-	if (idx >= 0 && idx < 2) {
+	if (calls && idx >= 0 && idx < 2) {
 		auto& c = calls[idx];
 		auto it = c.find(type);
 		if (it != c.end() && it->second) {
@@ -119,6 +129,13 @@ bool event_entity_t::hittest(const glm::ivec2& mpos)
 	return rect_includes(rc, mpos);
 }
 
+std::unordered_map<int, std::function<void()>>& event_entity_t::get_cbs(int i)
+{
+	if (!calls)
+		calls = new std::unordered_map<int, std::function<void()>>[2]();
+	return calls[i];
+}
+
 // 通用控件鼠标事件处理 type有on_move/on_scroll/on_drag/on_down/on_up/on_click/on_dblclick/on_tripleclick
 bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	bool hover = false;
@@ -154,7 +171,6 @@ bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 				wp->call(1, (int)wp->etype);
 			}
 		}
-
 		{
 			if (wp->_bst & (int)BTN_STATE::STATE_HOVER)
 			{
@@ -162,10 +178,10 @@ bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 				wp->mouse_pos = mps;
 				wp->call(1, (int)wp->etype);
 			}
-			if (wp->_bst & (int)BTN_STATE::STATE_ACTIVE) {
+			if (wp->has_drag && wp->_bst & (int)BTN_STATE::STATE_ACTIVE) {
 				auto dps = mps - wp->curpos;
-				bool first = !wp->has_drag;
-				wp->has_drag = true;
+				bool first = !wp->is_drag;
+				wp->is_drag = true;
 				if (first) {
 					wp->etype = event_type_e::on_dragstart;
 					wp->mouse_pos = mps;
@@ -187,7 +203,6 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 	if (!wp)return;
 	auto e = &dv->v;
 	auto t = dv->type;
-	//wp->form = ep->form;
 	switch (t)
 	{
 	case dev_event_type_e::mouse_move_e:
@@ -197,13 +212,6 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 	{
 		auto p = e->b;
 		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
-		//bool isd = wp->cmpos == mps; // 判断坐标是否改变
-		//wp->cmpos = mps;
-		//auto dv = dynamic_cast<div_cx*>(wp);
-		//bool cs = false;
-		//if (dv) {
-		//	cs = dv->hittest(mps + (glm::ivec2)pos);
-		//}
 		void* cs = 0;
 		if (!cs && wp->_bst & (int)BTN_STATE::STATE_HOVER) {
 			if (p->down == 1)
@@ -214,8 +222,6 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 				if (p->down == 1) {
 					wp->_bst |= (int)BTN_STATE::STATE_ACTIVE;
 					wp->curpos = mps - (glm::ivec2)wp->_pos;
-					//wp->cks = 0;
-
 					wp->etype = event_type_e::on_down;
 					wp->mouse_pos = mps;
 					wp->call(1, (int)wp->etype);
@@ -223,11 +229,7 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 				else {
 					if (wp->_bst & (int)BTN_STATE::STATE_ACTIVE)
 					{
-						//wp->cks = p->clicks;
-						if (wp->has_drag)
-						{
-						}
-						else
+						if (!wp->has_drag || !wp->is_drag)// 没有拖动时执行点击事件
 						{
 							wp->etype = event_type_e::on_up;
 							wp->mouse_pos = mps;
@@ -235,7 +237,6 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 							event_type_e tc = event_type_e::on_click; //左键单击
 							if (p->clicks == 2) { tc = event_type_e::on_dblclick; }
 							else if (p->clicks == 3) { tc = event_type_e::on_tripleclick; }
-
 							wp->etype = tc;
 							wp->mouse_pos = mps;
 							wp->call(1, (int)wp->etype);
@@ -248,14 +249,13 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 		if (p->down == 0) {
 			wp->_bst &= ~(int)BTN_STATE::STATE_ACTIVE;
 			wp->_bst |= (int)BTN_STATE::STATE_NOMAL;
-			if (wp->has_drag)
+			if (wp->has_drag && wp->is_drag)
 			{
 				wp->etype = event_type_e::on_dragend;
 				wp->mouse_pos = mps;
 				wp->call(1, (int)wp->etype);
 			}
-			wp->has_drag = false;
-
+			wp->is_drag = false;
 			wp->etype = event_type_e::mouse_up;
 			wp->mouse_pos = mps;
 			wp->call(1, (int)wp->etype);
