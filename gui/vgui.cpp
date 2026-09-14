@@ -7,15 +7,15 @@ gui实现
 #include "pch.h"
 #include "vgui.h"
 
-event_entity_t::event_entity_t()
+event_obj_t::event_obj_t()
 {}
 
-event_entity_t::~event_entity_t()
+event_obj_t::~event_obj_t()
 {
 	if (calls)delete[] calls;
 	calls = 0;
 }
-void event_entity_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb)
+void event_obj_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb)
 {
 	auto cbs = get_cbs(0);
 	if (cb)
@@ -23,38 +23,38 @@ void event_entity_t::set_event_dev(dev_event_type_e e, std::function<void(dev_ev
 	else
 		cbs.erase((int)e);
 }
-void event_entity_t::set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb)
+void event_obj_t::set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb)
 {
 	auto cbs = get_cbs(1);
 	if (cb)
 		cbs[(int)e] = [=]() { cb(etype, mouse_pos); };
 }
 
-void event_entity_t::set_on_text(std::function<void(text_input_et*)> cb)
+void event_obj_t::set_on_text(std::function<void(text_input_et*)> cb)
 {
 	if (cb)
 		set_event_dev(dev_event_type_e::text_input_e, [=](dev_event_t* dv) {cb(dv->v.t); });
 }
 
-void event_entity_t::set_on_editing(std::function<void(text_editing_et*)> cb)
+void event_obj_t::set_on_editing(std::function<void(text_editing_et*)> cb)
 {
 	if (cb)
 		set_event_dev(dev_event_type_e::text_editing_e, [=](dev_event_t* dv) {cb(dv->v.e); });
 }
 
-void event_entity_t::remove(dev_event_type_e e)
+void event_obj_t::remove(dev_event_type_e e)
 {
 	if (calls)
 		calls[0].erase((int)e);
 }
 
-void event_entity_t::remove(event_type_e e)
+void event_obj_t::remove(event_type_e e)
 {
 	if (calls)
 		calls[1].erase((int)e);
 }
 
-void event_entity_t::remove_text()
+void event_obj_t::remove_text()
 {
 	if (calls)
 	{
@@ -63,7 +63,7 @@ void event_entity_t::remove_text()
 	}
 }
 
-void event_entity_t::call(int idx, int type)
+void event_obj_t::call(int idx, int type)
 {
 	if (calls && idx >= 0 && idx < 2) {
 		auto& c = calls[idx];
@@ -123,13 +123,13 @@ glm::ivec2 check_box_cr1(const glm::vec2& p, const glm::vec4* d, size_t count, i
 	return  rs;
 }
 
-bool event_entity_t::hittest(const glm::ivec2& mpos)
+bool event_obj_t::hittest(const glm::ivec2& mpos)
 {
 	glm::vec4 rc = { _pos, _pos + _size };
 	return rect_includes(rc, mpos);
 }
 
-std::unordered_map<int, std::function<void()>>& event_entity_t::get_cbs(int i)
+std::unordered_map<int, std::function<void()>>& event_obj_t::get_cbs(int i)
 {
 	if (!calls)
 		calls = new std::unordered_map<int, std::function<void()>>[2]();
@@ -137,7 +137,7 @@ std::unordered_map<int, std::function<void()>>& event_entity_t::get_cbs(int i)
 }
 
 // 通用控件鼠标事件处理 type有on_move/on_scroll/on_drag/on_down/on_up/on_click/on_dblclick/on_tripleclick
-bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
+bool widget_on_move(event_obj_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	bool hover = false;
 	if (!wp)return hover;
 	auto e = &dv->v;
@@ -199,7 +199,7 @@ bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	return hover;
 }
 
-void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
+void widget_on_event(event_obj_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	if (!wp)return;
 	auto e = &dv->v;
 	auto t = dv->type;
@@ -281,7 +281,7 @@ void widget_on_event(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) 
 
 }
 
-bool on_gui_event(event_entity_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
+bool on_gui_event(event_obj_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
 {
 	bool r = false;
 	auto e = &dv->v;
@@ -297,16 +297,16 @@ dispatcher_cx::dispatcher_cx()
 
 dispatcher_cx::~dispatcher_cx()
 {}
-inline void dispatcher_cx::add(event_entity_t* p)
+inline void dispatcher_cx::add(event_obj_t* p)
 {
-	v.push_back(p);
+	_v.push_back(p);
 }
 
 bool dispatcher_cx::trigger(dev_event_t* d)
 {
 	bool ret = false;
-	for (auto& it : v) {
-		ret = on_gui_event(it, d, pos);
+	for (auto it = _v.rbegin(); it != _v.rend(); it++) {
+		ret = on_gui_event(*it, d, pos);
 		if (ret)
 			break;
 	}

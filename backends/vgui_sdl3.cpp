@@ -277,7 +277,7 @@ void os_window::set_ime_pos(const glm::ivec4& r) {
 			::ImmReleaseContext(hWnd, hIMC);
 		}
 #else 
-		SDL_Rect rect = { r.x,r.y, r.z, r.w };  
+		SDL_Rect rect = { r.x,r.y, r.z, r.w };
 		SDL_SetTextInputArea(window, &rect, 0);
 #endif
 	} while (0);
@@ -617,6 +617,7 @@ void app_mgr::process_event(const SDL_Event* e)
 		mt.xrel = e->motion.xrel;
 		mt.yrel = e->motion.yrel;		// The relative motion in the XY direction 
 		mt.which = e->motion.which;		// 鼠标实例 
+		dev.type = dev_event_type_e::mouse_move_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;
@@ -660,6 +661,7 @@ void app_mgr::process_event(const SDL_Event* e)
 			pwio->wheel = { t.x,t.y };
 		}
 		dev.v.w = &t;
+		dev.type = dev_event_type_e::mouse_wheel_e;
 		viewport->trigger(&dev);
 	}
 	break;
@@ -668,6 +670,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_FINGER_MOTION:
 	{
 		finger_et ft = {};
+		dev.type = dev_event_type_e::finger_e;
 		ft.t = e->type - SDL_EVENT_FINGER_DOWN + 1;
 		ft.tid = e->tfinger.fingerID;
 		ft.touchId = e->tfinger.fingerID;
@@ -685,6 +688,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_MOUSE_BUTTON_UP:		//0
 	{
 		mouse_button_et t = {};
+		dev.type = dev_event_type_e::mouse_button_e;
 		t.which = e->button.which;
 		t.button = e->button.button;
 		t.down = e->button.down; //SDL_PRESSED; SDL_RELEASED;
@@ -722,6 +726,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_TEXT_INPUT:
 	{
 		text_input_et t = {};
+		dev.type = dev_event_type_e::text_input_e;
 		t.text = (char*)e->text.text;
 		dev.v.t = &t;
 		viewport->trigger(&dev);
@@ -732,6 +737,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_TEXT_EDITING:
 	{
 		text_editing_et t = {};
+		dev.type = dev_event_type_e::text_editing_e;
 		t.text = (char*)e->edit.text;
 		t.start = e->edit.start;
 		t.length = e->edit.length;
@@ -746,6 +752,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	{
 		keyboard_et t = {};
 		et2key(e, &t);
+		dev.type = dev_event_type_e::keyboard_e;
 		auto kn = SDL_GetKeyName(t.keycode);
 		pwio->mks->KeysDown[*kn] = t.down;
 		pwio->mks->KeysDown[VK_SHIFT] = (t.kmod & KM_SHIFT);
@@ -766,6 +773,7 @@ void app_mgr::process_event(const SDL_Event* e)
 		ole_drop_et t = {};
 		t.x = e->drop.x;
 		t.y = e->drop.y;
+		dev.type = dev_event_type_e::ole_drop_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;
@@ -782,6 +790,8 @@ void app_mgr::process_event(const SDL_Event* e)
 		ole_drop_et t = {};
 		t.x = e->drop.x;
 		t.y = e->drop.y;//结束
+
+		dev.type = dev_event_type_e::ole_drop_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;

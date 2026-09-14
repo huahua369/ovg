@@ -1,7 +1,11 @@
 #pragma once
 /*
 事件
-widget_t
+event_obj_t管理事件注册、事件状态保存
+dispatcher_cx管理event_obj_t
+widget_t控件基类，继承event_obj_t
+div_cx布局类继承widget_t、有dispatcher_cx
+gui_viewport管理div_cx
 */
 #include <functional>
 #include <string>
@@ -206,7 +210,7 @@ enum class BTN_STATE :uint8_t
 	STATE_FOCUS = BIT_INC(3),
 	STATE_DISABLE = BIT_INC(4),
 };
-struct event_entity_t
+struct event_obj_t
 {
 public:
 	void* ptr = 0;
@@ -226,8 +230,8 @@ public:
 	bool is_drag = false;			// 拖动状态
 	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
 public:
-	event_entity_t();
-	virtual ~event_entity_t();
+	event_obj_t();
+	virtual ~event_obj_t();
 	// event_type_e::none则监听所有
 	void set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb);
 	void set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb);
@@ -245,11 +249,11 @@ class dispatcher_cx
 {
 public:
 	glm::ivec2 pos = {};			// 这批事件区的父级坐标
-	std::vector<event_entity_t*> v;
+	std::vector<event_obj_t*> _v;
 public:
 	dispatcher_cx();
 	~dispatcher_cx();
-	void add(event_entity_t* p);
+	void add(event_obj_t* p);
 	bool trigger(dev_event_t* d);
 private:
 
