@@ -18,6 +18,9 @@
     {
       "name": "glm"
     },
+    {
+      "name": "entt"
+    },
     { "name": "nlohmann-json" },
     {
       "name": "glslang"

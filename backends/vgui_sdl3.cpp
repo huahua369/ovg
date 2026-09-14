@@ -226,14 +226,6 @@ void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
 }
 
 
-void gui_viewport::trigger(dev_event_t* e)
-{
-	for (auto it = ed.begin(); it != ed.end(); it++) {
-		if (*it) {
-			if ((*it)->trigger(e))break;
-		}
-	}
-}
 os_window::~os_window() {
 	window = 0;
 }
@@ -263,7 +255,7 @@ bool os_window::text_input_active()
 void os_window::set_ime_pos(const glm::ivec4& r) {
 	do
 	{
-		if (!(r.w >= 0 && r.z > 0))break;
+		if (r.w < 1 || r.z < 1)break;
 #ifdef _WIN320
 		auto hWnd = (HWND)pce::get_windowptr(window);
 		if (!hWnd)break;
@@ -285,8 +277,7 @@ void os_window::set_ime_pos(const glm::ivec4& r) {
 			::ImmReleaseContext(hWnd, hIMC);
 		}
 #else 
-		SDL_Rect rect = { r.x,r.y, r.z, r.w }; //ime_pos;
-		//printf("ime pos: %d,%d\n", r.x, r.y);
+		SDL_Rect rect = { r.x,r.y, r.z, r.w };  
 		SDL_SetTextInputArea(window, &rect, 0);
 #endif
 	} while (0);
@@ -616,10 +607,10 @@ void app_mgr::process_event(const SDL_Event* e)
 	bool viewports_enabled = docking().viewports_enabled;
 	auto viewport = active_viewport_;
 	if (!viewport || !pwio)return;
+	dev.io = pwio;
 	switch (e->type) {
 	case SDL_EVENT_MOUSE_MOTION:
 	{
-		//auto afp = ctx->get_activate_form();
 		mouse_move_et mt = {};
 		glm::ivec2 mouse_pos = { e->motion.x,e->motion.y };
 		mt.xrel = e->motion.xrel;
@@ -634,12 +625,10 @@ void app_mgr::process_event(const SDL_Event* e)
 		}
 		mt.x = mouse_pos.x;
 		mt.y = mouse_pos.y;			// 鼠标移动坐标
-
 		//pw->hittest(mouse_pos);
 		if (pwio) {
 			pwio->MousePos = mouse_pos;
 			pwio->MouseDelta = { mt.xrel,mt.yrel };
-
 			//int ms = SDL_GetModState();
 			//pwio->mks->KeyCtrl = (ms & SDL_KMOD_LCTRL || ms & SDL_KMOD_RCTRL);
 			//pwio->mks->KeyShift = (ms & SDL_KMOD_LSHIFT || ms & SDL_KMOD_RSHIFT);
@@ -650,9 +639,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		{
 			dev.v.m = &mt;
 			viewport->trigger(&dev);
-		}
-		else
-		{
 		}
 		viewport->_last_pos = mouse_pos;
 		if ((int)mt.cursor > 0) {
@@ -706,13 +692,14 @@ void app_mgr::process_event(const SDL_Event* e)
 		t.y = e->button.y;
 		if (t.down)
 		{
-			//pw->hide_child();
+			pwio->clicks = 0;
+		}
+		else {
+			pwio->clicks = t.clicks;
 		}
 		pwio->MouseDown[t.button - 1] = t.down;
-
 		dev.v.b = &t;
 		viewport->trigger(&dev);
-
 		if (pw && capture_type)
 		{
 			if (t.down)

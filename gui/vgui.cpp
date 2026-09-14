@@ -64,6 +64,11 @@ void event_entity_t::call(int idx, int type)
 	}
 }
 
+// rc= left,top,right,bottom
+bool rect_includes(const glm::vec4& rc, const glm::vec2& p)
+{
+	return (p.x >= rc.x) && (p.x <= rc.z) && (p.y >= rc.y) && (p.y <= rc.w);
+}
 
 
 bool in_rect_box(const glm::ivec4& rect, const glm::ivec2& mousePos) {
@@ -107,6 +112,13 @@ glm::ivec2 check_box_cr1(const glm::vec2& p, const glm::vec4* d, size_t count, i
 	}
 	return  rs;
 }
+
+bool event_entity_t::hittest(const glm::ivec2& mpos)
+{
+	glm::vec4 rc = { _pos, _pos + _size };
+	return rect_includes(rc, mpos);
+}
+
 // 通用控件鼠标事件处理 type有on_move/on_scroll/on_drag/on_down/on_up/on_click/on_dblclick/on_tripleclick
 bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	bool hover = false;
@@ -117,11 +129,9 @@ bool widget_on_move(event_entity_t* wp, dev_event_t* dv, const glm::vec2& pos) {
 	{
 		auto p = e->m;
 		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
-		auto gpos = wp->_pos;
-		// 判断是否鼠标进入 
-		glm::vec4 trc = { gpos + wp->fpos, wp->_size };
-		auto k = check_box_cr1(mps, &trc, 1, sizeof(glm::vec4));
-		if (k.x) {
+		// 判断是否鼠标进入
+		auto k = wp->hittest(mps);
+		if (k) {
 			bool hoverold = wp->_bst & (int)BTN_STATE::STATE_HOVER;
 			wp->_bst |= (int)BTN_STATE::STATE_HOVER;   hover = true;
 			if (!(wp->_bst & (int)BTN_STATE::STATE_ACTIVE))// 不是鼠标则独占
@@ -301,4 +311,13 @@ bool dispatcher_cx::trigger(dev_event_t* d)
 			break;
 	}
 	return ret;
+}
+
+void gui_viewport::trigger(dev_event_t* e)
+{
+	for (auto it = _v.rbegin(); it != _v.rend(); it++) {
+		if (*it) {
+			if ((*it)->trigger(e))break;
+		}
+	}
 }

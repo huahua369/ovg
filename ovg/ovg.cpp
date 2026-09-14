@@ -5798,7 +5798,7 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 			desc.is_copy = false;
 			img->valid = false;
 			std::string fn = "temp/font_pack_ovg.png";
-			write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
+			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
 			cb->image_update(rvg, img, &desc);
 		}
 		cb->add_geometry(
@@ -5895,7 +5895,7 @@ void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 			desc.is_copy = false;
 			img->valid = false;
 			std::string fn = "temp/font_pack_ovg.png";
-			write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
+			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
 			cb->image_update(rvg, img, &desc);
 		}
 		cb->add_geometry(

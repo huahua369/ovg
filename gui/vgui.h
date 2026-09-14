@@ -149,6 +149,8 @@ struct ole_drop_et
 	int* has;			// 是否接收, 0不接收，1接收
 
 };
+struct gui_io_state_t;
+
 struct dev_event_t
 {
 	union
@@ -162,6 +164,7 @@ struct dev_event_t
 		struct finger_et* f;
 		struct ole_drop_et* d;
 	}v = {};
+	gui_io_state_t* io = 0;
 	dev_event_type_e type = dev_event_type_e::none;
 	uint8_t ret = 0;
 };
@@ -185,6 +188,7 @@ struct gui_io_state_t
 	glm::ivec4* ime_rect = 0;
 	bool MouseDown[8] = {};
 	float deltaTime = 0.0f;
+	int8_t clicks = 0;
 	bool WantCaptureMouse : 1 = false;
 	bool WantCaptureKey : 1 = false;
 	bool WantTextInput : 1 = false;
@@ -214,17 +218,14 @@ struct event_entity_t
 public:
 	void* ptr = 0;
 	glm::ivec2 _pos = {};	// 控件坐标
-	glm::ivec2 _size = {};	// 控件大小
-	glm::ivec2 fpos = {};	// 窗口坐标 
-	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标
-	glm::ivec4 input_pos = {};
+	glm::ivec2 _size = {};	// 控件大小 
+	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
 	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响
 	int _bst = 1;					// 鼠标状态
 	int _old_bst = 0;				// 鼠标状态  
 	glm::ivec2 cursor = { 0,-1 };	// 光标坐标
 	bool has_drag = false;			// 是否有拖动事件 
 	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
-	bool is_input = false;
 	std::unordered_map<int, std::function<void()>> calls[2];
 	dev_event_t* cde = 0;		// 临时指针
 	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
@@ -243,6 +244,7 @@ public:
 	// 删除on_text和on_editing事件监听
 	void remove_text();
 	void call(int idx, int type);
+	bool hittest(const glm::ivec2& mpos);
 };
 class dispatcher_cx
 {
@@ -257,4 +259,12 @@ public:
 private:
 
 };
- 
+
+struct gui_viewport {
+	gui_io_state_t io = {};
+	std::string drop_text;
+	glm::ivec2 _last_pos = {};
+	std::vector<dispatcher_cx*> _v;
+public:
+	void trigger(dev_event_t* e);
+};

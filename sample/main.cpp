@@ -22,7 +22,9 @@ using namespace std;
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #include <vgui_sdl3.h>
-
+#define TECS_IMPLEMENTATION
+#include <tiny_ecs.h>
+#include <entt/entt.hpp>
 // timeline_components.h
 struct CTimeline {
 	float duration = 10.0f;   // 总时长（秒）
@@ -91,9 +93,63 @@ void timeline_draw_system(CTimeline* tl, CTimelineTrack* tk, int tkcount, ovg_ct
 	float cx = tl->cursor * px_per_sec - tl->scroll_x;
 	ovg->move_to(vg, cx, 0);
 	ovg->line_to(vg, cx, 600);
-	ovg->set_source_color(vg, 0xFFFF0000);
+	ovg->set_source_color(vg, 0xaFFF5000);
 	ovg->stroke(vg);
 }
+
+void test_ecs() {
+	struct CButton {
+		void (*on_click)() = nullptr;
+	};
+	struct CTransform {
+		float x = 0, y = 0;
+	};
+	struct CColor {
+		float r, g, b, a;
+	};
+	struct CWorldRect {
+		float x = 0, y = 0, w = 0, h = 0;
+	};
+	tecs::reg_world world;
+
+	tecs::Entity btn = world.create();
+	world.emplace<CButton>(btn, [] {
+		printf("Clicked!\n");
+		});
+	world.emplace<CTransform>(btn, CTransform(0.2, 1.0));
+	world.emplace<CColor>(btn, CColor(1.0, 0.5, 0.0, 1.0));
+	auto* p = world.get<CButton>(btn);
+	if (p) {
+		if (p->on_click)
+			p->on_click();
+	}
+
+	for (auto e : world.view<CButton>()) {
+		printf("Button entity: %d\n", e);
+	}
+	world.query<CTransform, CColor>(
+		[](tecs::Entity e, CTransform& t, CColor& c) {
+			printf("Entity %u: (%.1f,%.1f) #%02X%02X%02X\n",
+				tecs::entity_index(e), t.x, t.y,
+				uint8_t(c.r * 255), uint8_t(c.g * 255), uint8_t(c.b * 255));
+		}
+	);
+	world.destroy(btn);
+	tecs::Entity btn1 = world.create();
+	tecs::Entity btn2 = world.create();
+	world.destroy(btn1);
+	tecs::Entity btn3 = world.create();
+	assert(!world.is_valid(btn));
+	entt::registry reg;
+	auto e = reg.create();
+	auto e0 = reg.create();
+	reg.emplace_or_replace<CColor>(e, CColor(1.0, 0.5, 0.0, 1.0));
+	reg.destroy(e0);
+	auto e1 = reg.create(e0);
+	return;
+}
+
+
 int main()
 {
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
@@ -103,6 +159,7 @@ int main()
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Tahoma,Calibri,Noto Serif Devanagari", 0);
 
+	test_ecs();
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 
@@ -155,8 +212,9 @@ int main()
 	CTimeline tl[2] = {}; CTimelineTrack tk[10] = {}; int tkcount = 10;
 	for (size_t i = 0; i < tkcount; i++)
 	{
-		tk[i].track_index = i;
+		tk[i].track_index = i; 
 	}
+	tl->cursor = 2.0;
 	while (running) {
 		if (wg->get_event() < 0)
 		{
@@ -239,7 +297,7 @@ int main()
 				img->valid = false;
 				cb->image_update(vg, img, &desc);
 			}
-			timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
+			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			int ms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);

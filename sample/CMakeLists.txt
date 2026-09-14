@@ -1,6 +1,6 @@
  
 
-
+find_package(EnTT CONFIG REQUIRED)
 
 # ---- 源文件 ----
 set(SRC
@@ -10,6 +10,6 @@ set(SRC
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(ovg ${SRC})
-target_link_libraries(ovg PRIVATE libovg libvgui)
+target_link_libraries(ovg PRIVATE libovg libvgui EnTT::EnTT)
 
   

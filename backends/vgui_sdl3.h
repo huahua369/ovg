@@ -60,15 +60,6 @@ struct PlatformMonitor
 	float DpiScale;					// 1.0f = 96 DPI
 	void* PlatformHandle;			// Backend dependant data (e.g. HMONITOR, GLFWmonitor*, SDL Display Index, NSScreen*)
 };
-struct gui_viewport {
-	gui_io_state_t io = {};
-	std::string drop_text;
-	glm::ivec2 _last_pos = {};
-	glm::ivec4 _ime_rect = {};
-	std::vector<dispatcher_cx*> ed;
-public:
-	void trigger(dev_event_t* e);
-};
 struct os_window {
 	SDL_Window* window = nullptr;
 	os_window* parent = 0;      // 0 = 顶级窗口
@@ -157,5 +148,3 @@ public:
 private:
 	void set_syscursor(int type);
 };
-
-
