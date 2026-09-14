@@ -213,14 +213,12 @@ enum class BTN_STATE :uint8_t
 struct event_obj_t
 {
 public:
-	void* ptr = 0;
 	glm::ivec2 _pos = {};	// 控件坐标
 	glm::ivec2 _size = {};	// 控件大小 
 	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
-	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响
+	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响 
 	int _bst = 1;					// 鼠标状态
 	int _old_bst = 0;				// 鼠标状态  
-	glm::ivec2 cursor = { 0,-1 };	// 光标坐标
 	std::unordered_map<int, std::function<void()>>* calls = 0;
 	dev_event_t* cde = 0;		// 临时指针
 	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
@@ -242,7 +240,7 @@ public:
 	// 删除on_text和on_editing事件监听
 	void remove_text();
 	void call(int idx, int type);
-	bool hittest(const glm::ivec2& mpos);
+	bool hittest(const glm::ivec2& mpos)const;
 	std::unordered_map<int, std::function<void()>>& get_cbs(int i);
 };
 class dispatcher_cx
@@ -253,17 +251,66 @@ public:
 public:
 	dispatcher_cx();
 	~dispatcher_cx();
+	void clear();
 	void add(event_obj_t* p);
 	bool trigger(dev_event_t* d);
 private:
 
 };
+class div_cx;
+class hit_test_visitor;
+
+class widget_t :public event_obj_t
+{
+public:
+	std::string _name;
+	dispatcher_cx disp = {};
+public:
+	widget_t();
+	~widget_t();
+	virtual widget_t* hit_test(const glm::ivec2& mpos);
+	virtual bool dispatch_event(dev_event_t* e);
+	virtual void accept(hit_test_visitor*);
+private:
+
+};
+
+class div_cx :public widget_t
+{
+public:
+	std::vector<widget_t*> _v;
+public:
+	div_cx();
+	div_cx(const glm::ivec4& rc);
+	~div_cx();
+	void add(widget_t* c);
+	widget_t* hit_test(const glm::ivec2& mpos);
+	bool dispatch_event(dev_event_t* e) override;
+private:
+
+};
+class hit_test_visitor
+{
+public:
+	glm::ivec2 mouse_pos = {};
+	widget_t* result = 0;
+public:
+	hit_test_visitor(const glm::ivec2& mpos);
+	~hit_test_visitor();
+
+private:
+
+};
+
 
 struct gui_viewport {
 	gui_io_state_t io = {};
 	std::string drop_text;
 	glm::ivec2 _last_pos = {};
 	std::vector<dispatcher_cx*> _v;
+	div_cx _root = {};
 public:
+	void set_viewport(const glm::ivec4& rc);
+	void add_div(div_cx* c);
 	void trigger(dev_event_t* e);
 };

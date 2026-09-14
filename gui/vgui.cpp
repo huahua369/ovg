@@ -123,7 +123,7 @@ glm::ivec2 check_box_cr1(const glm::vec2& p, const glm::vec4* d, size_t count, i
 	return  rs;
 }
 
-bool event_obj_t::hittest(const glm::ivec2& mpos)
+bool event_obj_t::hittest(const glm::ivec2& mpos)const
 {
 	glm::vec4 rc = { _pos, _pos + _size };
 	return rect_includes(rc, mpos);
@@ -286,9 +286,9 @@ bool on_gui_event(event_obj_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
 	bool r = false;
 	auto e = &dv->v;
 	auto t = dv->type;
-	widget_on_event(pw, dv, ppos);
 	pw->cde = dv;
 	pw->call(0, (int)dv->type);
+	widget_on_event(pw, dv, ppos);
 	return (dv->ret);
 }
 
@@ -297,7 +297,11 @@ dispatcher_cx::dispatcher_cx()
 
 dispatcher_cx::~dispatcher_cx()
 {}
-inline void dispatcher_cx::add(event_obj_t* p)
+void dispatcher_cx::clear()
+{
+	_v.clear();
+}
+void dispatcher_cx::add(event_obj_t* p)
 {
 	_v.push_back(p);
 }
@@ -313,11 +317,90 @@ bool dispatcher_cx::trigger(dev_event_t* d)
 	return ret;
 }
 
+void gui_viewport::set_viewport(const glm::ivec4& rc)
+{
+	_root._pos = { rc.x,rc.y };
+	_root._size = { rc.z,rc.w };
+}
+
+void gui_viewport::add_div(div_cx* c)
+{
+	_root.add(c);
+}
+
 void gui_viewport::trigger(dev_event_t* e)
 {
+	//hit_test_visitor v{ io.MousePos };
+	//_root.accept(&v);
+	//v.result;
+	auto hr = _root.hit_test(io.MousePos);
+	_root.dispatch_event(e);
 	for (auto it = _v.rbegin(); it != _v.rend(); it++) {
 		if (*it) {
 			if ((*it)->trigger(e))break;
 		}
 	}
 }
+
+widget_t::widget_t()
+{}
+
+widget_t::~widget_t()
+{}
+
+widget_t* widget_t::hit_test(const glm::ivec2& mpos) {
+	return hittest(mpos) ? this : nullptr;
+}
+
+bool widget_t::dispatch_event(dev_event_t* e) {
+	return on_gui_event(this, e, {});
+}
+
+void widget_t::accept(hit_test_visitor* visi)
+{}
+
+div_cx::div_cx()
+{}
+
+div_cx::div_cx(const glm::ivec4& rc)
+{
+	_pos = { rc.x,rc.y };
+	_size = { rc.z,rc.w };
+}
+
+div_cx::~div_cx()
+{}
+
+void div_cx::add(widget_t* c)
+{
+	if (c)
+		_v.push_back(c);
+}
+
+
+widget_t* div_cx::hit_test(const glm::ivec2& mpos) {
+	if (!hittest(mpos))
+		return nullptr;
+	auto mps = mpos - _pos;
+	for (auto it = _v.rbegin(); it != _v.rend(); ++it) {
+		widget_t* child = *it;
+		if (child->hit_test(mps)) {
+			return child;
+		}
+	}
+	return this;
+}
+
+bool div_cx::dispatch_event(dev_event_t* e) {
+	for (auto it = _v.rbegin(); it != _v.rend(); ++it) {
+		if ((*it)->dispatch_event(e))
+			return true;
+	}
+	return on_gui_event(this, e, {});
+}
+
+hit_test_visitor::hit_test_visitor(const glm::ivec2& mpos) :mouse_pos(mpos)
+{}
+
+hit_test_visitor::~hit_test_visitor()
+{}
