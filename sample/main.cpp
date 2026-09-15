@@ -175,7 +175,7 @@ int main()
 	auto form1 = wg->create("SDL3 GPU Vector Graphics", surfsize.x, surfsize.y, 0);
 	form1->viewport = vp;
 	vp->set_viewport({ 0,0,surfsize.x, surfsize.y });
-	auto div0 = new div_cx({ 100,100,50,50 });
+	auto div0 = new div_cx0({ 100,100,50,50 });
 	vp->add_div(div0);
 	//if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
 	//	SDL_Log("Init failed: %s", SDL_GetError());

@@ -317,7 +317,7 @@ void gui_viewport::clear()
 	_root.clear();
 }
 
-void gui_viewport::add_div(div_cx* c)
+void gui_viewport::add_div(div_cx0* c)
 {
 	_root.add(c);
 }
@@ -348,31 +348,31 @@ bool widget_t::dispatch_event(dev_event_t* e) {
 	return on_gui_event(this, e, {});
 }
 
-div_cx::div_cx() :widget_t(widget_type::WT_DIV)
+div_cx0::div_cx0() :widget_t(widget_type::WT_DIV)
 {}
 
-div_cx::div_cx(const glm::ivec4& rc)
+div_cx0::div_cx0(const glm::ivec4& rc)
 {
 	_pos = { rc.x,rc.y };
 	_size = { rc.z,rc.w };
 }
 
-div_cx::~div_cx()
+div_cx0::~div_cx0()
 {}
 
-void div_cx::clear()
+void div_cx0::clear()
 {
 	_v.clear();
 }
 
-void div_cx::add(widget_t* c)
+void div_cx0::add(widget_t* c)
 {
 	if (c)
 		_v.push_back(c);
 }
 
 
-widget_t* div_cx::hit_test(const glm::ivec2& mpos) {
+widget_t* div_cx0::hit_test(const glm::ivec2& mpos) {
 	if (!hittest(mpos))
 		return nullptr;
 	auto mps = mpos - _pos;
@@ -385,7 +385,7 @@ widget_t* div_cx::hit_test(const glm::ivec2& mpos) {
 	return this;
 }
 
-bool div_cx::dispatch_event(dev_event_t* e) {
+bool div_cx0::dispatch_event(dev_event_t* e) {
 	for (auto it = _v.rbegin(); it != _v.rend(); ++it) {
 		if ((*it)->dispatch_event(e))
 			return true;
