@@ -295,3 +295,12 @@ public:
 	void add_div(div_cx* c);
 	void trigger(dev_event_t* e);
 };
+class ui_builder_cx
+{
+public:
+	ui_builder_cx();
+	~ui_builder_cx();
+
+private:
+
+};

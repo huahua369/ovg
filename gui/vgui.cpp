@@ -393,3 +393,9 @@ bool div_cx::dispatch_event(dev_event_t* e) {
 	return on_gui_event(this, e, {});
 }
 
+
+ui_builder_cx::ui_builder_cx()
+{}
+
+ui_builder_cx::~ui_builder_cx()
+{}
