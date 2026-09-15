@@ -22,12 +22,14 @@ void event_obj_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event
 		cbs[(int)e] = [=]() { cb(cde); };
 	else
 		cbs.erase((int)e);
+	cb_count.x = cbs.size();
 }
 void event_obj_t::set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb)
 {
 	auto cbs = get_cbs(1);
 	if (cb)
 		cbs[(int)e] = [=]() { cb(etype, mouse_pos); };
+	cb_count.y = cbs.size();
 }
 
 void event_obj_t::set_on_text(std::function<void(text_input_et*)> cb)
@@ -46,30 +48,36 @@ void event_obj_t::remove(dev_event_type_e e)
 {
 	if (calls)
 		calls[0].erase((int)e);
+	cb_count.x = calls[0].size();
 }
 
 void event_obj_t::remove(event_type_e e)
 {
 	if (calls)
 		calls[1].erase((int)e);
+	cb_count.y = calls[1].size();
 }
 
-void event_obj_t::remove_text()
+void event_obj_t::remove_on_text()
 {
 	if (calls)
 	{
 		calls[0].erase((int)dev_event_type_e::text_input_e);
 		calls[0].erase((int)dev_event_type_e::text_editing_e);
+		cb_count.x = calls[0].size();
 	}
 }
 
 void event_obj_t::call(int idx, int type)
 {
 	if (calls && idx >= 0 && idx < 2) {
-		auto& c = calls[idx];
-		auto it = c.find(type);
-		if (it != c.end() && it->second) {
-			it->second();
+		if (cb_count[idx] > 0)
+		{
+			auto& c = calls[idx];
+			auto it = c.find(type);
+			if (it != c.end() && it->second) {
+				it->second();
+			}
 		}
 	}
 }
@@ -292,35 +300,15 @@ bool on_gui_event(event_obj_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
 	return (dv->ret);
 }
 
-dispatcher_cx::dispatcher_cx()
-{}
-
-dispatcher_cx::~dispatcher_cx()
-{}
-void dispatcher_cx::clear()
-{
-	_v.clear();
-}
-void dispatcher_cx::add(event_obj_t* p)
-{
-	_v.push_back(p);
-}
-
-bool dispatcher_cx::trigger(dev_event_t* d)
-{
-	bool ret = false;
-	for (auto it = _v.rbegin(); it != _v.rend(); it++) {
-		ret = on_gui_event(*it, d, pos);
-		if (ret)
-			break;
-	}
-	return ret;
-}
-
 void gui_viewport::set_viewport(const glm::ivec4& rc)
 {
 	_root._pos = { rc.x,rc.y };
 	_root._size = { rc.z,rc.w };
+}
+
+void gui_viewport::clear()
+{
+	_root.clear();
 }
 
 void gui_viewport::add_div(div_cx* c)
@@ -335,14 +323,12 @@ void gui_viewport::trigger(dev_event_t* e)
 	//v.result;
 	auto hr = _root.hit_test(io.MousePos);
 	_root.dispatch_event(e);
-	for (auto it = _v.rbegin(); it != _v.rend(); it++) {
-		if (*it) {
-			if ((*it)->trigger(e))break;
-		}
-	}
 }
 
 widget_t::widget_t()
+{}
+
+widget_t::widget_t(widget_type t) :wtype(t)
 {}
 
 widget_t::~widget_t()
@@ -356,10 +342,7 @@ bool widget_t::dispatch_event(dev_event_t* e) {
 	return on_gui_event(this, e, {});
 }
 
-void widget_t::accept(hit_test_visitor* visi)
-{}
-
-div_cx::div_cx()
+div_cx::div_cx() :widget_t(widget_type::WT_DIV)
 {}
 
 div_cx::div_cx(const glm::ivec4& rc)
@@ -370,6 +353,11 @@ div_cx::div_cx(const glm::ivec4& rc)
 
 div_cx::~div_cx()
 {}
+
+void div_cx::clear()
+{
+	_v.clear();
+}
 
 void div_cx::add(widget_t* c)
 {
@@ -399,8 +387,3 @@ bool div_cx::dispatch_event(dev_event_t* e) {
 	return on_gui_event(this, e, {});
 }
 
-hit_test_visitor::hit_test_visitor(const glm::ivec2& mpos) :mouse_pos(mpos)
-{}
-
-hit_test_visitor::~hit_test_visitor()
-{}

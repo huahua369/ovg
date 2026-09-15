@@ -1,11 +1,9 @@
 #pragma once
 /*
-事件
+gui结构：事件状态、事件回调、属性信息、布局信息、渲染信息
 event_obj_t管理事件注册、事件状态保存
-dispatcher_cx管理event_obj_t
-widget_t控件基类，继承event_obj_t
-div_cx布局类继承widget_t、有dispatcher_cx
-gui_viewport管理div_cx
+
+
 */
 #include <functional>
 #include <string>
@@ -224,6 +222,7 @@ public:
 	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
 	event_type_e etype = {};	// on事件类型
 	glm::ivec2 mouse_pos = {};	// 处理后的鼠标坐标
+	glm::ivec2 cb_count = {};	// 事件处理函数计数
 	bool has_drag = false;			// 是否有拖动事件 
 	bool is_drag = false;			// 拖动状态
 	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
@@ -238,39 +237,29 @@ public:
 	void remove(dev_event_type_e e);
 	void remove(event_type_e e);
 	// 删除on_text和on_editing事件监听
-	void remove_text();
+	void remove_on_text();
 	void call(int idx, int type);
 	bool hittest(const glm::ivec2& mpos)const;
 	std::unordered_map<int, std::function<void()>>& get_cbs(int i);
 };
-class dispatcher_cx
+
+enum class widget_type :uint8_t
 {
-public:
-	glm::ivec2 pos = {};			// 这批事件区的父级坐标
-	std::vector<event_obj_t*> _v;
-public:
-	dispatcher_cx();
-	~dispatcher_cx();
-	void clear();
-	void add(event_obj_t* p);
-	bool trigger(dev_event_t* d);
-private:
-
+	WT_WIDGET,
+	WT_DIV,
 };
-class div_cx;
-class hit_test_visitor;
-
 class widget_t :public event_obj_t
 {
 public:
+	widget_type wtype = widget_type::WT_WIDGET;
 	std::string _name;
-	dispatcher_cx disp = {};
+	widget_t* parent = 0;
 public:
 	widget_t();
+	widget_t(widget_type t);
 	~widget_t();
 	virtual widget_t* hit_test(const glm::ivec2& mpos);
 	virtual bool dispatch_event(dev_event_t* e);
-	virtual void accept(hit_test_visitor*);
 private:
 
 };
@@ -283,34 +272,22 @@ public:
 	div_cx();
 	div_cx(const glm::ivec4& rc);
 	~div_cx();
+	void clear();
 	void add(widget_t* c);
 	widget_t* hit_test(const glm::ivec2& mpos);
 	bool dispatch_event(dev_event_t* e) override;
 private:
 
 };
-class hit_test_visitor
-{
-public:
-	glm::ivec2 mouse_pos = {};
-	widget_t* result = 0;
-public:
-	hit_test_visitor(const glm::ivec2& mpos);
-	~hit_test_visitor();
-
-private:
-
-};
-
 
 struct gui_viewport {
 	gui_io_state_t io = {};
 	std::string drop_text;
 	glm::ivec2 _last_pos = {};
-	std::vector<dispatcher_cx*> _v;
 	div_cx _root = {};
 public:
 	void set_viewport(const glm::ivec4& rc);
+	void clear();
 	void add_div(div_cx* c);
 	void trigger(dev_event_t* e);
 };
