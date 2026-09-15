@@ -235,7 +235,7 @@ int main()
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
 			style4.family = familys;
-			style4.fontsize = 58;
+			style4.fontsize = 18;
 			style4.color = 0xff0080f0;
 			style4.color_stroke = 0xFF0000f0;
 			style4.min_subpixel = 0;
@@ -259,7 +259,7 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
-			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起سأصبح غنياً";
+			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起";
 
 
 			//style4.stroke = -1;
@@ -272,7 +272,7 @@ int main()
 			cb->stroke(vg);
 			cb->rectangle(vg, 0, text4.pos.y - 20, 200, 200);
 			cb->set_source_color(vg, 0xff000000);
-			cb->set_source_color(vg, -1);
+			//cb->set_source_color(vg, -1);
 			cb->fill(vg);
 			cb->add_text(vg, &text4, &style4, nullptr);
 			text4.text = (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";

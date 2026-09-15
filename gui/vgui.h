@@ -1,7 +1,11 @@
 #pragma once
 /*
-gui结构：事件状态、事件回调、属性信息、布局信息、渲染信息
-event_obj_t管理事件注册、事件状态保存
+gui结构：
+	事件信息：*代码实现,event_obj_t管理事件注册、事件状态保存
+	布局信息：*节点布局、算法
+	渲染信息：*矢量图、位图、文本、裁剪等配置信息
+	动画信息：*时间线(数组),一个animation_t有多个通道，anim_ctx管理动画数据
+	绑定关系：动画、属性、事件之间的绑定关系
 
 
 */
@@ -213,8 +217,8 @@ struct event_obj_t
 public:
 	glm::ivec2 _pos = {};	// 控件坐标
 	glm::ivec2 _size = {};	// 控件大小 
-	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
 	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响 
+	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
 	int _bst = 1;					// 鼠标状态
 	int _old_bst = 0;				// 鼠标状态  
 	std::unordered_map<int, std::function<void()>>* calls = 0;

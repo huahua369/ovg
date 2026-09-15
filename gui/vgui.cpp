@@ -19,7 +19,9 @@ void event_obj_t::set_event_dev(dev_event_type_e e, std::function<void(dev_event
 {
 	auto cbs = get_cbs(0);
 	if (cb)
+	{
 		cbs[(int)e] = [=]() { cb(cde); };
+	}
 	else
 		cbs.erase((int)e);
 	cb_count.x = cbs.size();
@@ -28,7 +30,11 @@ void event_obj_t::set_on_event(event_type_e e, std::function<void(event_type_e t
 {
 	auto cbs = get_cbs(1);
 	if (cb)
+	{
+		if (e == event_type_e::on_drag || e == event_type_e::on_dragstart || e == event_type_e::on_dragend)
+			has_drag = true;
 		cbs[(int)e] = [=]() { cb(etype, mouse_pos); };
+	}
 	cb_count.y = cbs.size();
 }
 
