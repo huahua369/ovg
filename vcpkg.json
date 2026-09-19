@@ -1,7 +1,7 @@
 {
   "name": "ovg",
   "version-string": "1.0.0",
-  "builtin-baseline": "478939b61bfc6aa9faf4ab18b5e2495f18ac1fea",
+  "builtin-baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
   "dependencies": [
     {
       "name": "pkgconf"
@@ -9,7 +9,9 @@
     {
       "name": "sdl3",
       "version>=": "3.4.2#1",
-      "features": [ "vulkan" ]
+      "features": [
+        "vulkan"
+      ]
     },
     {
       "name": "stb",
@@ -21,7 +23,9 @@
     {
       "name": "entt"
     },
-    { "name": "nlohmann-json" },
+    {
+      "name": "nlohmann-json"
+    },
     {
       "name": "glslang"
     },
@@ -38,7 +42,9 @@
     {
       "name": "harfbuzz",
       "version>=": "14.3.1",
-      "features": [ "icu" ]
+      "features": [
+        "icu"
+      ]
     },
     {
       "name": "fontconfig"
