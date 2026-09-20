@@ -2896,7 +2896,8 @@ void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
 
 void rvg_cx::image_destroy(vg_image_t* img)
 {
-	_images[img].is_destroy = true;
+	if (img)
+		_images[img].is_destroy = true;
 }
 
 
