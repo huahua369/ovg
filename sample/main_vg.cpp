@@ -21,7 +21,6 @@ using namespace std;
 #include "ovg_fonts.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
-#include <vgui_sdl3.h>
 
 static inline uint32_t MAKE_RGBA(float r, float g, float b, float a) {
 	return (((uint8_t)(a * 255)) << 24) | (((uint8_t)(r * 255)) << 16) | (((uint8_t)(g * 255)) << 8) | ((uint8_t)(b * 255));
@@ -679,26 +678,28 @@ int main()
 	f |= SDL_INIT_HAPTIC;
 #endif
 	int kr = SDL_Init(f);
-
+#if 0
 	auto wg = new app_mgr();
 	if (!wg->init_gpu(true))return -1;
 	auto vp = new gui_viewport();
 	auto form1 = wg->create("SDL3 GPU Vector Graphics", surfsize.x, surfsize.y, 0);
 	form1->viewport = vp;
-
-
-	//if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
-	//	SDL_Log("Init failed: %s", SDL_GetError());
-	//	return 1;
-	//}
+#else
+	ovg_sdl3_ctx g = {};
+	auto wg = &g;
+#endif
+	if (!vg_sdl3_init(wg, surfsize.x, surfsize.y, true)) {
+		SDL_Log("Init failed: %s", SDL_GetError());
+		return 1;
+	}
 	auto dev = new_sdl3gpu_device(wg->device);
 	assert(dev);
-	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, form1->window);
+	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, wg->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
 	ovg_canvas_cb* can = new_canvas_cb();
 
-	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
+	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, wg->window);
 	bool running = true;
 	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
@@ -752,18 +753,20 @@ int main()
 		run_dst->set_layout_mode(&style4, nullptr, true);
 		run_dst->text_shape(&text4);
 	}
-	bool testvg = 0;
+	bool testvg = true;
 	ovg_image_data img[1] = {};
 	int channels = 0;
 	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
 	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
 
-	SDL_ShowWindow(form1->window);
 
+	SDL_Event e = {};
 	while (running) {
-		if (wg->get_event() < 0)
+		if (SDL_PollEvent(&e) != 0)
 		{
-			running = false;
+			if (e.type == SDL_EVENT_QUIT) {
+				break;
+			}
 		}
 		if (ovg_get_window_swapchain(ctx, &fbo))
 		{
@@ -871,8 +874,7 @@ int main()
 	// 删除vg对象
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
-	if (can)free_canvas_cb(can); 
-	delete wg;
+	if (can)free_canvas_cb(can);
 	SDL_Quit();
 
 	return 0;

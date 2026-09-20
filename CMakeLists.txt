@@ -34,9 +34,6 @@ set(LIBRARY_OUTPUT_PATH ${EXECUTABLE_OUTPUT_PATH})
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 LINK_DIRECTORIES(${EXECUTABLE_OUTPUT_PATH})
 include_directories("ovg")
-include_directories("gui")
-include_directories("backends")
-
 
 # ---- 查找 lib ----
 find_package(SDL3 REQUIRED)
@@ -47,5 +44,4 @@ find_package(glm CONFIG REQUIRED)
 
 # 包含子项目。
 add_subdirectory ("ovg")
-add_subdirectory ("backends")
 add_subdirectory ("sample")

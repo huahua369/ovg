@@ -2680,7 +2680,7 @@ bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 
 	g->window = SDL_CreateWindow("SDL3 GPU Vector Graphics",
 		width, height,
-		SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN |
+		SDL_WINDOW_RESIZABLE |
 		SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	if (!g->window) return false;
 

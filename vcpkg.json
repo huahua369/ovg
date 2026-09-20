@@ -21,9 +21,6 @@
       "name": "glm"
     },
     {
-      "name": "entt"
-    },
-    {
       "name": "nlohmann-json"
     },
     {
