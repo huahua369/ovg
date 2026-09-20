@@ -6,6 +6,7 @@ set(OVG_SOURCES
     ovg.cpp
     ${TESS2_SRC}
     ovg_fonts.cpp
+    ovg_renderer_sdl3.cpp
 )
 
 find_package(harfbuzz CONFIG REQUIRED) 

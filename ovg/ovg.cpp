@@ -1,6 +1,6 @@
 ﻿/*
 矢量渲染
-2026/9/9 文本渲染处理完善	
+2026/9/9 文本渲染处理完善
 2026/8/31 支持普通三角形渲染
 2026/8/13 版本1.0
 2026/8/8 创建文件
@@ -2882,12 +2882,13 @@ void rvg_cx::_draw_segment(ovg_path_t* ctx, stroke_context_t* str, dash_context_
 
 void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
 {
+	if (!desc || !desc->width || !desc->height)return;
 	if (!img)img = desc->img;
 	auto& dst = _images[img]; dst = *desc;
 	img->width = desc->width;
 	img->height = desc->height;
-	if (desc->is_copy) {
-		dst.px_size = dst.height * dst.stride;
+	dst.px_size = dst.height * dst.stride;
+	if (desc->is_copy && (dst.px_size > 0)) {
 		dst.pixels = ac->new_mem(dst.px_size);
 		memcpy((void*)dst.pixels, desc->pixels, dst.px_size);
 	}
