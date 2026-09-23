@@ -743,7 +743,13 @@ int main()
 		//style4.stroke = 1;
 		//style4.color_shadow = 0xa6000000;
 		style4.shadow_pos = { 2.0f, 2.0f };
-
+		auto ex = get_font_extents(familys->familys[0]->font, style4.fontsize, false);
+		auto font = familys->familys[0];
+		float sc = style4.fontsize / font->upem;
+		auto a = font->ascender * sc;
+		auto h = (font->ascender - font->descender + font->line_gap);
+		auto h0 = h * sc;
+		auto h1 = ceil(h * sc);
 		text_st_t text4 = {};
 		text4.text = (char*)u8"🍕➗☂️-abgyh彩色渐变字体";
 		//text4.text = (char*)buff.c_str();

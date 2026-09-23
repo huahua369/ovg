@@ -784,7 +784,7 @@ font_cache_cx* new_font_cache();
 void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style = nullptr);
 void delete_font_family(font_familys_t* p);
-
+glm::vec3 get_font_extents(hb_font_t* font, int height, bool vert);
 
 // 对象模式接口，如果没字体ctx则无法渲染文本
 ovg_canvas_cb* new_canvas_cb();
