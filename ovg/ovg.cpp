@@ -1694,6 +1694,7 @@ vg_state_save_t* ovg_new_state(mem_resource_t* ac0) {
 		p->curOperator = vg_operator_t::VG_OPERATOR_OVER;
 		p->curFillRule = VG_FILL_RULE_NON_ZERO;
 		p->pushConsts = pc;
+		p->references = 1;
 	}
 	return p;
 }

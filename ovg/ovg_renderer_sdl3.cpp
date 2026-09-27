@@ -2595,7 +2595,7 @@ int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd)
 		d.width = it->width;
 		d.height = it->height;
 		d.stride = it->stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
-		d.format = it->format;     /* 像素格式 */
+		d.format = (vg_format_t)it->format;     /* 像素格式 */
 		d.dst_texture = tex;/* 目标 GPU 纹理 */
 		d.x = it->x, d.y = it->y;       /* 目标区域起点（纹理空间） */
 		d.w = it->w, d.h = it->h;       /* 目标区域尺寸（0 = 整张） */
@@ -2747,9 +2747,9 @@ bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 	return true;
 }
 
-sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, vg_format_t format)
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)
 {
-	SDL_GPUTextureFormat f = vg_to_sdl_format(format);
+	SDL_GPUTextureFormat f = vg_to_sdl_format((vg_format_t)format);
 	auto p = new_texture(ctx->device, f, w, h, 0);
 	return p;
 }

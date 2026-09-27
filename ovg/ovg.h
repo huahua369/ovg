@@ -2,12 +2,11 @@
 /*
 矢量/图片/文本/三角形录制到rvg_t对象
 */
-#include <cstdint>
 #ifndef OVG_H
 #define OVG_H
-#endif // !OVG_H
-
+#include <stdint.h>
 #ifdef __cplusplus
+#include <cstdint>
 
 class vg_alloc_cx
 {
@@ -21,7 +20,7 @@ private:
 };
 
 extern "C" {
-#endif
+#endif 
 	typedef struct hb_font_t hb_font_t;
 	typedef struct hb_set_t hb_set_t;
 
@@ -426,7 +425,7 @@ struct vg_image_desc_t {
 	vg_image_t* img;		// 需要更新的纹理
 	uint32_t	width;
 	uint32_t	height;
-	vg_format_t	format;
+	uint32_t	format;
 	uint32_t	stride;
 	void* pixels;			// CPU 像素数据。is_copy=false时vg_image_t.copy_status等于true时才能释放
 	uint32_t x, y, w, h;	// 更新矩形区域
@@ -793,3 +792,5 @@ void free_canvas_cb(ovg_canvas_cb*);
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
 ovg_draw_data_t get_draw_list(rvg_t* p);
+
+#endif // !OVG_H

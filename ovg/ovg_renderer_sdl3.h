@@ -59,6 +59,6 @@ void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height);
 SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
 // 绘制一帧，提交命令到GPU
 void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count);
-sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, vg_format_t format);
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format);
 
 void ovg_wait_idle(ovg_ctx_t* ctx);

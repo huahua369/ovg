@@ -1,11 +1,12 @@
 ﻿// ovg.cpp: 定义应用程序的入口点。
 //
 
-#include "ovg_main.h" 
-#include "ovg_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
 #include <unordered_map>
+#include "ovg_main.h" 
+#include <ovg_c.h>
+#include "ovg_renderer_sdl3.h"
 
 #ifndef fseeki64
 #ifdef _WIN32
@@ -633,7 +634,7 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	ins[0] = glm::mat4(1.0);
 	ins[1] = glm::translate(glm::vec3(200, 10, 0));
 	cb->set_instance_mat(vg, ins, 2);
-	static vg_image_t img[1] = {};
+	static vg_image_t img[1] = { {.valid = true} };
 	uint32_t pxcolord2[2] = { 0xffffffff,0xffffffff, };
 	uint32_t pxcolor2[16] = { 0xFFf55555,0xFF2c2c2c, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555,0xFF2c2c2c,0xFFf55555, 0xFF9678B4,0xFFf55555, };
 
@@ -697,7 +698,6 @@ int main()
 	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, wg->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
-	ovg_canvas_cb* can = new_canvas_cb();
 
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, wg->window);
 	bool running = true;
@@ -705,10 +705,6 @@ int main()
 	auto str1 = u8"agyh🍕☂️按钮";
 	auto str = u8"➗🍕☂️6bg太妹";
 	auto rst = glm::mat3x2(1.0);
-	auto canvg = can->new_rvg(can->ac);
-	auto path = can->new_path(can->ac);
-	auto st = can->new_state(can->ac);
-	can->set_path(canvg, path, st);
 
 	//vg_text_run_cx run;
 
@@ -778,7 +774,6 @@ int main()
 		{
 			rtc.begin();
 			cb->clear(vg);
-			cb->clear(canvg);
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 			glm::vec2 sf = fbo.display_size;
 			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
@@ -787,7 +782,6 @@ int main()
 				draw(cb, vg, fbo.display_size);// 录制图元
 
 			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
-			canvg->width = fbo.display_size.x; canvg->height = fbo.display_size.y;
 
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
@@ -858,7 +852,7 @@ int main()
 			int ms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(canvg) };
+			ovg_draw_data_t dlist[] = { get_draw_list(vg) };
 			rtc.begin();
 			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
@@ -880,7 +874,6 @@ int main()
 	// 删除vg对象
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
-	if (can)free_canvas_cb(can);
 	SDL_Quit();
 
 	return 0;
