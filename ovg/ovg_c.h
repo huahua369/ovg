@@ -752,7 +752,6 @@ void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
 flex_run* new_flex_run(mem_resource_t* a);
 void free_flex_run(flex_run* p);
 mem_resource_t* flex_run_ac(flex_run* p);
-// 输入样式数据，根节点指针，所有节点数量 
 vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
 
 // 字体相关
@@ -767,7 +766,6 @@ font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const cha
 void delete_font_family(font_familys_t* p);
 vec3 get_font_extents(hb_font_t* font, int height, bool vert);
 
-// 状态机模式接口，两个模式接口创建的对象不能混用
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
 ovg_draw_data_t get_draw_list(rvg_t* p);
