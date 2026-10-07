@@ -3196,6 +3196,7 @@ bool geom_primitive::add_geometry(void* texture, const float* xy, int xy_stride,
 {
 	if (!xy || num_vertices < 1)return false;
 	geom_cmd_t c = {};
+	c.stype = 1;
 	c.state = curState;
 	c.texture = texture;
 	c.mat = mat;
@@ -3320,6 +3321,7 @@ bool geom_primitive::add_geometry3d(void* texture, const float* xyz, int xyz_str
 {
 	if (!xyz || num_vertices < 1)return false;
 	geom_cmd_t c = {};
+	c.stype = 1;
 	c.state = curState;
 	c.texture = texture;
 	c.mat = mat;
