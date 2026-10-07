@@ -5,9 +5,12 @@ FILE(GLOB_RECURSE TESS2_SRC
 set(OVG_SOURCES 
     ovg.cpp
     ${TESS2_SRC}
-    ovg_fonts.cpp
-    ovg_renderer_sdl3.cpp
+    ovg_fonts.cpp   
 )
+
+if(OVG_ENABLE_SDL3_GPURenderer)
+list(APPEND OVG_SOURCES ovg_renderer_sdl3.cpp) 
+endif()
 
 find_package(harfbuzz CONFIG REQUIRED) 
 find_package(Fontconfig REQUIRED) 

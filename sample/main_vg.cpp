@@ -717,6 +717,11 @@ int main()
 	//run.shape();
 
 	// 渲染 
+	int channels = 0;
+	ovg_image_data img[1] = {};
+	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
+	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
+	img->valid = true;
 	auto fp = fopen("E:\\1.txt", "r");
 	std::string buff;
 	if (fp) {
@@ -756,11 +761,6 @@ int main()
 		run_dst->text_shape(&text4);
 	}
 	bool testvg = true;
-	ovg_image_data img[1] = {};
-	int channels = 0;
-	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
-	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
-
 
 	SDL_Event e = {};
 	while (running) {

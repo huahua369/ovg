@@ -2674,15 +2674,15 @@ void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size
 	deferred_free_advance(ctx);
 }
 
+sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)
+{
+	SDL_GPUTextureFormat f = vg_to_sdl_format((vg_format_t)format);
+	auto p = new_texture(ctx->device, f, w, h, 0);
+	return p;
+}
 
 bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 	SDL_Init(SDL_INIT_VIDEO);
-
-	g->window = SDL_CreateWindow("SDL3 GPU Vector Graphics",
-		width, height,
-		SDL_WINDOW_RESIZABLE |
-		SDL_WINDOW_HIGH_PIXEL_DENSITY);
-	if (!g->window) return false;
 
 	SDL_PropertiesID props = SDL_CreateProperties();
 	if (is_vulkan)
@@ -2743,13 +2743,13 @@ bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 		SDL_Log("GPU device create failed: %s", SDL_GetError());
 		return false;
 	}
+	g->window = SDL_CreateWindow("SDL3 GPU Vector Graphics",
+		width, height,
+		SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN |
+		SDL_WINDOW_HIGH_PIXEL_DENSITY);
+	if (!g->window) return false;
 	SDL_ClaimWindowForGPUDevice(g->device, g->window);
+	SDL_ShowWindow(g->window);
 	return true;
 }
 
-sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)
-{
-	SDL_GPUTextureFormat f = vg_to_sdl_format((vg_format_t)format);
-	auto p = new_texture(ctx->device, f, w, h, 0);
-	return p;
-}

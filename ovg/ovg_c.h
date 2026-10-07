@@ -746,9 +746,9 @@ typedef struct ovg_ctx_cb {
 	void  (*recording_destroy)(ovg_recording_t* rec);
 
 }ovg_ctx_cb;
-
+// 工具函数：渲染两色交替的格子
 void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
-
+// tiny flex
 flex_run* new_flex_run(mem_resource_t* a);
 void free_flex_run(flex_run* p);
 mem_resource_t* flex_run_ac(flex_run* p);
@@ -765,9 +765,10 @@ void free_font_cache(font_cache_cx* p);
 font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style);
 void delete_font_family(font_familys_t* p);
 vec3 get_font_extents(hb_font_t* font, int height, bool vert);
-
+// 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
+// 获取渲染数据
 ovg_draw_data_t get_draw_list(rvg_t* p);
 
 #endif // !OVG_H
