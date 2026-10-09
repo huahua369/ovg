@@ -1304,9 +1304,8 @@ void ovg_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_flag
 {
 	if (!path)
 		return;
-	float x1 = 0.0, y1 = 0.0;
 	auto cp = _get_current_point(path);
-	_elliptic_arc(path, x1, y1, x, y, large_arc_flag, sweep_flag, rx, ry, phi);
+	_elliptic_arc(path, cp.x, cp.y, x, y, large_arc_flag, sweep_flag, rx, ry, phi);
 }
 void ovg_rel_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_flag, bool sweep_flag, float rx, float ry, float phi)
 {
