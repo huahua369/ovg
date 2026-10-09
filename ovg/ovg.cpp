@@ -1316,7 +1316,15 @@ void ovg_rel_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_
 }
 void ovg_circle(ovg_path_t* path, float x, float y, float radius) {
 	//ovg_arc(path, x, y, radius, 0, 2.0 * glm::pi<float>());
-	ovg_ellipse(path, radius, radius, x, y, 0.0f);
+	//ovg_ellipse(path, radius, radius, x, y, 0.0f);
+	static const float k = 0.55228475f;
+	auto r = radius;
+	ovg_move_to(path, x + r, y);
+	ovg_curve_to(path, x + r, y + r * k, x + r * k, y + r, x, y + r);
+	ovg_curve_to(path, x - r * k, y + r, x - r, y + r * k, x - r, y);
+	ovg_curve_to(path, x - r, y - r * k, x - r * k, y - r, x, y - r);
+	ovg_curve_to(path, x + r * k, y - r, x + r, y - r * k, x + r, y);
+	ovg_close_path(path);
 }
 
 #ifdef CreateRgbaf
