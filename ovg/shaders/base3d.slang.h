@@ -27,7 +27,7 @@ struct PushConsts
 struct fragubo
 {
 	float masktime;
-	float mul;
+	float premul;
 };
 //[[vk::push_constant]] PushConsts pc;
 [[vk::binding(0, 1)]] ConstantBuffer<PushConsts> pc;
@@ -81,6 +81,6 @@ float4 fragMain(VSOutput input, bool FrontFacing : SV_IsFrontFace) : SV_TARGET
 	c = color;
 	float4 premul = color;
 	premul.rgb *= premul.a;
-	color = lerp(c, premul, pu.mul);
+	color = lerp(c, premul, pu.premul);
 	return color;
 }
