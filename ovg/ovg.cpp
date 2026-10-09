@@ -2841,7 +2841,7 @@ void rvg_cx::_draw_stoke_cap(ovg_path_t* ctx, stroke_context_t* str, glm::vec2 p
 				a -= str->arcStep;
 			}
 
-			uint32_t p0Idx = (uint32_t)(_vertex.size() - ctx->curVertOffset);
+			uint32_t p0Idx = (uint32_t)(_vertex.size() - ctx->curVertOffset - 1);
 			for (uint32_t p = firstIdx - 1; p < p0Idx; p++)
 				_add_triangle_indices(ctx, p + 1, p, firstIdx - 2);
 		}
