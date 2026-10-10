@@ -310,6 +310,7 @@ struct node_dt
 	int position;		// in 位置,0=relative，1=absolute
 	node_dt* child;		// in 子元素指针
 	size_t child_count;
+	void* user;
 	size_t tidx;		// out 自动计算节点索引
 	size_t parent;		// out 自动计算父节点索引
 	size_t line_count;	// out 行数量
