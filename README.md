@@ -53,23 +53,23 @@ OVG 是一个 **C/C++ 即时模式（Immediate Mode）2D 图形录制与渲染�
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                  用户应用 (C/C++)                      │
+│                  User App (C/C++)                    │
 ├──────────────────────────────────────────────────────┤
-│  ovg_ctx_cb* cb = new_ctx_cb();                       │
-│  rvg_t* vg = cb->new_rvg(ac);                         │
-│                                                       │
-│  cb->new_path(vg);                                    │
-│  cb->rounded_rectangle(vg, 10, 10, 200, 100, 12);     │
-│  cb->set_source_rgba(vg, 0.2, 0.6, 1.0, 1.0);         │
-│  cb->fill(vg);                                        │
+│  ovg_ctx_cb* cb = new_ctx_cb();                      │
+│  rvg_t* vg = cb->new_rvg(ac);                        │
+│                                                      │
+│  cb->new_path(vg);                                   │
+│  cb->rounded_rectangle(vg, 10, 10, 200, 100, 12);    │
+│  cb->set_source_rgba(vg, 0.2, 0.6, 1.0, 1.0);        │
+│  cb->fill(vg);                                       │
 ├──────────────────────────────────────────────────────┤
-│               录制阶段（CPU 端缓冲区）                  │
+│         Recording phase (CPU-side buffer)            │
 │   ovgVertex[]  ovgVertex2/3[]  gcmd_t[]  UBO[]       │
 ├──────────────────────────────────────────────────────┤
-│   ovg_draw_data_t dl = get_draw_list(vg);             │
-│   // 提交到 GPU 后端                                  │
+│   ovg_draw_data_t dl = get_draw_list(vg);            │
+│   // Submit to the GPU backend                       │
 ├──────────────────────────────────────────────────────┤
-│              SDL3 GPU / 自研渲染后端                    │
+│        SDL3 GPU / In-house rendering backend         │
 └──────────────────────────────────────────────────────┘
 ```
 
