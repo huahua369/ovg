@@ -4129,12 +4129,12 @@ void vctx_rectangle(rvg_t* ctx, float x, float y, float w, float h) {
 
 void vctx_rounded_rectangle(rvg_t* ctx, float x, float y,
 	float w, float h, float radius) {
-	if (ctx) ovg_rounded_rectangle(ctx->path, x, y, w, h, radius);
+	if (ctx) radius > 0 ? ovg_rounded_rectangle(ctx->path, x, y, w, h, radius) : ovg_rectangle(ctx->path, x, y, w, h);
 }
 
 void vctx_rounded_rectangle2(rvg_t* ctx, float x, float y,
 	float w, float h, float rx, float ry) {
-	if (ctx) ovg_rounded_rectangle2(ctx->path, x, y, w, h, rx, ry);
+	if (ctx)(rx > 0 || ry > 0) ? ovg_rounded_rectangle2(ctx->path, x, y, w, h, rx, ry) : ovg_rectangle(ctx->path, x, y, w, h);
 }
 
 void vctx_ellipse(rvg_t* ctx, float radiusX, float radiusY,
