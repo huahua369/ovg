@@ -1,5 +1,7 @@
 ﻿/*
 矢量渲染
+
+2026/10/10 修改椭圆/画圆/arc等函数实现
 2026/9/9 文本渲染处理完善
 2026/8/31 支持普通三角形渲染
 2026/8/13 版本1.0
@@ -1098,11 +1100,6 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 	// if (!vec2_equ (v,lastP))//this test should not be required
 	_add_point(path, v.x, v.y);
 	_set_curve_end(path);
-	// todo 结束精度1000
-	auto d = abs(v0 - v);
-	d *= 1000.0;
-	if (d.x < 1.0 && d.y < 1.0)
-		ovg_close_path(path);
 }
 void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float a1, float a2)
 {
@@ -1159,10 +1156,6 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 	// if (!vec2_equ (v,lastP))
 	_add_point(ctx, v.x, v.y);
 	_set_curve_end(ctx);
-	auto d = abs(v0 - v);
-	d *= 1000.0;
-	if (d.x < 1.0 && d.y < 1.0)
-		ovg_close_path(path);
 }
 void ovg_curve_to(ovg_path_t* path, float x1, float y1, float x2, float y2, float x3, float y3)
 {
@@ -1315,8 +1308,6 @@ void ovg_rel_elliptic_arc_to(ovg_path_t* path, float x, float y, bool large_arc_
 	_elliptic_arc(path, cp.x, cp.y, x + cp.x, y + cp.y, large_arc_flag, sweep_flag, rx, ry, phi);
 }
 void ovg_circle(ovg_path_t* path, float x, float y, float radius) {
-	//ovg_arc(path, x, y, radius, 0, 2.0 * glm::pi<float>());
-	//ovg_ellipse(path, radius, radius, x, y, 0.0f);
 	static const float k = 0.55228475f;
 	auto r = radius;
 	ovg_move_to(path, x + r, y);
