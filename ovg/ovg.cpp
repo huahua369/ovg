@@ -5474,6 +5474,470 @@ glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p
 	p->line_count = fitem->line_count;
 	return rect;
 }
+
+#if 1
+
+#ifndef MALLOC
+#define MALLOC(sz)    malloc(sz)
+#define FREE(p)       free(p)
+#endif
+
+/* =====================================================================
+ * 内部工具
+ * ===================================================================== */
+static int imin(int a, int b) { return a < b ? a : b; }
+
+/* 轨道尺寸是否有效（>0 视为 FR，<=0 视为固定 0/未设置） */
+static int is_fr(float v) { return v > 0.0f; }
+
+/* =====================================================================
+ * 生命周期
+ * ===================================================================== */
+grid_data* grid_create(int cols, int rows) {
+	if (cols <= 0 || rows <= 0) return NULL;
+
+	grid_data* g = (grid_data*)MALLOC(sizeof(grid_data));
+	if (!g) return NULL;
+
+	memset(g, 0, sizeof(grid_data));
+
+	g->cols = cols;
+	g->rows = rows;
+
+	g->col_widths = (float*)MALLOC(sizeof(float) * (size_t)cols);
+	g->row_heights = (float*)MALLOC(sizeof(float) * (size_t)rows);
+
+	if (!g->col_widths || !g->row_heights) {
+		FREE(g->col_widths);
+		FREE(g->row_heights);
+		FREE(g);
+		return NULL;
+	}
+
+	/* 默认全部 1FR */
+	for (int i = 0; i < cols; i++) g->col_widths[i] = 1.0f;
+	for (int i = 0; i < rows; i++) g->row_heights[i] = 1.0f;
+
+	g->justify_items = flex_align::ALIGN_STRETCH;
+	g->align_items = flex_align::ALIGN_STRETCH;
+	g->auto_flow = 0;   /* row */
+	g->dense = 0;   /* sparse */
+
+	return g;
+}
+
+void grid_destroy(grid_data* g) {
+	if (!g) return;
+	FREE(g->col_widths);
+	FREE(g->row_heights);
+	FREE(g);
+}
+
+/* =====================================================================
+ * 轨道设置
+ * ===================================================================== */
+void grid_set_col_widths(grid_data* g, const float* widths, int cols) {
+	if (!g || !widths || cols <= 0) return;
+	int n = imin(cols, g->cols);
+	for (int i = 0; i < n; i++) g->col_widths[i] = widths[i];
+}
+
+void grid_set_row_heights(grid_data* g, const float* heights, int rows) {
+	if (!g || !heights || rows <= 0) return;
+	int n = imin(rows, g->rows);
+	for (int i = 0; i < n; i++) g->row_heights[i] = heights[i];
+}
+
+void grid_set_col(grid_data* g, int col, float width) {
+	if (!g || col < 0 || col >= g->cols) return;
+	g->col_widths[col] = width;
+}
+
+void grid_set_row(grid_data* g, int row, float height) {
+	if (!g || row < 0 || row >= g->rows) return;
+	g->row_heights[row] = height;
+}
+
+void grid_set_gap(grid_data* g, float gap_x, float gap_y) {
+	if (!g) return;
+	g->gap_x = gap_x;
+	g->gap_y = gap_y;
+}
+
+void grid_set_gap_xy(grid_data* g, float gap) {
+	if (!g) return;
+	g->gap_x = gap;
+	g->gap_y = gap;
+}
+
+void grid_set_auto_flow(grid_data* g, int auto_flow) {
+	if (!g) return;
+	g->auto_flow = auto_flow ? 1 : 0;
+}
+
+void grid_set_dense(grid_data* g, int dense) {
+	if (!g) return;
+	g->dense = dense ? 1 : 0;
+}
+
+void grid_set_justify_items(grid_data* g, flex_align a) {
+	if (!g) return;
+	g->justify_items = a;
+}
+
+void grid_set_align_items(grid_data* g, flex_align a) {
+	if (!g) return;
+	g->align_items = a;
+}
+
+/* =====================================================================
+ * 轨道尺寸查询（布局后有效）
+ * ===================================================================== */
+float grid_get_col_width(const grid_data* g, int col) {
+	if (!g || col < 0 || col >= g->cols) return 0.0f;
+	return g->col_widths[col];
+}
+
+float grid_get_row_height(const grid_data* g, int row) {
+	if (!g || row < 0 || row >= g->rows) return 0.0f;
+	return g->row_heights[row];
+}
+
+/* =====================================================================
+ * 第一步：分配 FR，把 FR 单位换算成最终像素
+ *
+ * 说明：本轻量实现采用"先全部按 FR 分配剩余空间"的策略。
+ * 负数 / 0 视为无效，退化为 1FR，保证总能铺满容器。
+ * 若要实现"固定 px + 剩余给 FR"的混合布局，见下方注释区。
+ * ===================================================================== */
+static void grid_calc_tracks(grid_data* g, float cw, float ch) {
+	float total_gap_x = g->gap_x * (float)(g->cols - 1);
+	float total_gap_y = g->gap_y * (float)(g->rows - 1);
+
+	float avail_w = cw - total_gap_x;
+	float avail_h = ch - total_gap_y;
+	if (avail_w < 0.0f) avail_w = 0.0f;
+	if (avail_h < 0.0f) avail_h = 0.0f;
+
+	float fr_w = 0.0f, fr_h = 0.0f;
+	for (int i = 0; i < g->cols; i++) if (is_fr(g->col_widths[i]))  fr_w += g->col_widths[i];
+	for (int i = 0; i < g->rows; i++) if (is_fr(g->row_heights[i])) fr_h += g->row_heights[i];
+
+	/* 退化保护：没有任何 FR 轨道时，全部视为 1FR */
+	if (fr_w <= 0.0f) { for (int i = 0; i < g->cols; i++) g->col_widths[i] = 1.0f; fr_w = (float)g->cols; }
+	if (fr_h <= 0.0f) { for (int i = 0; i < g->rows; i++) g->row_heights[i] = 1.0f; fr_h = (float)g->rows; }
+
+	for (int i = 0; i < g->cols; i++) {
+		if (is_fr(g->col_widths[i]))
+			g->col_widths[i] = avail_w * (g->col_widths[i] / fr_w);
+	}
+	for (int i = 0; i < g->rows; i++) {
+		if (is_fr(g->row_heights[i]))
+			g->row_heights[i] = avail_h * (g->row_heights[i] / fr_h);
+	}
+
+	/*
+	 * TODO（可选增强，未启用）：
+	 * 混合布局支持 —— 固定 px 轨道优先扣除，剩余空间再分给 FR。
+	 * 启用时把上面 FR 分配逻辑替换为：
+	 *
+	 *   float fixed_w = 0, fixed_h = 0;
+	 *   for (int i = 0; i < g->cols; i++) if (!is_fr(g->col_widths[i]))  fixed_w += g->col_widths[i];
+	 *   for (int i = 0; i < g->rows; i++) if (!is_fr(g->row_heights[i])) fixed_h += g->row_heights[i];
+	 *   float real_avail_w = avail_w - fixed_w;   // 可能为负
+	 *   float real_avail_h = avail_h - fixed_h;
+	 *   if (real_avail_w < 0) real_avail_w = 0;
+	 *   if (real_avail_h < 0) real_avail_h = 0;
+	 *   for (int i = 0; i < g->cols; i++) {
+	 *       if (!is_fr(g->col_widths[i])) continue;
+	 *       g->col_widths[i] = fr_w > 0 ? real_avail_w * (g->col_widths[i] / fr_w) : 0;
+	 *   }
+	 *   // rows 同理
+	 */
+}
+
+/* =====================================================================
+ * 第二步：跨度单元格尺寸累加
+ * ===================================================================== */
+static float cell_span_size(const float* tracks, float gap, int start, int span) {
+	float total = 0.0f;
+	for (int i = 0; i < span; i++) {
+		total += tracks[start + i];
+		if (i < span - 1) total += gap;
+	}
+	return total;
+}
+
+static float track_start_pos(const float* tracks, float gap, int idx) {
+	float p = 0.0f;
+	for (int i = 0; i < idx; i++) p += tracks[i] + gap;
+	return p;
+}
+
+/* =====================================================================
+ * 第三步：单元格内对齐
+ * ===================================================================== */
+static void grid_align_in_cell(
+	const grid_data* g,
+	const grid_child* gc,
+	float cell_w, float cell_h,
+	float item_w, float item_h,
+	float* ox, float* oy
+) {
+	flex_align js = (gc && gc->justify_self != flex_align::ALIGN_AUTO) ? gc->justify_self : g->justify_items;
+	flex_align al = (gc && gc->align_self != flex_align::ALIGN_AUTO) ? gc->align_self : g->align_items;
+
+	*ox = 0.0f;
+	*oy = 0.0f;
+
+	if (js == flex_align::ALIGN_CENTER)       *ox = (cell_w - item_w) * 0.5f;
+	else if (js == flex_align::ALIGN_END)     *ox = cell_w - item_w;
+	/* STRETCH / START -> 占满或贴边，ox = 0 */
+
+	if (al == flex_align::ALIGN_CENTER)       *oy = (cell_h - item_h) * 0.5f;
+	else if (al == flex_align::ALIGN_END)     *oy = cell_h - item_h;
+}
+
+/* =====================================================================
+ * 单元格占用标记
+ * ===================================================================== */
+typedef struct {
+	int cols;
+	int rows;
+	uint8_t* bits;   /* rows * cols，1 = 已占用 */
+} occ_map;
+
+static occ_map* occ_create(int cols, int rows) {
+	occ_map* o = (occ_map*)MALLOC(sizeof(occ_map));
+	if (!o) return NULL;
+	o->cols = cols;
+	o->rows = rows;
+	o->bits = (uint8_t*)MALLOC((size_t)cols * (size_t)rows);
+	if (!o->bits) { FREE(o); return NULL; }
+	memset(o->bits, 0, (size_t)cols * (size_t)rows);
+	return o;
+}
+
+static void occ_destroy(occ_map* o) {
+	if (!o) return;
+	FREE(o->bits);
+	FREE(o);
+}
+
+static int occ_test(const occ_map* o, int c, int r, int cspan, int rspan) {
+	if (c < 0 || r < 0) return 0;
+	if (c + cspan > o->cols || r + rspan > o->rows) return 0;
+	for (int rr = 0; rr < rspan; rr++) {
+		for (int cc = 0; cc < cspan; cc++) {
+			if (o->bits[(r + rr) * o->cols + (c + cc)]) return 0;
+		}
+	}
+	return 1;
+}
+
+static void occ_mark(occ_map* o, int c, int r, int cspan, int rspan) {
+	for (int rr = 0; rr < rspan; rr++)
+		for (int cc = 0; cc < cspan; cc++)
+			o->bits[(r + rr) * o->cols + (c + cc)] = 1;
+}
+
+/*
+ * dense 回溯：从 (c, r) 往后找一个能放下 cspan x rspan 的空洞。
+ * 返回 1 表示找到并标记，0 表示找不到（调用方应追加到末尾）。
+ */
+static int occ_find_hole(
+	const occ_map* o, int* c, int* r,
+	int cspan, int rspan, int auto_flow
+) {
+	int cc = *c, rr = *r;
+	if (auto_flow == 0) {
+		/* row 主序：逐行扫 */
+		while (rr + rspan <= o->rows) {
+			while (cc + cspan <= o->cols) {
+				if (occ_test(o, cc, rr, cspan, rspan)) {
+					*c = cc; *r = rr;
+					return 1;
+				}
+				cc++;
+			}
+			cc = 0;
+			rr++;
+		}
+	}
+	else {
+		/* column 主序：逐列扫 */
+		while (cc + cspan <= o->cols) {
+			while (rr + rspan <= o->rows) {
+				if (occ_test(o, cc, rr, cspan, rspan)) {
+					*c = cc; *r = rr;
+					return 1;
+				}
+				rr++;
+			}
+			rr = 0;
+			cc++;
+		}
+	}
+	return 0;
+}
+
+/*
+ * 在 auto-flow 末尾游标之后推进，找到下一个能放下该元素的空位。
+ */
+static int advance_cursor(
+	occ_map* o, int* c, int* r,
+	int cspan, int rspan, int auto_flow
+) {
+	int cc = *c, rr = *r;
+	if (auto_flow == 0) {
+		do {
+			cc++;
+			if (cc + cspan > o->cols) {
+				cc = 0;
+				rr++;
+			}
+			if (rr + rspan > o->rows) return 0;
+		} while (!occ_test(o, cc, rr, cspan, rspan));
+	}
+	else {
+		do {
+			rr++;
+			if (rr + rspan > o->rows) {
+				rr = 0;
+				cc++;
+			}
+			if (cc + cspan > o->cols) return 0;
+		} while (!occ_test(o, cc, rr, cspan, rspan));
+	}
+	*c = cc;
+	*r = rr;
+	return 1;
+}
+
+/* =====================================================================
+ * 第四步：主布局
+ * ===================================================================== */
+void grid_layout(
+	grid_data* g,
+	float container_width,
+	float container_height,
+	node_dt* children,
+	size_t count
+) {
+	if (!g || !children || count == 0) return;
+
+	grid_calc_tracks(g, container_width, container_height);
+
+	occ_map* occ = occ_create(g->cols, g->rows);
+	if (!occ) return;
+
+	/* auto-flow 游标 */
+	int flow_c = 0;
+	int flow_r = 0;
+
+	for (size_t i = 0; i < count; i++) {
+		grid_child* gc = NULL;
+		if (children[i].user) gc = (grid_child*)children[i].user;
+
+		int explicit_pos = gc ? gc->explicit_pos : 0;
+		int col = 0, row = 0, cspan = 1, rspan = 1;
+
+		if (explicit_pos && gc) {
+			col = gc->col;
+			row = gc->row;
+			cspan = gc->col_span > 0 ? gc->col_span : 1;
+			rspan = gc->row_span > 0 ? gc->row_span : 1;
+
+			/* 边界钳制 */
+			if (col < 0) col = 0;
+			if (row < 0) row = 0;
+			if (col + cspan > g->cols) {
+				if (col >= g->cols) col = g->cols - 1;
+				cspan = g->cols - col;
+			}
+			if (row + rspan > g->rows) {
+				if (row >= g->rows) row = g->rows - 1;
+				rspan = g->rows - row;
+			}
+		}
+		else {
+			/* ---- auto-flow ---- */
+			cspan = (gc && gc->col_span > 0) ? gc->col_span : 1;
+			rspan = (gc && gc->row_span > 0) ? gc->row_span : 1;
+
+			if (g->dense) {
+				/* dense：回溯找空洞 */
+				if (!occ_find_hole(occ, &flow_c, &flow_r, cspan, rspan, g->auto_flow)) {
+					/*
+					 * 没找到空洞 -> 从原点开始按稀疏规则往后排。
+					 * 这里简化为把游标重置到当前 auto-flow 的"末尾"，
+					 * 即上次放置位置之后。
+					 */
+				}
+			}
+
+			/* 从当前游标推进到下一个合法空位 */
+			if (!occ_test(occ, flow_c, flow_r, cspan, rspan)) {
+				if (!advance_cursor(occ, &flow_c, &flow_r, cspan, rspan, g->auto_flow)) {
+					/* 网格已满，剩余元素全部叠放在最后一个格子（降级处理） */
+					flow_c = g->cols - cspan;
+					flow_r = g->rows - rspan;
+					if (flow_c < 0) flow_c = 0;
+					if (flow_r < 0) flow_r = 0;
+				}
+			}
+
+			col = flow_c;
+			row = flow_r;
+
+			/* sparse 模式：更新游标到下一个位置 */
+			if (!g->dense) {
+				advance_cursor(occ, &flow_c, &flow_r, 1, 1, g->auto_flow);
+			}
+		}
+
+		/* 标记占用 */
+		occ_mark(occ, col, row, cspan, rspan);
+
+		/* ---- 计算单元格位置与尺寸 ---- */
+		float x = track_start_pos(g->col_widths, g->gap_x, col);
+		float y = track_start_pos(g->row_heights, g->gap_y, row);
+
+		float cell_w = cell_span_size(g->col_widths, g->gap_x, col, cspan);
+		float cell_h = cell_span_size(g->row_heights, g->gap_y, row, rspan);
+
+		/* 子元素期望尺寸 */
+		float item_w = children[i].size.x;
+		float item_h = children[i].size.y;
+
+		/* STRETCH：元素尺寸跟随单元格（减去 padding 留给调用方） */
+		if (gc) {
+			if (gc->justify_self == flex_align::ALIGN_STRETCH || (!gc->explicit_pos && g->justify_items == flex_align::ALIGN_STRETCH)) {
+				if (item_w <= 0.0f) item_w = cell_w;
+			}
+			if (gc->align_self == flex_align::ALIGN_STRETCH || (!gc->explicit_pos && g->align_items == flex_align::ALIGN_STRETCH)) {
+				if (item_h <= 0.0f) item_h = cell_h;
+			}
+		}
+		else {
+			if (g->justify_items == flex_align::ALIGN_STRETCH && item_w <= 0.0f) item_w = cell_w;
+			if (g->align_items == flex_align::ALIGN_STRETCH && item_h <= 0.0f) item_h = cell_h;
+		}
+
+		float ox = 0.0f, oy = 0.0f;
+		grid_align_in_cell(g, gc, cell_w, cell_h, item_w, item_h, &ox, &oy);
+
+		children[i].frame.x = x + ox;
+		children[i].frame.y = y + oy;
+		children[i].frame.z = item_w;
+		children[i].frame.w = item_h;
+	}
+
+	occ_destroy(occ);
+}
+
+#endif // 1
+
 #endif // !NO_FLEX_IMP 
 
 struct font_familys_cx :public font_familys_t {
@@ -5798,7 +6262,7 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 			desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
 			desc.is_copy = false;
 			img->valid = false;
-			std::string fn = "temp/font_pack_ovg.png";
+			//std::string fn = "temp/font_pack_ovg.png";
 			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
 			cb->image_update(rvg, img, &desc);
 		}
@@ -5895,7 +6359,7 @@ void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 			desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
 			desc.is_copy = false;
 			img->valid = false;
-			std::string fn = "temp/font_pack_ovg.png";
+			//std::string fn = "temp/font_pack_ovg.png";
 			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
 			cb->image_update(rvg, img, &desc);
 		}

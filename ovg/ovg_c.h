@@ -310,13 +310,58 @@ struct node_dt
 	int position;		// in 位置,0=relative，1=absolute
 	node_dt* child;		// in 子元素指针
 	size_t child_count;
-	void* user;
 	size_t tidx;		// out 自动计算节点索引
 	size_t parent;		// out 自动计算父节点索引
 	size_t line_count;	// out 行数量
+	void* user;
 };
 
 typedef struct flex_run flex_run;
+/*
+ * 轨道尺寸约定：
+ *   > 0  -> FR（比例单位，参与剩余空间分配）
+ *   <= 0 -> 固定像素（绝对值）
+ *   0    -> 未设置，退化为 1FR
+ */
+
+ /* ---- Grid 容器参数 ---- */
+typedef struct grid_data {
+	int   cols;              /* 列数 */
+	int   rows;              /* 行数 */
+
+	float* col_widths;       /* 每列宽度（px 或 FR），长度 cols */
+	float* row_heights;      /* 每行高度（px 或 FR），长度 rows */
+
+	float  gap_x;            /* 列间距 */
+	float  gap_y;            /* 行间距 */
+
+	flex_align justify_items; /* 单元格内水平对齐（默认 STRETCH） */
+	flex_align align_items;   /* 单元格内垂直对齐（默认 STRETCH） */
+
+	int    auto_flow;        /* 0 = row（先行后列），1 = column（先列后行） */
+	int    dense;            /* 0 = sparse，1 = dense（回溯填充空洞） */
+} grid_data;
+
+/* ---- Grid 子元素参数（挂载在 node_dt.user 上） ---- */
+typedef struct grid_child {
+	int         col;            /* 起始列（0-based） */
+	int         row;            /* 起始行（0-based） */
+	int         col_span;       /* 跨列数（默认 1） */
+	int         row_span;       /* 跨行数（默认 1） */
+
+	flex_align  justify_self;   /* 覆盖容器 justify_items，ALIGN_AUTO = 继承 */
+	flex_align  align_self;     /* 覆盖容器 align_items，ALIGN_AUTO = 继承 */
+
+	/*
+	 * 显式标志位：
+	 *   0 = 未设置，走 auto-flow
+	 *   1 = 显式定位（col/row 有效）
+	 */
+	uint8_t     explicit_pos;
+	uint8_t     _pad[3];
+} grid_child;
+
+
 #endif // !1
 
 // 渲染命令
@@ -748,12 +793,73 @@ typedef struct ovg_ctx_cb {
 
 }ovg_ctx_cb;
 // 工具函数：渲染两色交替的格子
-void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
+void draw_grid_fill(rvg_t * vg, vec2 size, ivec2 cols, int width);
 // tiny flex
-flex_run* new_flex_run(mem_resource_t* a);
-void free_flex_run(flex_run* p);
-mem_resource_t* flex_run_ac(flex_run* p);
-vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
+flex_run* new_flex_run(mem_resource_t * a);
+void free_flex_run(flex_run * p);
+mem_resource_t* flex_run_ac(flex_run * p);
+vec4 flex_run_layout(flex_run * ctx, flex_data * fd, size_t count, node_dt * p, size_t node_count);
+
+
+/* ---- 生命周期 ---- */
+grid_data* grid_create(int cols, int rows);
+void        grid_destroy(grid_data* g);
+
+/* ---- 轨道尺寸（FR 或 px） ---- */
+void grid_set_col_widths(grid_data* g, const float* widths, int cols);
+void grid_set_row_heights(grid_data* g, const float* heights, int rows);
+
+/* ---- 单个轨道 ---- */
+void grid_set_col(grid_data* g, int col, float width);
+void grid_set_row(grid_data* g, int row, float height);
+
+/* ---- 间距 ---- */
+void grid_set_gap(grid_data* g, float gap_x, float gap_y);
+void grid_set_gap_xy(grid_data* g, float gap);
+
+/* ---- auto-flow 与 dense ---- */
+void grid_set_auto_flow(grid_data* g, int auto_flow);   /* 0=row, 1=column */
+void grid_set_dense(grid_data* g, int dense);           /* 0=sparse, 1=dense */
+
+/* ---- 单元格对齐默认值 ---- */
+void grid_set_justify_items(grid_data* g, flex_align a);
+void grid_set_align_items(grid_data* g, flex_align a);
+
+/* ---- 主布局入口 ---- */
+void grid_layout(grid_data* g, float container_width, float container_height, node_dt* children, size_t count);
+
+/*
+ * 高级用法：布局后查询某行某列的计算后像素尺寸。
+ * 用于嵌套布局或调试。
+ */
+float grid_get_col_width(const grid_data* g, int col);
+float grid_get_row_height(const grid_data* g, int row);
+
+#if 0
+grid_data* g = grid_create(3, 2);
+float cw[] = { 1, 1, 1 };
+float rh[] = { 40, 40 };
+grid_set_col_widths(g, cw, 3);
+grid_set_row_heights(g, rh, 2);
+grid_set_gap_xy(g, 8);
+
+node_dt nodes[6] = { 0 };
+for (int i = 0; i < 6; i++) {
+	nodes[i].size.x = 60;
+	nodes[i].size.y = 30;
+}
+
+/* 显式定位第 0 个元素跨 2 列 */
+grid_child gc = { 0 };
+gc.explicit_pos = 1;
+gc.col = 0; gc.row = 0;
+gc.col_span = 2;
+nodes[0].user = &gc;
+
+grid_layout(g, 200, 100, nodes, 6);
+
+grid_destroy(g);
+#endif
 
 // 字体相关
 #ifdef __cplusplus 
@@ -762,14 +868,14 @@ class font_cache_cx;
 typedef void* font_cache_cx;
 #endif
 font_cache_cx* new_font_cache();
-void free_font_cache(font_cache_cx* p);
-font_familys_t* new_font_family(font_cache_cx* p, const char* familys, const char* style);
-void delete_font_family(font_familys_t* p);
-vec3 get_font_extents(hb_font_t* font, int height, bool vert);
+void free_font_cache(font_cache_cx * p);
+font_familys_t* new_font_family(font_cache_cx * p, const char* familys, const char* style);
+void delete_font_family(font_familys_t * p);
+vec3 get_font_extents(hb_font_t * font, int height, bool vert);
 // 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
 // 获取渲染数据
-ovg_draw_data_t get_draw_list(rvg_t* p);
+ovg_draw_data_t get_draw_list(rvg_t * p);
 
 #endif // !OVG_H
