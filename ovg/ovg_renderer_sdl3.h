@@ -34,6 +34,7 @@ struct vg_fbo_t {
 	sdl3gpu_texture* depthStencilTex;	// 深度+模板纹理
 	SDL_GPUCommandBuffer* cmd;
 	bool hasStencil;// 是否有模板附件
+	bool upsize = true;
 };
 
 // 管道状态（SDL3 GPU 版本）
@@ -56,7 +57,7 @@ vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* windo
 void free_vgfbo_sdl3(vg_fbo_t* fbo);
 void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height);
 
-SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo);
+SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool wait);
 // 绘制一帧，提交命令到GPU
 void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count);
 sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format);

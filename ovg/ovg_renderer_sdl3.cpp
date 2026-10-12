@@ -1647,6 +1647,7 @@ void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height) {
 		free_vgfbo_sdl3(fbo);
 		*fbo = new_vgfbo_sdl3(fbo->ctx, width, height, fbo->window);
 		fbo->display_size = { width, height };
+		fbo->upsize = true;
 	}
 }
 // ========================================================================
@@ -2194,7 +2195,7 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 	}
 }
 
-SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
+SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool wait) {
 
 	if (!ctx || !fbo || !(fbo->window || fbo->colorTex))return 0;
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
@@ -2204,9 +2205,9 @@ SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
 	do {
 		if (fbo->window)
 		{
-			bool aq = SDL_AcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh);
+			bool aq = wait ? SDL_WaitAndAcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh) : SDL_AcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh);
 			fbo->display_size = { sw,sh };
-			if (!aq || !sw || !sh) {
+			if (!aq || !sw || !sh || !swapchain) {
 				SDL_CancelGPUCommandBuffer(cmd);
 				return 0;
 			}
