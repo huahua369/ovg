@@ -4,7 +4,7 @@
 
 
 
-
+2026/10/13	支持渲染到多fbo,使用不同数据
 2026/9/9	支持矢量图/位图/文本混合渲染
 2026/8/31	后端支持普通三角形渲染
 
@@ -45,6 +45,7 @@ shader规则：
 #include <unordered_map>
 #include <set>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 #include <cassert>
 #include <cmath>
@@ -188,6 +189,19 @@ public:
 private:
 };
 
+struct upload_desc_t {
+	void* pixels;     /* CPU 像素数据，调用方持有生命周期 */
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
+	vg_format_t format;     /* 像素格式 */
+	sdl3gpu_texture* dst_texture;/* 目标 GPU 纹理 */
+	uint32_t x, y;       /* 目标区域起点（纹理空间） */
+	uint32_t w, h;       /* 目标区域尺寸（0 = 整张） */
+	vg_image_t* img;
+	bool is_copy_rect;		// 是否从区域复制
+};
+
 // 渲染上下文
 struct ovg_ctx_t {
 	ovg_device_t* device = nullptr;
@@ -223,7 +237,22 @@ struct ovg_ctx_t {
 	uint32_t next_image_id = 0;
 	sdl3gpu_texture* currentTexture = nullptr;
 	uint32_t         gradientOffset = 0;
-
+	// 缓冲用
+	std::vector<upload_desc_t> _uploads;
+	struct per_item_t {
+		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
+		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
+		uint32_t pixels_per_row;   /* 传给 SDL：源 buffer 每行像素数（0=紧密） */
+		uint32_t copy_h;           /* 拷贝行数（= 脏矩形高） */
+		uint32_t dirty_w;          /* 脏矩形宽 */
+		uint32_t dirty_h;          /* 脏矩形高 */
+		uint32_t bpp;              /* 每像素字节 */
+		uint32_t stride;           /* 原始纹理每行字节（含 padding） */
+		uint32_t row_pitch;        /* memcpy 每行字节数（= dirty_w * bpp） */
+		uint32_t gpu_row_bytes;    /* buffer 里每行实际字节（紧密 or 对齐后） */
+	};
+	std::vector<per_item_t> _items;
+	std::vector<ovg_draw_data_t> _fbo_data;
 	// ─── 视口 ──────────────────────────────────────
 	int viewportW = 0;
 	int viewportH = 0;
@@ -1695,20 +1724,23 @@ void set_viewport3d(SDL_GPURenderPass* pass, const glm::ivec2& size) {
 // ========================================================================
 // 帧生命周期
 // ========================================================================
-SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearAll) {
-	if (!ctx || !fbo) return nullptr;
+bool ovg_begin_pass(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearAll) {
+	if (!ctx || !fbo) return false;
 
 	SDL_GPUCommandBuffer* cmdBuf = ctx->currentCmdBuf;
-	if (!cmdBuf) return nullptr;
-
+	if (!cmdBuf) return false;
+	if (ctx->pass) {
+		SDL_EndGPURenderPass(ctx->pass);
+		ctx->pass = nullptr;
+	}
 	sdl3gpu_texture* colorTex = (sdl3gpu_texture*)fbo->colorTex;
 	sdl3gpu_texture* colorTexMS = (sdl3gpu_texture*)fbo->colorTexMS;
 	sdl3gpu_texture* depthStencil = (sdl3gpu_texture*)fbo->depthStencilTex;
 
 	auto ct = fbo->swapchain ? fbo->swapchain : colorTex->texture;
 	if (!ct || !depthStencil) {
-		SDL_SubmitGPUCommandBuffer(cmdBuf);
-		return nullptr;
+		//SDL_SubmitGPUCommandBuffer(cmdBuf);
+		return false;
 	}
 
 
@@ -1735,10 +1767,10 @@ SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearA
 
 	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(cmdBuf, &colorTargetInfo, 1, &depthTargetInfo);
 	if (!renderPass) {
-		SDL_SubmitGPUCommandBuffer(cmdBuf);
-		return nullptr;
+		//SDL_SubmitGPUCommandBuffer(cmdBuf);
+		return false;
 	}
-
+	fbo->cmd = cmdBuf;
 	ctx->pass = renderPass;
 	ctx->currentVgPipeIndex = -1;
 
@@ -1751,32 +1783,27 @@ SDL_GPUCommandBuffer* ovg_begin_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearA
 	ctx->viewportH = fbo->height;
 
 
-	return cmdBuf;
+	return true;
 }
 
-SDL_GPURenderPass* ovg_get_current_render_pass(ovg_ctx_t* ctx) {
-	if (!ctx) return nullptr;
-	return ctx->pass;
-}
-
-void ovg_end_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
-	if (!ctx) return;
-
+void ovg_end_pass(ovg_ctx_t* ctx, vg_fbo_t* fbo) {
+	if (!ctx || !fbo) return;
 	SDL_GPUCommandBuffer* actualCmd = ctx->currentCmdBuf;
 
 	if (ctx->pass) {
 		SDL_EndGPURenderPass(ctx->pass);
 		ctx->pass = nullptr;
 	}
-
-	if (fbo && fbo->colorTexMS && fbo->colorTex) {
-		ovg_resolve_msaa_sdl3(ctx, actualCmd, fbo);
-	}
-
+	fbo->cmd = nullptr;
 	ctx->cmdStarted = false;
 	ctx->currentCmdBuf = nullptr;
 	ctx->currentVgPipeIndex = -1;
 }
+SDL_GPURenderPass* ovg_get_current_render_pass(ovg_ctx_t* ctx) {
+	if (!ctx) return nullptr;
+	return ctx->pass;
+}
+
 
 // ========================================================================
 // 纹理绑定
@@ -2195,21 +2222,25 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 	}
 }
 
-SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool wait) {
+int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait) {
 
-	if (!ctx || !fbo || !(fbo->window || fbo->colorTex))return 0;
+	if (!ctx || !fbo || count < 1 || !(fbo->window || fbo->colorTex))return 0;
+	if (ctx->currentCmdBuf) {
+		SDL_CancelGPUCommandBuffer(ctx->currentCmdBuf); ctx->currentCmdBuf = 0;
+	}
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
 	if (!cmd)return 0;
+	int n = 0;
 	uint32_t sw = 0, sh = 0;
-	SDL_GPUTexture* swapchain = NULL;
-	do {
+	for (size_t i = 0; i < count; i++, fbo++)
+	{
+		SDL_GPUTexture* swapchain = NULL;
 		if (fbo->window)
 		{
 			bool aq = wait ? SDL_WaitAndAcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh) : SDL_AcquireGPUSwapchainTexture(cmd, fbo->window, &swapchain, &sw, &sh);
 			fbo->display_size = { sw,sh };
 			if (!aq || !sw || !sh || !swapchain) {
-				SDL_CancelGPUCommandBuffer(cmd);
-				return 0;
+				continue;
 			}
 			if (fbo->width != sw || fbo->height != sh)
 			{
@@ -2217,10 +2248,17 @@ SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, bo
 				reset_vgfbo_sdl3(fbo, sw, sh);
 			}
 		}
-	} while (0);
-	fbo->swapchain = swapchain;
-	fbo->cmd = cmd;
-	return cmd;
+		if (swapchain || fbo->colorTex)
+			n++;
+		fbo->swapchain = swapchain;
+	}
+	if (n < 1)
+	{
+		SDL_CancelGPUCommandBuffer(cmd);
+		cmd = 0;
+	}
+	ctx->currentCmdBuf = cmd;
+	return n;
 }
 void upload_pixels(ovg_ctx_t* r, sdl3gpu_texture* tex, vg_image_desc_t* desc)
 {
@@ -2260,18 +2298,6 @@ void upload_pixels(ovg_ctx_t* r, sdl3gpu_texture* tex, vg_image_desc_t* desc)
 }
 
 
-struct upload_desc_t {
-	void* pixels;     /* CPU 像素数据，调用方持有生命周期 */
-	uint32_t width;
-	uint32_t height;
-	uint32_t stride;     /* 每行字节数（0 = 按 bpp * width 自动算） */
-	vg_format_t format;     /* 像素格式 */
-	sdl3gpu_texture* dst_texture;/* 目标 GPU 纹理 */
-	uint32_t x, y;       /* 目标区域起点（纹理空间） */
-	uint32_t w, h;       /* 目标区域尺寸（0 = 整张） */
-	vg_image_t* img;
-	bool is_copy_rect;		// 是否从区域复制
-};
 
 /* 批量上传结果 */
 typedef struct {
@@ -2287,7 +2313,7 @@ typedef struct {
  *   - descs[i].pixels 必须在本次调用期间保持有效（在 Submit 之前）
  *   - 所有 dst_texture 属于同一个 SDL_GPUDevice
  */
-upload_result_t upload_pixels_batched(SDL_GPUDevice* device, SDL_GPUCommandBuffer* cmd, const upload_desc_t* descs, uint32_t count);
+upload_result_t upload_pixels_batched(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, const upload_desc_t* descs, uint32_t count);
 
 uint32_t format_bpp(vg_format_t fmt) {
 	switch (fmt) {
@@ -2301,31 +2327,16 @@ uint32_t format_bpp(vg_format_t fmt) {
 	}
 }
 
-upload_result_t upload_pixels_batched(
-	SDL_GPUDevice* device,
-	SDL_GPUCommandBuffer* cmd,
-	const upload_desc_t* descs,
-	uint32_t count)
+upload_result_t upload_pixels_batched(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, const upload_desc_t* descs, uint32_t count)
 {
 	upload_result_t result = { 0, 0 };
-
+	SDL_GPUDevice* device = ctx->device->gpuDevice;
 	if (!device || !descs || count == 0) return result;
 
 	const uint32_t align = 256;
 
-	struct per_item_t {
-		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
-		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
-		uint32_t pixels_per_row;   /* 传给 SDL：源 buffer 每行像素数（0=紧密） */
-		uint32_t copy_h;           /* 拷贝行数（= 脏矩形高） */
-		uint32_t dirty_w;          /* 脏矩形宽 */
-		uint32_t dirty_h;          /* 脏矩形高 */
-		uint32_t bpp;              /* 每像素字节 */
-		uint32_t stride;           /* 原始纹理每行字节（含 padding） */
-		uint32_t row_pitch;        /* memcpy 每行字节数（= dirty_w * bpp） */
-		uint32_t gpu_row_bytes;    /* buffer 里每行实际字节（紧密 or 对齐后） */
-	};
-	std::vector<per_item_t> items(count);
+	auto& items = ctx->_items;
+	items.resize(count);
 
 	uint32_t total_size = 0;
 
@@ -2412,7 +2423,7 @@ upload_result_t upload_pixels_batched(
 			if (items[i].copy_h == 0) continue;
 
 			const upload_desc_t* d = &descs[i];
-			const per_item_t* it = &items[i];
+			const ovg_ctx_t::per_item_t* it = &items[i];
 
 			uint8_t* src = (uint8_t*)d->pixels + it->src_offset;   /* 原始纹理脏区起点 */
 			uint8_t* dst = base + it->gpu_offset;                    /* buffer 脏区起点 */
@@ -2438,7 +2449,7 @@ upload_result_t upload_pixels_batched(
 		if (items[i].copy_h == 0) continue;
 
 		const upload_desc_t* d = &descs[i];
-		const per_item_t* it = &items[i];
+		const ovg_ctx_t::per_item_t* it = &items[i];
 
 		SDL_GPUTextureTransferInfo src = {
 			.transfer_buffer = tb,
@@ -2464,72 +2475,6 @@ upload_result_t upload_pixels_batched(
 	SDL_ReleaseGPUTransferBuffer(device, tb);
 	return result;
 }
-#if 0
-struct pending_upload_t {
-	SDL_GPUTransferBuffer* tb;
-	SDL_GPUTexture* texture;
-	uint32_t               x, y, w, h;
-};
-void upload_pixels_batched(ovg_ctx_t* r, vg_image_desc_t* descs, sdl3gpu_texture** texs, uint32_t count)
-{
-	auto dev = r->device->gpuDevice;
-	std::vector<pending_upload_t> uploads;
-	uploads.reserve(count);
-
-	// ── 第一遍：建所有 transfer buffer + 拷贝数据 ──
-	for (uint32_t i = 0; i < count; i++) {
-		vg_image_desc_t* desc = &descs[i];
-		sdl3gpu_texture* tex = texs[i];
-
-		uint32_t bpp = (desc->format == VG_FORMAT_RGBA8) ? 4 : desc->stride;
-		uint32_t pitch = desc->width * bpp;
-		uint32_t size = pitch * desc->height;
-		if (size == 0) continue;
-
-		SDL_GPUTransferBufferCreateInfo ti = {
-			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-			.size = size,
-		};
-		SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(dev, &ti);
-		if (!tb) continue;
-
-		void* ptr = SDL_MapGPUTransferBuffer(dev, tb, false);
-		if (ptr) {
-			SDL_memcpy(ptr, desc->pixels, size);
-			SDL_UnmapGPUTransferBuffer(dev, tb);
-		}
-
-		uploads.push_back({ tb, tex->texture, desc->x, desc->y, desc->w, desc->h });
-	}
-
-	if (uploads.empty()) return;
-
-	// ── 第二遍：一次 command buffer + 一次 copy pass 提交全部 ──
-	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
-	SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-
-	for (auto& up : uploads) {
-		SDL_GPUTextureTransferInfo src = {
-			.transfer_buffer = up.tb,
-			.offset = 0,
-		};
-		SDL_GPUTextureRegion dst = {
-			.texture = up.texture,
-			.x = up.x, .y = up.y, .z = 0,
-			.w = up.w, .h = up.h, .d = 1,
-		};
-		SDL_UploadToGPUTexture(cp, &src, &dst, false);
-	}
-
-	SDL_EndGPUCopyPass(cp);
-	SDL_SubmitGPUCommandBuffer(cmd);
-
-	// ── 释放所有 transfer buffer ──
-	for (auto& up : uploads) {
-		SDL_ReleaseGPUTransferBuffer(dev, up.tb);
-	}
-}
-#endif
 /* ---- 延迟释放 ---- */
 
 void deferred_free_push(ovg_ctx_t* ctx, sdl3gpu_texture* tex) {
@@ -2567,7 +2512,11 @@ int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd)
 			}
 		}
 	}
-	std::vector<upload_desc_t> uploads;
+	auto& uploads = ctx->_uploads;
+	uploads.clear();
+	if (kd->image_desc_count > uploads.capacity()) {
+		uploads.reserve(kd->image_desc_count);
+	}
 	for (size_t i = 0; i < kd->image_desc_count; i++)
 	{
 		auto it = kd->image_desc[i];
@@ -2604,10 +2553,10 @@ int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd)
 		d.img = it->img;
 		uploads.push_back(d);
 	}
-
-	upload_result_t hr = upload_pixels_batched(ctx->device->gpuDevice, cmd, uploads.data(), uploads.size());
+	upload_result_t hr = upload_pixels_batched(ctx, cmd, uploads.data(), uploads.size());
 	return errornum;
 }
+#if 0
 void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count)
 {
 	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !count)return;
@@ -2668,10 +2617,98 @@ void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size
 			}
 		}
 	}
-
 	ovg_end_frame(ctx, fbo);
 	SDL_SubmitGPUCommandBuffer(cmd);
 
+	deferred_free_advance(ctx);
+}
+#endif
+void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
+{
+	if (!ctx /*|| !fbo */ || !data || !count)return;
+
+	auto cmd = ctx->currentCmdBuf;
+	if (!cmd) {
+		cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
+
+	}
+	if (!cmd)return;
+	size_t total_vbo = 0;
+	size_t total_ibo = 0;
+	size_t total_ssbo = 0;
+	int errornum = 0;
+	auto& tfb = ctx->_fbo_data;
+	tfb.reserve(count); tfb.clear();
+	for (size_t i = 0; i < count; i++) {
+		auto kd = &data[i];
+		if (!kd->fbo || !(kd->fbo->window || kd->fbo->colorTex))continue;
+		tfb.push_back(*kd);
+		total_vbo += data[i].v_count * sizeof(ovgVertex);
+		total_vbo += data[i].v1_count * sizeof(geomVertex1);
+		total_vbo += data[i].v2_count * sizeof(geomVertex2);
+
+		total_ibo += data[i].i_count * sizeof(uint32_t);
+		total_ibo += data[i].ig_count * sizeof(uint32_t);
+		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
+		errornum += build_devres(ctx, cmd, kd);
+	}
+	if (tfb.empty()) {
+		SDL_CancelGPUCommandBuffer(cmd);
+		ctx->currentCmdBuf = nullptr;
+		return;
+	}
+	assert(errornum == 0);
+	ctx->currentCmdBuf = cmd;
+	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
+	std::stable_sort(tfb.begin(), tfb.end(), [](const ovg_draw_data_t& a, const ovg_draw_data_t& b) { return a.fbo < b.fbo; });
+	for (size_t i = 0; i < tfb.size(); i++) {
+		auto kd = &tfb[i];
+		kd->vg_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
+		kd->vg_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
+		kd->geom_offset.x = ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
+		kd->geom_offset.y = ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
+		kd->geom_offset.z = ctx->gpubuf->add_ibo(kd->geom_indices, kd->ig_count * sizeof(uint32_t));
+		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
+	}
+	ctx->gpubuf->end(cmd);
+	vg_fbo_t* current_fbo = nullptr;
+
+	SDL_Rect cuClip = {};
+	for (size_t d = 0; d < tfb.size(); d++)
+	{
+		auto kd = &tfb[d];
+		vg_fbo_t* fbo = kd->fbo;
+		if (fbo != current_fbo) {
+			if (current_fbo) {
+				ovg_end_pass(ctx, current_fbo);
+			}
+			current_fbo = fbo;
+			ovg_begin_pass(ctx, fbo, true);
+		}
+		SDL_GPURenderPass* pass = ctx->pass;
+		if (!pass) continue;
+		for (size_t i = 0; i < kd->count; i++)
+		{
+			auto& it = kd->d[i];
+			switch ((cmd_type_e)it.g.stype) {
+			case cmd_type_e::DRAW_VG:
+			{
+				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset);
+			}
+			break;
+			case cmd_type_e::DRAW_GEOM:
+			{
+				draw_geom(fbo, pass, &it.g, kd->geom_offset);
+			}
+			break;
+			}
+		}
+	}
+	if (current_fbo) {
+		ovg_end_pass(ctx, current_fbo);
+	}
+	SDL_SubmitGPUCommandBuffer(cmd);
+	ctx->currentCmdBuf = 0;
 	deferred_free_advance(ctx);
 }
 

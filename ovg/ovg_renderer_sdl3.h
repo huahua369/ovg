@@ -56,10 +56,9 @@ void       free_ovgctx_sdl3(ovg_ctx_t* ctx);
 vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
 void free_vgfbo_sdl3(vg_fbo_t* fbo);
 void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height);
-
-SDL_GPUCommandBuffer* ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool wait);
-// 绘制一帧，提交命令到GPU
-void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count);
 sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format);
-
+// 获取fbo和cmd
+int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
+// 绘制一帧，提交命令到GPU，消耗前面获取的cmd
+void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count);
 void ovg_wait_idle(ovg_ctx_t* ctx);

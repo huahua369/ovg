@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+typedef struct vg_fbo_t vg_fbo_t;
+
 #ifdef __cplusplus
 #include <cstdint>
 using uvec2 = glm::uvec2;
@@ -652,6 +654,7 @@ typedef struct rvg_t {
 }rvg_t;
 // 打包数据引用
 typedef struct ovg_draw_data_t {
+	vg_fbo_t* fbo;
 	gcmd_t* d;				// 渲染命令列表
 	size_t count;
 	ovgVertex* vg_vertex;	// 矢量顶点

@@ -770,7 +770,7 @@ int main()
 				break;
 			}
 		}
-		if (ovg_get_window_swapchain(ctx, &fbo))
+		if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
 		{
 			rtc.begin();
 			cb->clear(vg);
@@ -853,8 +853,9 @@ int main()
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
 			ovg_draw_data_t dlist[] = { get_draw_list(vg) };
+			dlist[0].fbo = &fbo;
 			rtc.begin();
-			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
+			ovg_render_frame(ctx, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			ms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
