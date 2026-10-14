@@ -12,6 +12,7 @@ struct ovg_canvas_cb {
 	ovg_path_t* (*new_path)(mem_resource_t* ac);
 	void(*destroy_path)(ovg_path_t* path);
 	void(*clear_path)(ovg_path_t* path);
+	void(*set_enable_tess2)(ovg_path_t* path, bool enable);
 	void(*close_path)(ovg_path_t* path);
 	void(*new_sub_path)(ovg_path_t* path);
 	void(*path_extents)(ovg_path_t* path, float* x1, float* y1, float* x2, float* y2);
@@ -111,8 +112,8 @@ struct ovg_canvas_cb {
 	void (*add_geometry3d)(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 
 };
- 
+
 // 对象模式接口，如果没字体ctx则无法渲染文本
 ovg_canvas_cb* new_canvas_cb();
-void free_canvas_cb(ovg_canvas_cb*); 
+void free_canvas_cb(ovg_canvas_cb*);
 #endif // !OVG_E_H

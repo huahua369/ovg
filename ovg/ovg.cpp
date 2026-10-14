@@ -319,6 +319,7 @@ struct ovg_path_t {
 	vg_state_save_t* t = 0;
 	uint32_t curVertOffset = 0;
 	bool     simpleConvex = false; // true if path is single rect or concave closed curve.
+	bool enable_tess2 = true;
 };
 
 #define PATH_CLOSED_BIT 0x80000000 /* most significant bit of path elmts is closed/open path state */
@@ -1673,6 +1674,11 @@ void ovg_destroy_path(ovg_path_t* path) {
 		path->ac->free_obj(path);
 }
 
+void ovg_set_enable_tess2(ovg_path_t* path, bool enable) {
+	if (path)
+		path->enable_tess2 = enable;
+}
+
 vg_state_save_t* ovg_new_state(mem_resource_t* ac0) {
 	auto ac = (usp_ac_cx*)ac0;
 	vg_state_save_t* p = 0;
@@ -2412,10 +2418,13 @@ void rvg_cx::fill_non_zero(ovg_path_t* p)
 	auto t = p->t;
 	uint32_t color = t->color;
 	p->color = color;
+	if (p->enable_tess2)
+	{
 #ifdef VG_FILL_NZ_GLUTESS2
-	fill_non_zero_tess2(p);
-	return;
+		fill_non_zero_tess2(p);
+		return;
 #endif
+	}
 	uint32_t ptrPath = 0;
 	uint32_t firstPtIdx = 0;
 	const glm::vec3 uv = { 0,0,-1 };
@@ -3051,6 +3060,7 @@ void ovg_image_destroy(rvg_t* p, vg_image_t* img) {
 // todo init cb
 void init_ovg_cb(ovg_canvas_cb* cb) {
 	if (!cb)return;
+	cb->set_enable_tess2 = ovg_set_enable_tess2;
 	cb->new_path = ovg_new_path;		// 可自定义分配
 	cb->destroy_path = ovg_destroy_path;
 	cb->clear_path = ovg_clear_path;
@@ -4028,6 +4038,10 @@ rvg_t* vctx_new_rvg(mem_resource_t* ac) {
 void  vctx_destroy_rvg(rvg_t* p) {
 	ovg_destroy_rvg(p);
 }
+void vctx_set_enable_tess2(rvg_t* p, bool b) {
+	if (p && p->path)
+		ovg_set_enable_tess2(p->path, b);
+}
 void vctx_clear(rvg_t* v) {
 	ovg_clear(v);
 }
@@ -4498,6 +4512,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	if (!cb)return;
 	cb->new_rvg = vctx_new_rvg;
 	cb->destroy_rvg = vctx_destroy_rvg;
+	cb->set_enable_tess2 = vctx_set_enable_tess2;
 	cb->clear = vctx_clear;
 	cb->get_path = vctx_get_path;
 	cb->new_path = vctx_new_path;

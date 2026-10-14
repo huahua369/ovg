@@ -688,6 +688,7 @@ typedef struct ovg_ctx_cb {
 	rvg_t* (*new_rvg)(mem_resource_t* ac);
 	void (*destroy_rvg)(rvg_t* p);
 	void(*clear)(rvg_t* v);			// 清空画布 
+	void(*set_enable_tess2)(rvg_t* ctx, bool enable);
 	// 路径操作
 	ovg_path_t* (*get_path)(rvg_t* ctx);
 	void (*new_path)(rvg_t* ctx);
