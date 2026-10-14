@@ -319,7 +319,7 @@ struct ovg_path_t {
 	vg_state_save_t* t = 0;
 	uint32_t curVertOffset = 0;
 	bool     simpleConvex = false; // true if path is single rect or concave closed curve.
-	bool enable_tess2 = true;
+	bool enable_tess2 = false;	// 是否启用tess2实现完整矢量交叉计算
 };
 
 #define PATH_CLOSED_BIT 0x80000000 /* most significant bit of path elmts is closed/open path state */
