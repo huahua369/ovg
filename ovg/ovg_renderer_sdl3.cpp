@@ -2226,7 +2226,7 @@ int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait
 
 	if (!ctx || !fbo || count < 1 || !(fbo->window || fbo->colorTex))return 0;
 	if (ctx->currentCmdBuf) {
-		SDL_CancelGPUCommandBuffer(ctx->currentCmdBuf); ctx->currentCmdBuf = 0;
+		SDL_SubmitGPUCommandBuffer(ctx->currentCmdBuf); ctx->currentCmdBuf = 0;
 	}
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(ctx->device->gpuDevice);
 	if (!cmd)return 0;
