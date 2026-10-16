@@ -12,7 +12,7 @@ struct PushConsts_0
 };
 
 
-#line 32
+#line 33
 layout(binding = 0, set = 1)
 layout(scalar) uniform block_PushConsts_0
 {
@@ -20,7 +20,7 @@ layout(scalar) uniform block_PushConsts_0
     uint instance_pos_0;
 }pc_0;
 
-#line 34
+#line 35
 layout(scalar, binding = 0) readonly buffer StructuredBuffer_matrixx3Cfloatx2C4x2C4x3E_t_0 {
     mat4x4 _data[];
 } instance_model_matrix_0;
@@ -70,7 +70,7 @@ struct VSOutput_0
 };
 
 
-#line 36
+#line 37
 void main()
 {
     VSOutput_0 output_0;
@@ -83,19 +83,19 @@ void main()
 
     VSOutput_0 _S1 = output_0;
 
-#line 46
+#line 47
     gl_Position = output_0.pos_0;
 
-#line 46
+#line 47
     entryPointParam_main_uv_0 = _S1.uv_0;
 
-#line 46
+#line 47
     entryPointParam_main_color_0 = _S1.color_0;
 
-#line 46
+#line 47
     entryPointParam_main_color1_0 = _S1.color1_0;
 
-#line 46
+#line 47
     return;
 }
 

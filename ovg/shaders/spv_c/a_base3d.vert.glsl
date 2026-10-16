@@ -11,7 +11,7 @@ struct PushConsts_0
 };
 
 
-#line 32
+#line 33
 layout(binding = 0, set = 1)
 layout(scalar) uniform block_PushConsts_0
 {
@@ -53,7 +53,7 @@ struct VSOutput_0
 };
 
 
-#line 50
+#line 51
 void main()
 {
     VSOutput_0 output_0;
@@ -65,16 +65,16 @@ void main()
 
     VSOutput_0 _S1 = output_0;
 
-#line 59
+#line 60
     gl_Position = output_0.pos_0;
 
-#line 59
+#line 60
     entryPointParam_main_uv_0 = _S1.uv_0;
 
-#line 59
+#line 60
     entryPointParam_main_color_0 = _S1.color_0;
 
-#line 59
+#line 60
     return;
 }
 

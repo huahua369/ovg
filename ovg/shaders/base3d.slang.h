@@ -79,8 +79,10 @@ float4 fragMain(VSOutput input, bool FrontFacing : SV_IsFrontFace) : SV_TARGET
 	color *= 1.0 - step(pu.masktime, samplerMask.Sample(input.uv).r);
 #endif
 	c = color;
+#ifdef COLOR_MASK
 	float4 premul = color;
 	premul.rgb *= premul.a;
 	color = lerp(c, premul, pu.premul);
+#endif
 	return color;
 }

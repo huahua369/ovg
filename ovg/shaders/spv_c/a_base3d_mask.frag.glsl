@@ -12,7 +12,7 @@ uniform sampler2D samplerColor_0;
 struct fragubo_0
 {
     float masktime_0;
-    float mul_0;
+    float premul_0;
 };
 
 
@@ -21,7 +21,7 @@ layout(binding = 0, set = 3)
 layout(scalar) uniform block_fragubo_0
 {
     float masktime_0;
-    float mul_0;
+    float premul_0;
 }pu_0;
 
 #line 66
@@ -52,13 +52,14 @@ void main()
     vec4 color_0 = input_color_0 * (texture((samplerColor_0), (input_uv_0))) * (1.0 - step(pu_0.masktime_0, (texture((samplerMask_0), (input_uv_0))).x));
 
 
-    vec4 premul_0 = color_0;
-    premul_0.xyz = color_0.xyz * color_0.w;
 
-#line 83
-    entryPointParam_fragMain_0 = mix(color_0, premul_0, vec4(pu_0.mul_0));
+    vec4 premul_1 = color_0;
+    premul_1.xyz = color_0.xyz * color_0.w;
 
-#line 83
+#line 84
+    entryPointParam_fragMain_0 = mix(color_0, premul_1, vec4(pu_0.premul_0));
+
+#line 84
     return;
 }
 

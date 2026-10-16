@@ -3,7 +3,7 @@
 layout(row_major) uniform;
 layout(row_major) buffer;
 
-#line 63 0
+#line 64 0
 layout(binding = 0, set = 2)
 uniform sampler2D samplerColor_0;
 
@@ -28,11 +28,11 @@ layout(location = 2)
 in vec4 input_color1_0;
 
 
-#line 69 0
+#line 70 0
 void main()
 {
 
-#line 69
+#line 70
     vec4 color_0;
 
 
@@ -40,24 +40,24 @@ void main()
     if(gl_FrontFacing)
     {
 
-#line 73
+#line 74
         color_0 = input_color_0;
 
-#line 73
+#line 74
     }
     else
     {
 
-#line 73
+#line 74
         color_0 = input_color1_0;
 
-#line 73
+#line 74
     }
 
-#line 73
+#line 74
     entryPointParam_fragMain_0 = color_0 * (texture((samplerColor_0), (input_uv_0)));
 
-#line 73
+#line 74
     return;
 }
 

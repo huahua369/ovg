@@ -73,6 +73,12 @@ shader规则：
 #include "shaders/spv_c/a_base3d_dsc_inst.vert.h"
 #include "shaders/spv_c/a_base3d_dsc_inst.frag.h"
 
+#include "shaders/spv_c/blur.spv.h" 
+#include "shaders/spv_c/noise.spv.h" 
+#include "shaders/spv_c/displace.spv.h" 
+#include "shaders/spv_c/blit.vert.h"
+#include "shaders/spv_c/blit.frag.h"
+
 
 #define FULLSCREEN_BIT         0x10000000
 #define SRCTYPE_MASK           0x000000FF
@@ -121,7 +127,7 @@ struct ovg_device_t {
 	SDL_GPUDevice* gpuDevice = nullptr;
 
 	shadermodule_vf    shaderModules[5] = {};
-
+	SDL_GPUComputePipeline* comp_pipe[10] = {};
 	sdl3gpu_texture* emptyTexture = nullptr;
 	SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_INVALID;
 
@@ -349,7 +355,27 @@ static SDL_GPUShader* compile_shader(SDL_GPUDevice* device, SDL_GPUShaderStage s
 	}
 	return shader;
 }
-
+SDL_GPUComputePipeline* comp_pipe(SDL_GPUDevice* device, size_t code_size, const void* code, const char* entrypoint
+	, const glm::uvec2& tex_uniform_count, const glm::uvec4& rw, const glm::uvec3& count, SDL_GPUShaderFormat format)
+{
+	SDL_GPUComputePipelineCreateInfo cp = {
+	.code_size = code_size,
+	.code = (const Uint8*)code,
+	.entrypoint = entrypoint,
+	.format = format,
+	.num_samplers = tex_uniform_count.x,
+	.num_readonly_storage_textures = rw.x,
+	.num_readonly_storage_buffers = rw.y,
+	.num_readwrite_storage_textures = rw.z,
+	.num_readwrite_storage_buffers = rw.w,
+	.num_uniform_buffers = tex_uniform_count.y,
+	.threadcount_x = count.x,
+	.threadcount_y = count.y,
+	.threadcount_z = count.z,
+	};
+	SDL_GPUComputePipeline* computePipeline = SDL_CreateGPUComputePipeline(device, &cp);
+	return computePipeline;
+}
 // ========================================================================
 // 缓冲区管理
 // ========================================================================
@@ -885,25 +911,42 @@ void gpu_set_blend(SDL_GPUColorTargetBlendState& blend, blendMode_e bm)
 // ========================================================================
 static void init_shader_modules(ovg_device_t* dev) {
 	struct { const uint32_t* v; size_t vlen; const uint32_t* f; size_t flen; } shaders[5] = {
-		{a_base3d_vert,       sizeof(a_base3d_vert),         a_base3d_frag,          sizeof(a_base3d_frag)},
-		{a_base3d_mask_vert,    sizeof(a_base3d_mask_vert),    a_base3d_mask_frag,     sizeof(a_base3d_mask_frag)},
-		{a_base3d_dsc_vert,     sizeof(a_base3d_dsc_vert),     a_base3d_dsc_frag,     sizeof(a_base3d_dsc_frag)},
-		{a_base3d_inst_vert,    sizeof(a_base3d_inst_vert),    a_base3d_inst_frag,    sizeof(a_base3d_inst_frag)},
-		{a_base3d_dsc_inst_vert, sizeof(a_base3d_dsc_inst_vert),a_base3d_dsc_inst_frag, sizeof(a_base3d_dsc_inst_frag)},
+		{ a_base3d_vert,       sizeof(a_base3d_vert),         a_base3d_frag,          sizeof(a_base3d_frag) },
+		{ a_base3d_mask_vert,    sizeof(a_base3d_mask_vert),    a_base3d_mask_frag,     sizeof(a_base3d_mask_frag) },
+		{ a_base3d_dsc_vert,     sizeof(a_base3d_dsc_vert),     a_base3d_dsc_frag,     sizeof(a_base3d_dsc_frag) },
+		{ a_base3d_inst_vert,    sizeof(a_base3d_inst_vert),    a_base3d_inst_frag,    sizeof(a_base3d_inst_frag) },
+		{ a_base3d_dsc_inst_vert, sizeof(a_base3d_dsc_inst_vert),a_base3d_dsc_inst_frag, sizeof(a_base3d_dsc_inst_frag) },
+	};
+	/*
+	.num_readonly_storage_textures = rw.x,
+	.num_readonly_storage_buffers = rw.y,
+	.num_readwrite_storage_textures = rw.z,
+	.num_readwrite_storage_buffers = rw.w,
+	*/
+	struct { const uint32_t* c; size_t vlen; glm::uvec2 tex_uniform_count; glm::uvec4 rw; } comp_shaders[] = {
+		{ a_blur_comp, sizeof(a_blur_comp),{ 1,1 },{ 0,0,1,0 } },
+		{ a_displace_comp, sizeof(a_displace_comp),{ 2,1 },{ 0,0,1,0 } },
+		{ a_noise_comp, sizeof(a_noise_comp),{ 0,1 },{ 0,0,1,0 } },
 	};
 	struct num_sm {
 		glm::ivec4 vnum = {};	//num_samplers = num.x;	num_uniform_buffers = num.y;	num_storage_buffers = num.z;	num_storage_textures = num.w;
 		glm::ivec4 fnum = {};
 	};
-	num_sm nums[5] = { {glm::ivec4(0,1,0,0),glm::ivec4(1,0,0,0)}
-		,{glm::ivec4(0,1,0,0),glm::ivec4(2,1,0,0)}
-		,{glm::ivec4(0,1,0,0),glm::ivec4(1,0,0,0)}
-		,{glm::ivec4(0,1,1,0),glm::ivec4(1,0,0,0)}
-		,{glm::ivec4(0,1,1,0),glm::ivec4(1,0,0,0)}
+	num_sm nums[5] = { { glm::ivec4(0,1,0,0),glm::ivec4(1,0,0,0) }
+		,{ glm::ivec4(0,1,0,0),glm::ivec4(2,1,0,0) }
+		,{ glm::ivec4(0,1,0,0),glm::ivec4(1,0,0,0) }
+		,{ glm::ivec4(0,1,1,0),glm::ivec4(1,0,0,0) }
+		,{ glm::ivec4(0,1,1,0),glm::ivec4(1,0,0,0) }
 	};
 	for (int i = 0; i < 5; i++) {
 		dev->shaderModules[i].vert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX, shaders[i].v, shaders[i].vlen, nums[i].vnum, "main");
 		dev->shaderModules[i].frag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, shaders[i].f, shaders[i].flen, nums[i].fnum, "main");
+	}
+	glm::uvec3 ccount = { 8,8,1 };
+	for (int i = 0; i < 3; i++)
+	{
+		auto& it = comp_shaders[i];
+		dev->comp_pipe[i] = comp_pipe(dev->gpuDevice, it.vlen, it.c, "main", it.tex_uniform_count, it.rw, ccount, dev->supportedFormats);
 	}
 }
 
@@ -912,6 +955,12 @@ static void destroy_shader_modules(ovg_device_t* dev) {
 		if (dev->shaderModules[i].vert) SDL_ReleaseGPUShader(dev->gpuDevice, dev->shaderModules[i].vert);
 		if (dev->shaderModules[i].frag) SDL_ReleaseGPUShader(dev->gpuDevice, dev->shaderModules[i].frag);
 		dev->shaderModules[i] = {};
+	}
+	for (int i = 0; i < 10; i++) {
+		auto& p = dev->comp_pipe[i];
+		if (p)
+			SDL_ReleaseGPUComputePipeline(dev->gpuDevice, p);
+		p = 0;
 	}
 }
 
@@ -1046,9 +1095,9 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 	// 公共顶点属性: pos(2) + uv(2) + color(1) = 20 bytes
 	SDL_GPUVertexAttribute vgAttrs[3] = {
-		{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,        0},   // pos
-		{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,        8},   // uv
-		{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 16},	// color (RGBA8 UNORM)
+		{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,        0 },   // pos
+		{ 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,        8 },   // uv
+		{ 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 16 },	// color (RGBA8 UNORM)
 	};
 
 	// ═══════════════════════════════════════════════════════════════
@@ -1338,10 +1387,10 @@ static pipelinestate_p_internal create_geom_pipeline(ovg_ctx_t* ctx, const gem_i
 	SDL_GPUShader* frag = dev->shaderModules[shaderIdx].frag;
 
 	SDL_GPUVertexAttribute geomAttrs[4] = {
-		{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,        0},
-		{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,       12},
-		{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,  20},
-		{3, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,  24},
+		{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,        0 },
+		{ 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,       12 },
+		{ 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,  20 },
+		{ 3, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,  24 },
 	};
 
 	SDL_GPUColorTargetDescription colorTarget = {};
