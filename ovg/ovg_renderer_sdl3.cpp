@@ -3,7 +3,7 @@
  * SDL3 GPU 矢量渲染后端
 
 
-
+2026/10/16	增加compute特效shader
 2026/10/13	支持渲染到多fbo,使用不同数据
 2026/9/9	支持矢量图/位图/文本混合渲染
 2026/8/31	后端支持普通三角形渲染
@@ -144,6 +144,8 @@ public:
 	~gpu_buffer_cx();
 	void init(SDL_GPUDevice* d, const SDL_GPUBufferCreateInfo* createinfo);
 	void init(SDL_GPUDevice* d, uint32_t usage, size_t capacity);
+	void init_graphics(SDL_GPUDevice* d, size_t capacity, bool vbo, bool ibo, bool indirect);
+	void init_storage(SDL_GPUDevice* d, size_t capacity, bool comp_write, bool indirect);
 	void resize(size_t newsize);
 
 private:
@@ -355,7 +357,7 @@ static SDL_GPUShader* compile_shader(SDL_GPUDevice* device, SDL_GPUShaderStage s
 	}
 	return shader;
 }
-SDL_GPUComputePipeline* comp_pipe(SDL_GPUDevice* device, size_t code_size, const void* code, const char* entrypoint
+SDL_GPUComputePipeline* new_compute_pipe(SDL_GPUDevice* device, size_t code_size, const void* code, const char* entrypoint
 	, const glm::uvec2& tex_uniform_count, const glm::uvec4& rw, const glm::uvec3& count, SDL_GPUShaderFormat format)
 {
 	SDL_GPUComputePipelineCreateInfo cp = {
@@ -376,6 +378,156 @@ SDL_GPUComputePipeline* comp_pipe(SDL_GPUDevice* device, size_t code_size, const
 	SDL_GPUComputePipeline* computePipeline = SDL_CreateGPUComputePipeline(device, &cp);
 	return computePipeline;
 }
+
+// 计算着色器资源创建
+gpu_buffer_cx* new_comp_buffer(SDL_GPUDevice* dev, size_t size);
+#define MAX_COUNT_PASS_RES 8
+#define MAX_COUNT_PASS_RES2 16
+// 计算着色器调用封装
+class compute_pass
+{
+public:
+	SDL_GPUCommandBuffer* cmd = 0;
+	SDL_GPUComputePass* pass = 0;
+	// 写入目标资源
+	std::array<SDL_GPUStorageTextureReadWriteBinding, MAX_COUNT_PASS_RES> rw_textures = {};
+	std::array<SDL_GPUStorageBufferReadWriteBinding, MAX_COUNT_PASS_RES> rw_buffers = {};
+	// 使用资源
+	std::array<SDL_GPUTextureSamplerBinding, MAX_COUNT_PASS_RES2> textures = {};
+	std::array<SDL_GPUTexture*, MAX_COUNT_PASS_RES> storage_textures = {};
+	std::array<SDL_GPUBuffer*, MAX_COUNT_PASS_RES> storage_buffers = {};
+	glm::uvec2 rw_count = {};
+	glm::uvec3 count = {};
+public:
+	compute_pass();
+	~compute_pass();
+	void clear();
+	// 添加读写资源，保留资源则cycle=true
+	void add_rw_texture(SDL_GPUTexture* texture, uint32_t mip_level, uint32_t layer, bool cycle);
+	void add_rw_buffer(SDL_GPUBuffer* buffer, bool cycle);
+	// 开始构建pass
+	void begin(SDL_GPUCommandBuffer* c);
+	void bind_pipe(SDL_GPUComputePipeline* compute_pipeline);
+	void push_texture(SDL_GPUTexture* texture, SDL_GPUSampler* sampler);
+	void push_storage_texture(SDL_GPUTexture* storage_textures);
+	void push_storage_buffers(SDL_GPUBuffer* storage_buffers);
+	void push_uniformdata(uint32_t slot_index, const void* data, uint32_t length);
+	// 执行
+	void dispatch(const glm::uvec3& gcount);
+	void dispatch_indirect(SDL_GPUBuffer* buffer, uint32_t offset);
+	// 结束pass
+	void end();
+private:
+
+};
+
+gpu_buffer_cx* new_comp_buffer(SDL_GPUDevice* dev, size_t size)
+{
+	if (!dev || !size)return 0;
+	auto p = new gpu_buffer_cx();
+	if (p)
+	{
+		p->init_storage(dev, size, true, false);
+	}
+	return p;
+}
+
+compute_pass::compute_pass()
+{}
+
+compute_pass::~compute_pass()
+{
+	end();
+}
+
+void compute_pass::clear()
+{
+	cmd = 0;
+	pass = 0;
+	rw_textures = {};
+	rw_buffers = {};
+	textures = {};
+	storage_textures = {};
+	storage_buffers = {};
+	rw_count = {};
+	count = {};
+}
+
+void compute_pass::add_rw_texture(SDL_GPUTexture* texture, uint32_t mip_level, uint32_t layer, bool cycle)
+{
+	if (rw_count.x < rw_textures.size())
+		rw_textures[rw_count.x++] = { texture,mip_level,layer,cycle };
+}
+
+void compute_pass::add_rw_buffer(SDL_GPUBuffer* buffer, bool cycle)
+{
+	if (rw_count.y < rw_buffers.size())
+		rw_buffers[rw_count.y++] = { buffer,cycle };
+}
+
+void compute_pass::begin(SDL_GPUCommandBuffer* c)
+{
+	cmd = c;
+	if (!pass && (rw_count.x > 0 || rw_count.y > 0))
+	{
+		pass = SDL_BeginGPUComputePass(c, rw_count.x > 0 ? rw_textures.data() : nullptr, rw_count.x, rw_count.y ? rw_buffers.data() : nullptr, rw_count.y);
+	}
+}
+void compute_pass::bind_pipe(SDL_GPUComputePipeline* compute_pipeline) {
+	if (pass)
+		SDL_BindGPUComputePipeline(pass, compute_pipeline);
+}
+void compute_pass::push_texture(SDL_GPUTexture* texture, SDL_GPUSampler* sampler)
+{
+	if (texture && sampler && count.x < textures.size()) { textures[count.x++] = { texture, sampler }; }
+}
+
+void compute_pass::push_storage_texture(SDL_GPUTexture* storage_texture)
+{
+	if (storage_texture && count.x < storage_textures.size()) { storage_textures[count.y++] = storage_texture; }
+}
+
+void compute_pass::push_storage_buffers(SDL_GPUBuffer* storage_buffer)
+{
+	if (storage_buffer && count.x < storage_buffers.size()) { storage_buffers[count.z++] = storage_buffer; }
+}
+
+void compute_pass::push_uniformdata(uint32_t slot_index, const void* data, uint32_t length) {
+	if (cmd && data && length)
+		SDL_PushGPUComputeUniformData(cmd, slot_index, data, length);
+}
+
+void compute_pass::dispatch(const glm::uvec3& gcount)
+{
+	if (pass)
+	{
+		if (count.x > 0)
+			SDL_BindGPUComputeSamplers(pass, 0, textures.data(), count.x);
+		if (count.y > 0)
+			SDL_BindGPUComputeStorageTextures(pass, 0, storage_textures.data(), count.y);
+		if (count.z > 0)
+			SDL_BindGPUComputeStorageBuffers(pass, 0, storage_buffers.data(), count.z);
+		SDL_DispatchGPUCompute(pass, gcount.x, gcount.y, gcount.z);
+	}
+}
+void compute_pass::dispatch_indirect(SDL_GPUBuffer* buffer, uint32_t offset)
+{
+	if (pass)
+	{
+		if (count.x > 0)
+			SDL_BindGPUComputeSamplers(pass, 0, textures.data(), count.x);
+		if (count.y > 0)
+			SDL_BindGPUComputeStorageTextures(pass, 0, storage_textures.data(), count.y);
+		if (count.z > 0)
+			SDL_BindGPUComputeStorageBuffers(pass, 0, storage_buffers.data(), count.z);
+		SDL_DispatchGPUComputeIndirect(pass, buffer, offset);
+	}
+}
+void compute_pass::end() {
+	if (pass) { SDL_EndGPUComputePass(pass); pass = 0; }
+}
+
+
 // ========================================================================
 // 缓冲区管理
 // ========================================================================
@@ -410,6 +562,21 @@ void gpu_buffer_cx::init(SDL_GPUDevice* d, uint32_t usage, size_t capacity)
 	buf = SDL_CreateGPUBuffer(dev, &c);
 	info = c;
 	size = c.size;
+}
+void gpu_buffer_cx::init_graphics(SDL_GPUDevice* d, size_t capacity, bool vbo, bool ibo, bool indirect)
+{
+	uint32_t usage = 0;
+	if (vbo)usage |= SDL_GPU_BUFFERUSAGE_VERTEX;
+	if (ibo)usage |= SDL_GPU_BUFFERUSAGE_INDEX;
+	if (indirect)usage |= SDL_GPU_BUFFERUSAGE_INDIRECT;
+	init(d, usage, capacity);
+}
+void gpu_buffer_cx::init_storage(SDL_GPUDevice* d, size_t capacity, bool comp_write, bool indirect)
+{
+	uint32_t usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+	if (comp_write)usage |= SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ | SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE;
+	if (indirect)usage |= SDL_GPU_BUFFERUSAGE_INDIRECT;
+	init(d, usage, capacity);
 }
 void gpu_buffer_cx::resize(size_t newsize)
 {
@@ -946,7 +1113,7 @@ static void init_shader_modules(ovg_device_t* dev) {
 	for (int i = 0; i < 3; i++)
 	{
 		auto& it = comp_shaders[i];
-		dev->comp_pipe[i] = comp_pipe(dev->gpuDevice, it.vlen, it.c, "main", it.tex_uniform_count, it.rw, ccount, dev->supportedFormats);
+		dev->comp_pipe[i] = new_compute_pipe(dev->gpuDevice, it.vlen, it.c, "main", it.tex_uniform_count, it.rw, ccount, dev->supportedFormats);
 	}
 }
 
