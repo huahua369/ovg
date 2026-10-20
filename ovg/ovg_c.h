@@ -556,6 +556,7 @@ typedef struct vg_image_desc_t {
 	uint32_t px_size;		// 像素字节大小
 	bool is_destroy;		// true = 删除纹理；
 	bool is_copy;			// 是否要复制内存；
+	bool dirty;				// 内部使用：本帧是否有更新（image_update 置位，上传后清除）
 }vg_image_desc_t;
 
 #endif

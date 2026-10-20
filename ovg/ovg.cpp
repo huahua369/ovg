@@ -353,10 +353,10 @@ void _matrix_get_scale(const glm::mat3x2* matrix, float* sx, float* sy) {
 	auto c0 = (*matrix)[0];
 	auto c1 = (*matrix)[1];
 	auto c2 = (*matrix)[2];
-	*sx = sqrt(c0.x * c0.x + c1.x * c1.x);
+	*sx = sqrtf(c0.x * c0.x + c1.x * c1.x);   // sqrtf：避免每次 double 提升开销（曲线细分路径高频调用）
 	/*if (matrix->xx < 0)
 	 *sx = -*sx;*/
-	*sy = sqrt(c0.y * c0.y + c1.y * c1.y);
+	*sy = sqrtf(c0.y * c0.y + c1.y * c1.y);
 	/*if (matrix->yy < 0)
 	 *sy = -*sy;*/
 }
@@ -414,10 +414,11 @@ void matrix_transform_distance(const glm::mat3x2* matrix, float* dx, float* dy) 
 }
 
 void matrix_transform_point(const glm::mat3x2* matrix, float* x, float* y) {
+	// 修复：原实现把输入值写回（transform 实际是 no-op），这里真正应用矩阵变换
 	glm::mat3x2 m = *matrix;
-	glm::vec3 v = { *x,*y,1.0f };
-	auto vv = m * v;
-	*x = v.x; *y = v.y;
+	float nx = m[0].x * *x + m[1].x * *y + m[2].x;
+	float ny = m[0].y * *x + m[1].y * *y + m[2].y;
+	*x = nx; *y = ny;
 }
 
 inline float vec2_zcross(const glm::vec2& v1, const glm::vec2& v2) { return v1.x * v2.y - v1.y * v2.x; }
@@ -829,7 +830,7 @@ void _elliptic_arc(ovg_path_t* ctx, float x1, float y1, float x2, float y2, bool
 	glm::vec2 p1 = m * p;
 
 	// radii corrections
-	double lambda = powf(p1.x, 2) / powf(rx, 2) + powf(p1.y, 2) / powf(ry, 2);
+	double lambda = (p1.x * p1.x) / (rx * rx) + (p1.y * p1.y) / (ry * ry);
 	if (lambda > 1) {
 		lambda = sqrtf(lambda);
 		rx *= lambda;
@@ -838,8 +839,9 @@ void _elliptic_arc(ovg_path_t* ctx, float x1, float y1, float x2, float y2, bool
 
 	p = glm::vec2{ rx * p1.y / ry, -ry * p1.x / rx };
 
-	glm::vec2 cp = p * sqrtf(fabsf((powf(rx, 2) * powf(ry, 2) - powf(rx, 2) * powf(p1.y, 2) - powf(ry, 2) * powf(p1.x, 2)) /
-		(powf(rx, 2) * powf(p1.y, 2) + powf(ry, 2) * powf(p1.x, 2))));
+	float rx2 = rx * rx, ry2 = ry * ry, px2 = p1.x * p1.x, py2 = p1.y * p1.y;
+	glm::vec2 cp = p * sqrtf(fabsf((rx2 * ry2 - rx2 * py2 - ry2 * px2) /
+		(rx2 * py2 + ry2 * px2)));
 
 	if (largeArc == counterClockWise)
 		cp = -cp;
@@ -2906,6 +2908,7 @@ void rvg_cx::image_update(vg_image_t* img, vg_image_desc_t* desc)
 	img->width = desc->width;
 	img->height = desc->height;
 	dst.px_size = dst.height * dst.stride;
+	dst.dirty = true;   // 标记本帧需要上传到 GPU
 	if (desc->is_copy && (dst.px_size > 0)) {
 		dst.pixels = ac->new_mem(dst.px_size);
 		memcpy((void*)dst.pixels, desc->pixels, dst.px_size);

@@ -860,7 +860,7 @@ int main()
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
-		SDL_Delay(16);  /* ~60 FPS */
+		//SDL_Delay(16);  /* ~60 FPS */
 	}
 	if (run_dst)delete run_dst;
 	SDL_WaitForGPUIdle(wg->device);

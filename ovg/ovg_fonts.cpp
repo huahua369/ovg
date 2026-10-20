@@ -1412,12 +1412,51 @@ hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size
 	return img;
 }
 #if 1
-// 像素写入函数类型
-// src_ptr: 指向当前源像素的指针（字节）
-// 返回: 要写入 dst 的 uint32_t 像素值
-// 如果返回 false，表示跳过（不写入）
-using PixelWriter = bool (*)(const uint8_t* src_ptr, uint32_t& out);
+// 像素写入器：编译期选择，可被完全内联（原函数指针版本无法内联，逐像素一次间接调用）
+// put 返回 false 表示跳过不写入；row_copy=true 且无翻转/无 x 偏移时整行 memcpy
+struct write_gray_to_color {
+	static constexpr bool row_copy = false;
+	static bool put(const uint8_t* src, uint32_t& out) {
+		uint32_t color = -1;
+		uint8_t gray = src[0];
+		if (gray == 0) return false;
+		out = (color & 0x00FFFFFF) | (uint32_t(gray) << 24);
+		return true;
+	}
+};
 
+struct write_gray_mul {
+	static constexpr bool row_copy = false;
+	static bool put(const uint8_t* src, uint32_t& out) {
+		uint8_t gray = src[0];
+		if (gray == 0) return false;
+		out = (uint32_t(gray) << 24) | (uint32_t(gray) << 16) | (uint32_t(gray) << 8) | gray;
+		return true;
+	}
+};
+
+struct write_bgra_raw {
+	static constexpr bool row_copy = true;   // 直接拷贝，可整行 memcpy
+	static bool put(const uint8_t* src, uint32_t& out) {
+		out = *(const uint32_t*)src;
+		return true;
+	}
+};
+
+struct write_bgra_to_rgba {
+	static constexpr bool row_copy = false;
+	static bool put(const uint8_t* src, uint32_t& out) {
+		uint32_t pixel = *(const uint32_t*)src;
+		uint8_t b = pixel & 0xFF;
+		uint8_t g = (pixel >> 8) & 0xFF;
+		uint8_t r = (pixel >> 16) & 0xFF;
+		uint8_t a = (pixel >> 24) & 0xFF;
+		out = (uint32_t(a) << 24) | (uint32_t(r) << 16) | (uint32_t(g) << 8) | b;
+		return true;
+	}
+};
+
+template <typename Writer>
 static void rgba_blit(
 	ovg_image_data* dst,
 	int dst_x, int dst_y,
@@ -1426,8 +1465,7 @@ static void rgba_blit(
 	const uint8_t* src_data,
 	int src_stride,        // 字节
 	int src_bpp,           // 每像素字节数
-	bool flip_y,
-	PixelWriter write_pixel
+	bool flip_y
 )
 {
 	if (!dst || !src_data || src_w <= 0 || src_h <= 0 || src_stride < src_w * src_bpp)
@@ -1445,56 +1483,26 @@ static void rgba_blit(
 	if (copy_w <= 0 || copy_h <= 0)
 		return;
 
+	// 无翻转且从行首开始时可整行 memcpy（仅对可直接拷贝的写入器）
+	const bool row_copy = Writer::row_copy && !flip_y && s_x == 0;
+	const size_t row_bytes = (size_t)copy_w * src_bpp;
+
 	for (int iy = 0; iy < copy_h; ++iy) {
 		int src_row_y = flip_y ? (src_h - 1 - (s_y + iy)) : (s_y + iy);
 		const uint8_t* src_row = src_data + src_row_y * src_stride + s_x * src_bpp;
 		uint32_t* dst_row = dst->data + (d_y + iy) * dst->width + d_x;
 
+		if (row_copy) {
+			memcpy(dst_row, src_row, row_bytes);
+			continue;
+		}
 		for (int ix = 0; ix < copy_w; ++ix) {
 			uint32_t pixel;
-			if (write_pixel(src_row + ix * src_bpp, pixel)) {
+			if (Writer::put(src_row + ix * src_bpp, pixel)) {
 				dst_row[ix] = pixel;
 			}
 		}
 	}
-}
-
-// --- 灰度 → 指定颜色（gray 作 alpha）---
-static bool write_gray_to_color(const uint8_t* src, uint32_t& out)
-{
-	uint32_t color = -1;
-	uint8_t gray = src[0];
-	if (gray == 0) return false;
-	out = (color & 0x00FFFFFF) | (uint32_t(gray) << 24);
-	return true;
-}
-
-// --- 灰度 → 预乘白色 ---
-static bool write_gray_mul(const uint8_t* src, uint32_t& out)
-{
-	uint8_t gray = src[0];
-	if (gray == 0) return false;
-	out = (uint32_t(gray) << 24) | (uint32_t(gray) << 16) | (uint32_t(gray) << 8) | gray;
-	return true;
-}
-
-// --- BGRA → 直接拷贝 ---
-static bool write_bgra_raw(const uint8_t* src, uint32_t& out)
-{
-	out = *(const uint32_t*)src;
-	return true;
-}
-
-// --- BGRA → RGBA（swap R/B）---
-static bool write_bgra_to_rgba(const uint8_t* src, uint32_t& out)
-{
-	uint32_t pixel = *(const uint32_t*)src;
-	uint8_t b = pixel & 0xFF;
-	uint8_t g = (pixel >> 8) & 0xFF;
-	uint8_t r = (pixel >> 16) & 0xFF;
-	uint8_t a = (pixel >> 24) & 0xFF;
-	out = (uint32_t(a) << 24) | (uint32_t(r) << 16) | (uint32_t(g) << 8) | b;
-	return true;
 }
 
 void rgba_copy2gray(ovg_image_data* dst, int x, int y, int w, int h,
@@ -1502,28 +1510,28 @@ void rgba_copy2gray(ovg_image_data* dst, int x, int y, int w, int h,
 {
 	if (stride < 1) stride = w;
 
-	rgba_blit(dst, x, y, 0, 0, w, h, dt, stride, 1, fy, write_gray_to_color);
+	rgba_blit<write_gray_to_color>(dst, x, y, 0, 0, w, h, dt, stride, 1, fy);
 }
 
 void rgba_copy2gray_mul(ovg_image_data* dst, int x, int y, int w, int h,
 	const uint8_t* dt, int stride, bool fy)
 {
 	if (stride < 1) stride = w;
-	rgba_blit(dst, x, y, 0, 0, w, h, dt, stride, 1, fy, write_gray_mul);
+	rgba_blit<write_gray_mul>(dst, x, y, 0, 0, w, h, dt, stride, 1, fy);
 }
 
 void rgba_copy_bgra(ovg_image_data* dst, int x, int y, int w, int h,
 	const uint32_t* dt, int stride, bool fy)
 {
 	if (stride < 1) stride = w * 4;
-	rgba_blit(dst, x, y, 0, 0, w, h, (const uint8_t*)dt, stride, 4, fy, write_bgra_raw);
+	rgba_blit<write_bgra_raw>(dst, x, y, 0, 0, w, h, (const uint8_t*)dt, stride, 4, fy);
 }
 
 void rgba_copy_bgra2rgba(ovg_image_data* dst, int x, int y, int w, int h,
 	const uint32_t* dt, int stride, bool fy)
 {
 	if (stride < 1) stride = w * 4;
-	rgba_blit(dst, x, y, 0, 0, w, h, (const uint8_t*)dt, stride, 4, fy, write_bgra_to_rgba);
+	rgba_blit<write_bgra_to_rgba>(dst, x, y, 0, 0, w, h, (const uint8_t*)dt, stride, 4, fy);
 }
 #endif // 1
 
@@ -1615,11 +1623,21 @@ void a8_to_lcd(const A8Buf& filtered, int height, uint8_t* rgba_out, int out_w, 
 	glm::vec4 c4 = *(glm::u8vec4*)&c;
 	c4 *= c4.w / 255.0;
 	glm::u8vec4 color = c4;
-	/* gamma 校正：覆盖度是线性面积，需转 sRGB 观感 */
+	/* gamma 校正：覆盖度是线性面积，需转 sRGB 观感。
+	 * 原实现每像素调用 std::pow（双精度），LCD 路径每字形数千次——改为 256 项查表。 */
+	struct gamma_lut_t {
+		uint8_t v[256];
+		gamma_lut_t() {
+			for (int i = 0; i < 256; ++i) {
+				double n = i / 255.0;
+				n = std::pow(n, 1.0 / 1.8); // 1.8 接近典型 LCD gamma
+				v[i] = uint8_t(glm::clamp(n * 255.0, 0.0, 255.0));
+			}
+		}
+	};
+	static const gamma_lut_t gamma_lut;
 	auto gamma = [](int v) -> uint8_t {
-		double n = v / 255.0;
-		n = std::pow(n, 1.0 / 1.8); // 1.8 接近典型 LCD gamma
-		return uint8_t(glm::clamp(n * 255.0, 0.0, 255.0));
+		return gamma_lut.v[glm::clamp(v, 0, 255)];
 		};
 
 	/* 是否为水平排列（可做真正的三通道 LCD 着色） */
@@ -1772,6 +1790,7 @@ class image_packer :public packer_base
 public:
 	stbrp_context _ctx = {};
 	std::vector<stbrp_node> _rpns;
+	std::vector<stbrp_rect> _scratch;   // 复用缓冲，避免每次 push_rect 堆分配
 public:
 	image_packer() {}
 	~image_packer() {}
@@ -1794,25 +1813,26 @@ public:
 	size_t push_rect(glm::ivec4* rc, int n, size_t stride)
 	{
 		if (!rc || n < 1)return false;
-		std::vector<stbrp_rect> rct(n);
+		if (_scratch.size() < (size_t)n)_scratch.resize(n);
+		auto rct = _scratch.data();
 		auto r = rc;
 		auto t = (char*)rc;
 		if (stride < sizeof(glm::ivec4))
 			stride = sizeof(glm::ivec4);
-		for (auto& it : rct)
+		for (int i = 0; i < n; ++i)
 		{
 			r = (glm::ivec4*)t;
-			it.w = r->z; it.h = r->w;
+			rct[i].id = 0; rct[i].w = r->z; rct[i].h = r->w;
 			t += stride;
 		}
 		t = (char*)rc;
-		int ret = stbrp_pack_rects(&_ctx, rct.data(), n);
+		int ret = stbrp_pack_rects(&_ctx, rct, n);
 		size_t cx = 0;
-		for (auto& it : rct)
+		for (int i = 0; i < n; ++i)
 		{
 			r = (glm::ivec4*)t;
-			r->x = it.x; r->y = it.y;
-			if (!it.was_packed)
+			r->x = rct[i].x; r->y = rct[i].y;
+			if (!rct[i].was_packed)
 			{
 				cx++;
 			}
@@ -1875,6 +1895,7 @@ public:
 	ovg_image_data img = {};
 	std::vector<uint32_t> ptr;
 	std::vector<stbrp_node> _rpns;
+	std::vector<stbrp_rect> _scratch;   // 复用缓冲，避免每次 push_rect 堆分配
 public:
 	stb_packer() {}
 	~stb_packer() {}
@@ -1907,22 +1928,23 @@ public:
 	size_t push_rect(glm::ivec4* rc, int n, size_t stride)
 	{
 		if (!rc || n < 1)return false;
-		std::vector<stbrp_rect> rct(n);
+		if (_scratch.size() < (size_t)n)_scratch.resize(n);
+		auto rct = _scratch.data();
 		auto r = rc;
 		auto t = (char*)rc;
 		if (stride < sizeof(glm::ivec4))
 			stride = sizeof(glm::ivec4);
-		for (auto& it : rct)
+		for (int i = 0; i < n; ++i)
 		{
 			r = (glm::ivec4*)t;
-			it.w = r->z; it.h = r->w;
+			rct[i].id = 0; rct[i].w = r->z; rct[i].h = r->w;
 			t += stride;
 		}
-		int ret = stbrp_pack_rects(&_ctx, rct.data(), n);
-		for (auto& it : rct)
+		int ret = stbrp_pack_rects(&_ctx, rct, n);
+		for (int i = 0; i < n; ++i)
 		{
 			r = (glm::ivec4*)t;
-			r->x = it.x; r->y = it.y;
+			r->x = rct[i].x; r->y = rct[i].y;
 			t += stride;
 		}
 		auto img = get();
@@ -2449,7 +2471,6 @@ void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_fon
 	out.glyphs.reserve(count);
 	const float scale = 1.0f;
 	float x = 0.0f;
-	hb_position_t ix, iy;
 	for (unsigned int i = 0; i < count; ++i) {
 		vg_glyph_info_t g;
 		g.glyph_id = info[i].codepoint;
@@ -2457,7 +2478,7 @@ void vg_text_run_cx::shape_segment(int u16_start, int u16_len, int  dir0, hb_fon
 		g.y_offset = (float)-pos[i].y_offset * scale;
 		g.x_advance = (float)pos[i].x_advance * scale;
 		g.y_advance = (float)pos[i].y_advance * scale;
-		hb_font_get_glyph_advance_for_direction(font, g.glyph_id, dir ? HB_DIRECTION_RTL : HB_DIRECTION_LTR, &ix, &iy);
+		// 注：hb_font_get_glyph_advance_for_direction 的结果从未被使用，省去每字形一次 HB 调用
 		g.cache_entry = _cache ? _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize) : nullptr;
 		out.glyphs.push_back(g);
 		x += g.x_advance;
@@ -2623,7 +2644,6 @@ void text_run_dst_cx::text_shape_segment(int u16_start, int u16_len, int  dir0, 
 	out.glyphs.reserve(count);
 	const float scale = 1.0f;
 	float x = 0.0f;
-	hb_position_t ix, iy;
 	for (unsigned int i = 0; i < count; ++i) {
 		vg_glyph_info_t g;
 		g.glyph_id = info[i].codepoint;
@@ -2631,7 +2651,7 @@ void text_run_dst_cx::text_shape_segment(int u16_start, int u16_len, int  dir0, 
 		g.y_offset = (float)-pos[i].y_offset * scale;
 		g.x_advance = (float)pos[i].x_advance * scale;
 		g.y_advance = (float)pos[i].y_advance * scale;
-		hb_font_get_glyph_advance_for_direction(font, g.glyph_id, dir ? HB_DIRECTION_RTL : HB_DIRECTION_LTR, &ix, &iy);
+		// 注：hb_font_get_glyph_advance_for_direction 的结果从未被使用，省去每字形一次 HB 调用
 		g.cache_entry = _cache ? _cache->get_cache_lookup_glyph(font, info[i].codepoint, fontsize) : nullptr;
 		out.glyphs.push_back(g);
 		x += g.x_advance;
