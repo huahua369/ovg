@@ -194,11 +194,20 @@ public:
 
 struct text_draw_list;
 
+struct raster_batch {
+	std::vector<float>    verts;
+	std::vector<float>    uvs;
+	std::vector<uint32_t> colors;
+	std::vector<uint16_t> idx;
+};
+
 class ovg_canvas_cx :public ovg_canvas_cb
 {
 public:
 #ifdef OVG_FONT_H
 	vg_text_run_cx text_run;
+
+	std::unordered_map<vg_image_t*, raster_batch> batches;
 #endif
 public:
 	ovg_canvas_cx();
@@ -246,6 +255,7 @@ class ovg_ctx_cx :public ovg_ctx_cb
 public:
 #ifdef OVG_FONT_H
 	vg_text_run_cx text_run;
+	std::unordered_map<vg_image_t*, raster_batch> batches;
 #endif
 public:
 	ovg_ctx_cx();
@@ -814,7 +824,7 @@ void _elliptic_arc(ovg_path_t* ctx, float x1, float y1, float x2, float y2, bool
 	float rx = fabsf(_rx);
 	float ry = fabsf(_ry);
 
-	glm::mat2 m = { {cosf(phi), sinf(phi)}, {-sinf(phi), cosf(phi)} };
+	glm::mat2 m = { { cosf(phi), sinf(phi) },{ -sinf(phi), cosf(phi) } };
 	glm::vec2 p = { (x1 - x2) / 2, (y1 - y2) / 2 };
 	glm::vec2 p1 = m * p;
 
@@ -861,7 +871,7 @@ void _elliptic_arc(ovg_path_t* ctx, float x1, float y1, float x2, float y2, bool
 	else if (delta_theta > 0)
 		delta_theta -= M_PI * 2.0;
 
-	m = glm::mat2{ {cosf(phi), -sinf(phi)}, {sinf(phi), cosf(phi)} };
+	m = glm::mat2{ { cosf(phi), -sinf(phi) },{ sinf(phi), cosf(phi) } };
 
 	double theta = sa;
 	double ea = sa + delta_theta;
@@ -1555,7 +1565,7 @@ int _vg_pattern_edit_linear(vg_pattern_t* pat, float x0, float y0, float x1, flo
 		return -1;
 	vg_gradient_t* grad = (vg_gradient_t*)pat->data;
 	*grad = {};
-	grad->cp[0] = glm::vec4{ {x0}, {y0}, {x1}, {y1} };
+	grad->cp[0] = glm::vec4{ { x0 },{ y0 },{ x1 },{ y1 } };
 	grad->m = glm::ivec4(1024, 0, 0, 1024);
 	grad->extend = pat->extend;
 	grad->scale = glm::vec2{ 1.0,1.0 };
@@ -1598,8 +1608,8 @@ int vg_pattern_edit_radial(pat_act* pat, float cx0, float cy0, float radius0, fl
 		glm::vec2 v = (u / l);
 		c0 = (c1 + (v * (radius1 - radius0 - 1.0f)));
 	}
-	grad->cp[0] = glm::vec4{ {c0.x}, {c0.y}, {radius0}, {0} };
-	grad->cp[1] = glm::vec4{ {c1.x}, {c1.y}, {radius1}, {0} };
+	grad->cp[0] = glm::vec4{ { c0.x },{ c0.y },{ radius0 },{ 0 } };
+	grad->cp[1] = glm::vec4{ { c1.x },{ c1.y },{ radius1 },{ 0 } };
 	grad->m = glm::ivec4(1024, 0, 0, 1024);
 	grad->extend = pat->extend;
 	grad->scale = glm::vec2{ 1.0,1.0 };
@@ -1759,7 +1769,7 @@ public:
 	std::vector<vertex_t> vtxs;		// 顶点数据
 	std::vector<int> idxs;				// 索引
 	glm::ivec4 viewport = { 0,0,0,0 };
-	glm::ivec4 _clip_rect = { };// 当前裁剪 
+	glm::ivec4 _clip_rect = {};// 当前裁剪 
 public:
 	mesh2d_x();
 	virtual ~mesh2d_x();
@@ -2256,7 +2266,7 @@ void rvg_cx::paint()
 		fill();
 		return;
 	}
-	vgcmd_t c = { };
+	vgcmd_t c = {};
 	c.type = 3;
 	c.full_screen_quad = _vertex.size();
 
@@ -2551,7 +2561,7 @@ void rvg_cx::cp_cmdt(vgcmd_t* c, vg_state_save_t* t)
 }
 bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve) {
 	Vertex v = {};
-	v.color = ctx->color; v.uv = { };
+	v.color = ctx->color; v.uv = {};
 	glm::vec2   p0 = ctx->points[str->cp];
 	glm::vec2   v0 = p0 - ctx->points[str->iL];
 	glm::vec2   v1 = ctx->points[str->iR] - p0;
@@ -2779,7 +2789,7 @@ bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve
 }
 
 void rvg_cx::_draw_stoke_cap(ovg_path_t* ctx, stroke_context_t* str, glm::vec2 p0, glm::vec2 n, bool isStart) {
-	Vertex v = {}; v.color = ctx->color; v.uv = { };
+	Vertex v = {}; v.color = ctx->color; v.uv = {};
 
 	uint32_t firstIdx = (uint32_t)(_vertex.size() - ctx->curVertOffset);
 
@@ -2955,7 +2965,7 @@ void ovg_clip_preserve(rvg_t* v0)
 void ovg_clip_rect(rvg_t* v0, int x, int y, int width, int height)
 {
 	auto v = (rvg_cx*)v0;
-	glm::ivec4 c[1] = { {x,y,width,height} };
+	glm::ivec4 c[1] = { { x,y,width,height } };
 	if (v)v->clip(c);
 }
 void ovg_set_clip_rect(rvg_t* v0, void* rc) {
@@ -3679,10 +3689,10 @@ void mesh2d_x::add_image0(void* img, const glm::ivec2& texsize, const glm::ivec4
 		glm::vec2 bv(cv.x, av.y), dv(av.x, cv.y), uv_b(uv_c.x, uv_a.y), uv_d(uv_a.x, uv_c.y);
 
 		vertex_t vertex[] = {
-		   {av, uv_a, col},
-		   {bv, uv_b, col},
-		   {cv, uv_c, col},
-		   {dv, uv_d, col},
+		   { av, uv_a, col },
+		   { bv, uv_b, col },
+		   { cv, uv_c, col },
+		   { dv, uv_d, col },
 		};
 		int rect_index_order[] = { 0, 1, 2, 0, 2, 3 };
 		add(img, vertex, 4, rect_index_order, 6, clip);// 添加矩形(两个三角形)到mesh
@@ -3747,37 +3757,37 @@ void mesh2d_x::add_image_sliced(void* user_image, const glm::ivec2& texsize, con
 
 	vertex_t vertex[] = {
 		//0
-		{{x, y}, {uv.x, uv.y}, col},
+		{ { x, y },{ uv.x, uv.y }, col },
 		//1
-		{{x, y + height}, {uv.x, uv.w}, col},
+		{ { x, y + height },{ uv.x, uv.w }, col },
 		//2
-		{{x + width, y}, {uv.z, uv.y}, col},
+		{ { x + width, y },{ uv.z, uv.y }, col },
 		//3
-		{{x + width, y + height}, {uv.z, uv.w}, col},
+		{ { x + width, y + height },{ uv.z, uv.w }, col },
 		//4
-		{{x + left, y + top}, {suv.x, suv.y}, col},
+		{ { x + left, y + top },{ suv.x, suv.y }, col },
 		//5
-		{{x + left, y + height - bottom}, {suv.x, suv.w}, col},
+		{ { x + left, y + height - bottom },{ suv.x, suv.w }, col },
 		//6
-		{{x + width - right, y + top}, {suv.z, suv.y}, col},
+		{ { x + width - right, y + top },{ suv.z, suv.y }, col },
 		//7
-		{{x + width - right, y + height - bottom}, {suv.z, suv.w}, col},
+		{ { x + width - right, y + height - bottom },{ suv.z, suv.w }, col },
 		//8
-		{{x, y + top}, {uv.x, suv.y}, col},
+		{ { x, y + top },{ uv.x, suv.y }, col },
 		//9
-		{{x, y + height - bottom}, {uv.x, suv.w}, col},
+		{ { x, y + height - bottom },{ uv.x, suv.w }, col },
 		//10
-		{{x + width, y + top}, {uv.z, suv.y}, col},
+		{ { x + width, y + top },{ uv.z, suv.y }, col },
 		//11
-		{{x + width, y + height - bottom}, {uv.z, suv.w}, col},
+		{ { x + width, y + height - bottom },{ uv.z, suv.w }, col },
 		//12
-		{{x + left, y}, {suv.x, uv.y}, col},
+		{ { x + left, y },{ suv.x, uv.y }, col },
 		//13
-		{{x + left, y + height}, {suv.x, uv.w}, col},
+		{ { x + left, y + height },{ suv.x, uv.w }, col },
 		//14
-		{{x + width - right, y}, {suv.z, uv.y}, col},
+		{ { x + width - right, y },{ suv.z, uv.y }, col },
 		//15
-		{{x + width - right, y + height}, {suv.z, uv.w}, col}
+		{ { x + width - right, y + height },{ suv.z, uv.w }, col }
 	};
 
 	add(user_image, vertex, 16, vt_index.data(), vt_index.size(), clip);
@@ -6218,15 +6228,7 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 	info2d.shader = ST_NONE;
 	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
 	cb->set_geom_state(rvg, &info2d, &mat);
-
-	struct raster_batch {
-		std::vector<float>    verts;
-		std::vector<float>    uvs;
-		std::vector<uint32_t> colors;
-		std::vector<uint16_t> idx;
-	};
-	std::unordered_map<vg_image_t*, raster_batch> batches;
-
+	batches.clear();
 	for (const auto& cmd : list->cmds) {
 		if (cmd.type != glyph_draw_cmd::RASTER) continue;
 
@@ -6328,13 +6330,8 @@ void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 	cb->set_geom_state(rvg, &info2d, &mat);
 
 	// 位图 batch（同上，只是调用 ctx 的 add_geometry）
-	struct raster_batch {
-		std::vector<float>    verts;
-		std::vector<float>    uvs;
-		std::vector<uint32_t> colors;
-		std::vector<uint16_t> idx;
-	};
-	std::unordered_map<vg_image_t*, raster_batch> batches;
+
+	batches.clear();
 
 	for (const auto& cmd : list->cmds) {
 		if (cmd.type != glyph_draw_cmd::RASTER) continue;
@@ -6395,83 +6392,6 @@ void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 		submit_vector_cmd_ctx(cb, rvg, cmd);
 	}
 }
-#if 0
-void layout_text_run(flex_run* ctx, std::vector<vg_text_run_cx::shaped_segment_t>* segments, float origin_x, float origin_y, std::vector<glyph_item_t>& out_glyphs)
-{
-	if (!segments || segments->empty())
-		return;
-
-	const size_t seg_count = segments->size();
-
-	// 1. 构造 flex 输入节点
-	std::vector<node_dt> nodes(seg_count);
-
-	for (size_t i = 0; i < seg_count; ++i) {
-		const vg_text_run_cx::shaped_segment_t& seg = (*segments)[i];
-		node_dt& nd = nodes[i];
-
-		nd.index = i;
-		nd.child = nullptr;
-		nd.child_count = 0;
-
-		// 文本段尺寸
-		nd.size.x = static_cast<float>(seg.width_px);
-		nd.size.y = seg.glyphs.empty() ? 0.0f
-			: seg.glyphs[0].cache_entry->metrics.ascent
-			+ seg.glyphs[0].cache_entry->metrics.descent;
-
-		nd.baseline = static_cast<float>(seg.glyphs[0].cache_entry->metrics.ascent);
-		nd.position = static_cast<int>(flex_position::POS_RELATIVE);
-		nd.frame = glm::vec4(0.0f);
-	}
-
-	// 2. 构造根节点（文本容器）
-	node_dt root{};
-	root.index = seg_count; // 根节点放在最后
-	root.child = nodes.data();
-	root.child_count = seg_count;
-	root.size = glm::vec2(
-		ctx->fd.width,   // 容器宽度（NAN 也可，flex_run_layout 应支持）
-		ctx->fd.height
-	);
-	root.baseline = 0.0f;
-	root.position = static_cast<int>(flex_position::POS_RELATIVE);
-
-	// 3. 执行 flex 排版
-	// 注意：这里假设你已经把 flex_data 填好（direction / wrap / align 等）
-	flex_run_layout(ctx, &ctx->fd, seg_count + 1, &root, 1);
-
-	// 4. 展开 glyph
-	out_glyphs.reserve(out_glyphs.size() + 1024);
-
-	for (size_t i = 0; i < seg_count; ++i) {
-		const shaped_segment_t& seg = (*segments)[i];
-		const node_dt& nd = nodes[i];
-
-		// segment 排版后的位置
-		float seg_x = nd.frame.x;
-		float seg_y = nd.frame.y;
-
-		// 基线对齐：flex 以 top 为原点，文本需要 baseline
-		seg_y += nd.baseline;
-
-		for (const vg_glyph_info_t& g : seg.glyphs) {
-			glyph_item_t gi{};
-			gi.g = const_cast<vg_glyph_info_t*>(&g);
-			gi.x = origin_x + seg_x + g.x_offset;
-			gi.y = origin_y + seg_y + g.y_offset;
-
-			out_glyphs.push_back(gi);
-
-			seg_x += g.x_advance;
-			seg_y += g.y_advance;
-		}
-	}
-}
-#endif
-
-
-
 void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_run_cx* run)
 {
 	if (!run || (!ocb && !ctx)) return;

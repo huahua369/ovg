@@ -379,8 +379,6 @@ SDL_GPUComputePipeline* new_compute_pipe(SDL_GPUDevice* device, size_t code_size
 	return computePipeline;
 }
 
-// 计算着色器资源创建
-gpu_buffer_cx* new_comp_buffer(SDL_GPUDevice* dev, size_t size);
 #define MAX_COUNT_PASS_RES 8
 #define MAX_COUNT_PASS_RES2 16
 // 计算着色器调用封装
@@ -421,16 +419,6 @@ private:
 
 };
 
-gpu_buffer_cx* new_comp_buffer(SDL_GPUDevice* dev, size_t size)
-{
-	if (!dev || !size)return 0;
-	auto p = new gpu_buffer_cx();
-	if (p)
-	{
-		p->init_storage(dev, size, true, false);
-	}
-	return p;
-}
 
 compute_pass::compute_pass()
 {}
