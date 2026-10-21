@@ -39,6 +39,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -1567,23 +1568,29 @@ void ovg_set_fill_rule(vg_state_save_t* ctx, int fr) {
 	if (ctx)ctx->curFillRule = fr;
 }
 void ovg_set_dash(vg_state_save_t* ctx, const float* dashes, uint32_t num_dashes, float offset) {
-	if (!ctx || !dashes)return;
+	if (!ctx)return;
 	auto t = (ss_act*)ctx;
 	if (!dashes || !num_dashes) {
+		if (t->dashes)
+			t->ac->free_mem(t->dashes, t->dashCount);
+		t->dashes = nullptr;
 		t->dashCount = 0;
+		t->dashOffset = offset;
+		return;
 	}
 	if (!t->dashes || t->dashCount != num_dashes)
 	{
 		if (t->dashes)
 			t->ac->free_mem(t->dashes, t->dashCount);
 		t->dashes = (float*)t->ac->allocate(sizeof(float) * num_dashes);
+		if (!t->dashes) {
+			t->dashCount = 0;
+			return;
+		}
 	}
 	t->dashCount = num_dashes;
 	t->dashOffset = offset;
-	if (t->dashes)
-		memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
-	else
-		t->dashCount = 0;
+	memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
 }
 void ovg_set_dash8(vg_state_save_t* ctx, uint64_t dashes0, uint32_t num_dashes, float offset) {
 
@@ -2420,13 +2427,16 @@ vg_state_save_t* rvg_cx::new_ss(vg_state_save_t* src)
 	if (src)
 	{
 		*dst = *src;
+		// The state copy above aliases src->dashes.  A saved state must own its
+		// dash array because restore/destroy frees it independently.
+		dst->dashes = nullptr;
+		dst->dashCount = 0;
 		if (src->dashes && src->dashCount > 0) {
-			ac->free_mem(dst->dashes, src->dashCount);
 			dst->dashes = (float*)ac->allocate(sizeof(float) * src->dashCount);
-			if (dst->dashes)
+			if (dst->dashes) {
 				memcpy(dst->dashes, src->dashes, sizeof(float) * src->dashCount);
-			else
-				dst->dashCount = 0;
+				dst->dashCount = src->dashCount;
+			}
 		}
 	}
 	else
@@ -3105,7 +3115,15 @@ float rvg_cx::_draw_dashed_segment(ovg_path_t* ctx, stroke_context_t* str, dash_
 	dc->normal = vec2_norm(d);
 	float segmentLength = glm::length(d);
 
+	uint64_t iter = 0;
 	while (dc->curDashOffset < segmentLength) {
+		if (++iter > 100000) {
+			std::fprintf(stderr, "DASH LOOP offset=%f segment=%f count=%u cur=%u dash0=%f dash1=%f\n",
+				dc->curDashOffset, segmentLength, ctx->t->dashCount, dc->curDash,
+				ctx->t->dashCount > 0 ? ctx->t->dashes[0] : 0.0f,
+				ctx->t->dashCount > 1 ? ctx->t->dashes[1] : 0.0f);
+			break;
+		}
 		glm::vec2 p0 = vec2_add(p, vec2_mult_s(dc->normal, dc->curDashOffset));
 
 		_draw_stoke_cap(ctx, str, p0, dc->normal, dc->dashOn);
@@ -4469,23 +4487,29 @@ void vctx_set_fill_rule(rvg_t* ctx, int fr) {
 
 void vctx_set_dash(rvg_t* v0, const float* dashes, uint32_t num_dashes, float offset) {
 	auto ctx = (rvg_cx*)v0;
-	if (!ctx || !dashes)return;
+	if (!ctx || !ctx->st)return;
 	auto t = ctx->st;
 	if (!dashes || !num_dashes) {
+		if (t->dashes)
+			ctx->ac->free_mem(t->dashes, t->dashCount);
+		t->dashes = nullptr;
 		t->dashCount = 0;
+		t->dashOffset = offset;
+		return;
 	}
 	if (!t->dashes || t->dashCount != num_dashes)
 	{
 		if (t->dashes)
 			ctx->ac->free_mem(t->dashes, t->dashCount);
 		t->dashes = (float*)ctx->ac->allocate(sizeof(float) * num_dashes);
+		if (!t->dashes) {
+			t->dashCount = 0;
+			return;
+		}
 	}
 	t->dashCount = num_dashes;
 	t->dashOffset = offset;
-	if (t->dashes)
-		memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
-	else
-		t->dashCount = 0;
+	memcpy(t->dashes, dashes, sizeof(float) * t->dashCount);
 }
 
 void vctx_set_dash8(rvg_t* ctx, uint64_t dashes0, uint32_t num_dashes, float offset) {
@@ -6333,8 +6357,7 @@ void build_raster_batches(text_raster_cache& cache, const text_draw_list* list)
 		float x0 = cmd.pos.x + cmd.entry->offset.x;
 		float y0 = cmd.pos.y - cmd.entry->offset.y;
 		float w = cmd.size.x;
-		float h = cmd.size.y;
-
+		float h = cmd.size.y; 
 		b.verts.push_back(x0);     b.verts.push_back(y0);
 		b.verts.push_back(x0 + w); b.verts.push_back(y0);
 		b.verts.push_back(x0 + w); b.verts.push_back(y0 + h);
