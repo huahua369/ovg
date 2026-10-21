@@ -1,4 +1,4 @@
-﻿/*
+/*
 矢量渲染
 
 2026/10/10 修改椭圆/画圆/arc等函数实现
@@ -36,7 +36,10 @@
 
 
 #include <array>
+#include <cstring>
 #include <map>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <stack>
@@ -199,15 +202,149 @@ struct raster_batch {
 	std::vector<float>    uvs;
 	std::vector<uint32_t> colors;
 	std::vector<uint16_t> idx;
+
+	// 只清长度，保留 capacity；下一帧继续复用同一批堆内存
+	void reset() {
+		verts.clear();
+		uvs.clear();
+		colors.clear();
+		idx.clear();
+	}
+	// 按字形数量预留空间（reserve 不会缩小已有 capacity）
+	void reserve_for(size_t glyph_count) {
+		const size_t vtx = glyph_count * 4;
+		if (verts.capacity() < vtx * 2) verts.reserve(vtx * 2);
+		if (uvs.capacity() < vtx * 2) uvs.reserve(vtx * 2);
+		if (colors.capacity() < vtx) colors.reserve(vtx);
+		if (idx.capacity() < glyph_count * 6) idx.reserve(glyph_count * 6);
+	}
 };
+
+// 文本位图字形合批缓存：
+// 容器长期持有，跨帧只清 size，避免每次 add_text 重新分配 map 节点和顶点缓冲。
+// 同一个 atlas 的字形仍然合并为一次 add_geometry。
+class text_raster_cache
+{
+public:
+	using batch_map = std::unordered_map<vg_image_t*, raster_batch>;
+
+	void begin() {
+		// 只清空上一轮用到的 batch，capacity 全部保留
+		for (auto& kv : _batches)
+			kv.second.reset();
+		_last_img = nullptr;
+		_last_batch = nullptr;
+	}
+
+	raster_batch& get(vg_image_t* img, size_t glyph_count) {
+		// 字形通常来自同一个 atlas，用 last 命中避免每个字形都做一次哈希查找
+		if (_last_img == img)
+			return *_last_batch;
+
+		auto it = _batches.find(img);
+		if (it == _batches.end())
+			it = _batches.emplace(img, raster_batch{}).first;
+
+		auto& b = it->second;
+		b.reserve_for(glyph_count);
+		_last_img = img;
+		_last_batch = &b;
+		return b;
+	}
+
+	batch_map& batches() { return _batches; }
+	const batch_map& batches() const { return _batches; }
+
+private:
+	batch_map _batches;
+	vg_image_t* _last_img = nullptr;
+	raster_batch* _last_batch = nullptr;
+};
+
+#ifdef OVG_FONT_H
+// Shaped-run cache.  The text run previously lived directly in the callback
+// object and was cleared/reshaped by every vg_add_text call, so static labels
+// paid for ICU bidi/break iteration and HarfBuzz shaping on every frame.  Keep
+// a bounded set of runs keyed by the inputs that affect shaping, and update
+// only the per-draw fields (position, box, colours) on a hit.
+class text_run_cache_cx
+{
+public:
+	struct key_t
+	{
+		std::string text;
+		const font_familys_t* family = nullptr;
+		int fontsize = 16;
+		int min_subpixel = 0;
+		int word_wrap = 0;
+		float lineheight = 0.0f;
+
+		bool operator<(const key_t& o) const
+		{
+			if (family != o.family) return std::less<const font_familys_t*>()(family, o.family);
+			if (fontsize != o.fontsize) return fontsize < o.fontsize;
+			if (min_subpixel != o.min_subpixel) return min_subpixel < o.min_subpixel;
+			if (word_wrap != o.word_wrap) return word_wrap < o.word_wrap;
+			if (lineheight != o.lineheight) return lineheight < o.lineheight;
+			return text < o.text;
+		}
+	};
+
+	vg_text_run_cx* get(text_st_t* p, text_style_t* ts, text_box_rt* box)
+	{
+		if (!p || !p->text || !ts || !ts->family) return nullptr;
+		const size_t len = p->text_len < 0 ? strlen(p->text) : (size_t)p->text_len;
+		if (len == 0) return nullptr;
+
+		// 复用查询键的字符串容量，静态文本命中缓存时不再产生堆分配
+		key_t& key = _query;
+		key.text.assign(p->text, len);
+		key.family = ts->family;
+		key.fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+		key.min_subpixel = ts->min_subpixel;
+		key.word_wrap = box ? (int)box->word_wrap : 0;
+		key.lineheight = ts->lineheight;
+
+		auto it = _runs.find(key);
+		if (it != _runs.end())
+		{
+			vg_text_run_cx* run = it->second.get();
+			if (!run) return nullptr;
+			// Preserve the line height computed by new_text_run when the caller
+			// leaves it at zero; everything else is per-draw state.
+			const int lineheight = run->_st.lineheight;
+			run->_st = *ts;
+			if (ts->lineheight == 0.0f)
+				run->_st.lineheight = lineheight;
+			run->_tt = *p;
+			run->_box = box ? *box : text_box_rt{};
+			return run;
+		}
+
+		if (_runs.size() >= max_runs)
+			_runs.clear();
+
+		std::unique_ptr<vg_text_run_cx> run(new vg_text_run_cx());
+		if (!run) return nullptr;
+		if (!new_text_run(run.get(), p, ts, box)) return nullptr;
+		auto inserted = _runs.emplace(key, std::move(run));
+		return inserted.first->second.get();
+	}
+
+private:
+	static constexpr size_t max_runs = 512;
+	std::map<key_t, std::unique_ptr<vg_text_run_cx>> _runs;
+	key_t _query;	// 查询键缓存，复用 text 的 capacity
+};
+#endif
 
 class ovg_canvas_cx :public ovg_canvas_cb
 {
 public:
 #ifdef OVG_FONT_H
-	vg_text_run_cx text_run;
+	text_run_cache_cx text_cache;
 
-	std::unordered_map<vg_image_t*, raster_batch> batches;
+	text_raster_cache batches;
 #endif
 public:
 	ovg_canvas_cx();
@@ -254,8 +391,8 @@ class ovg_ctx_cx :public ovg_ctx_cb
 {
 public:
 #ifdef OVG_FONT_H
-	vg_text_run_cx text_run;
-	std::unordered_map<vg_image_t*, raster_batch> batches;
+	text_run_cache_cx text_cache;
+	text_raster_cache batches;
 #endif
 public:
 	ovg_ctx_cx();
@@ -6072,170 +6209,25 @@ void delete_font_family(font_familys_t* p) {
 }
 
 #ifdef OVG_FONT_H
-void submit_vector_cmd(ovg_canvas_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd)
+// 位图字形按 atlas 合批。缓存只清长度、保留 capacity，
+// 因此连续帧/同一文本的多次提交（阴影、描边、主文本）不会反复分配顶点缓冲。
+void build_raster_batches(text_raster_cache& cache, const text_draw_list* list)
 {
-	ovg_path_t* path = cb->new_path(cb->ac);
-	vg_state_save_t* st = cb->new_state(cb->ac);
+	cache.begin();
 
-	// 一次性灌入 upem 空间路径
-	cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
-
-	// upem → 像素
-	float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
-
-	cb->translate(st, cmd.pos.x, cmd.pos.y);
-	cb->scale(st, scale, scale);
-	cb->set_source_color(st, cmd.color);
-	cb->set_path(rvg, path, st);
-	cb->fill(rvg);
-
-	cb->destroy_path(path);
-	cb->state_destroy(st);
-}
-void submit_vector_cmd_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const glyph_draw_cmd& cmd)
-{
-	cb->save(rvg);
-	cb->new_path(rvg);
-
-	cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
-
-	float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
-	cb->translate(rvg, cmd.pos.x, cmd.pos.y);
-	cb->scale(rvg, scale, scale);
-	cb->set_source_color(rvg, cmd.color);
-	cb->fill(rvg);
-
-	cb->restore(rvg);
-}
-#if 0
-// 公共代码，两套都能用
-void submit_raster_glyphs(
-	const text_draw_list& list,
-	ovg_canvas_cb* cb, rvg_t* rvg)
-{
-	for (const auto& cmd : list.cmds) {
-		if (cmd.type != glyph_draw_cmd::RASTER) continue;
-
-		float x0 = cmd.pos.x;
-		float y0 = cmd.pos.y;
-		float w = cmd.size.x;
-		float h = cmd.size.y;
-
-		float verts[8] = {
-			x0,     y0,
-			x0 + w, y0,
-			x0 + w, y0 + h,
-			x0,     y0 + h,
-		};
-		float uvs[8] = {
-			cmd.uv_rect.x, cmd.uv_rect.y,
-			cmd.uv_rect.z, cmd.uv_rect.y,
-			cmd.uv_rect.z, cmd.uv_rect.w,
-			cmd.uv_rect.x, cmd.uv_rect.w,
-		};
-		uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
-		uint32_t color = cmd.color;
-
-		cb->add_geometry(rvg, cmd.entry->atlas_img,
-			verts, sizeof(float) * 2,
-			&color, 0,          // color_stride=0 表示所有顶点同色
-			uvs, sizeof(float) * 2,
-			4, idx, 6, 2, 1);   // color_type=1 (uint32_t)
-	}
-}
-void submit_vector_glyphs_object_mode(
-	const text_draw_list& list,
-	ovg_canvas_cb* cb, rvg_t* rvg,
-	float origin_x, float origin_y)
-{
-	for (const auto& cmd : list.cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-
-		// 创建 path 和 state
-		ovg_path_t* path = cb->new_path(cb->ac);
-		vg_state_save_t* st = cb->new_state(cb->ac);
-
-		// 回放路径命令
-		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
-
-		// 设置状态
-		cb->set_source_color(st, cmd.color);
-		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
-		cb->translate(st, cmd.pos.x, cmd.pos.y);
-		cb->scale(st, scale, scale);
-
-		// 绑定并提交
-		cb->set_path(rvg, path, st);
-		cb->fill(rvg);
-
-		// 清理
-		cb->destroy_path(path);
-		cb->state_destroy(st);
-	}
-}
-void submit_vector_glyphs_ctx_mode(
-	const text_draw_list& list,
-	ovg_ctx_cb* cb, rvg_t* rvg)
-{
-	for (const auto& cmd : list.cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-
-		cb->save(rvg);
-		cb->new_path(rvg);
-
-		// 回放路径命令到 ctx 内部路径
-		cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
-
-		// 设置状态
-		cb->set_source_color(rvg, cmd.color);
-		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
-		cb->translate(rvg, cmd.pos.x, cmd.pos.y);
-		cb->scale(rvg, scale, scale);
-
-		// 提交
-		cb->fill(rvg);
-
-		cb->restore(rvg);
-	}
-}
-#endif
-// ovg_text.cpp 
-void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
-{
-	auto cb = this;
+	size_t glyph_count = 0;
 	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-		ovg_path_t* path = cb->new_path(cb->ac);
-		vg_state_save_t* st = cb->new_state(cb->ac);
-		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
-		cb->set_source_color(st, cmd.color);
-		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
-		cb->translate(st, cmd.pos.x, cmd.pos.y);
-		cb->scale(st, scale, scale);
-		cb->set_line_width(st, (float)stroke_width / scale);
-		cb->set_path(rvg, path, st);
-		cb->stroke(rvg);  // ← stroke 而非 fill
-		cb->destroy_path(path);
-		cb->state_destroy(st);
+		if (cmd.type == glyph_draw_cmd::RASTER)
+			++glyph_count;
 	}
-}
-void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
-{
-	auto cb = this;
-	gem_info_t info2d = {};
-	info2d.blendMode = (uint8_t)blendMode_e::normal_prem;
-	info2d.topology = 0;
-	info2d.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
-	info2d.frontFace = 0;
-	info2d.cullMode = 0;
-	info2d.shader = ST_NONE;
-	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
-	cb->set_geom_state(rvg, &info2d, &mat);
-	batches.clear();
-	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::RASTER) continue;
+	if (!glyph_count)
+		return;
 
-		auto& b = batches[cmd.entry->atlas_img];
+	for (const auto& cmd : list->cmds) {
+		if (cmd.type != glyph_draw_cmd::RASTER)
+			continue;
+
+		auto& b = cache.get(cmd.entry->atlas_img, glyph_count);
 		uint16_t base = (uint16_t)(b.verts.size() / 2);
 
 		float x0 = cmd.pos.x + cmd.entry->offset.x;
@@ -6252,8 +6244,10 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.y);
 		b.uvs.push_back(cmd.uv_rect.z); b.uvs.push_back(cmd.uv_rect.w);
 		b.uvs.push_back(cmd.uv_rect.x); b.uvs.push_back(cmd.uv_rect.w);
+
 		auto color = cmd.color;
-		if (list->has_color && cmd.entry->has_color)color = -1;
+		if (list->has_color && cmd.entry->has_color)
+			color = -1;
 		b.colors.push_back(color);
 		b.colors.push_back(color);
 		b.colors.push_back(color);
@@ -6266,10 +6260,16 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 		b.idx.push_back(base + 2);
 		b.idx.push_back(base + 3);
 	}
+}
 
-	// 每组一次 add_geometry
-	for (auto& [atlas_img, b] : batches) {
-		if (b.verts.empty()) continue;
+// 每个 atlas 一次 add_geometry；对象模式和 ctx 模式的提交逻辑相同
+template<class CB>
+void submit_raster_batches(CB* cb, rvg_t* rvg, text_raster_cache& cache)
+{
+	for (auto& [atlas_img, b] : cache.batches()) {
+		if (b.verts.empty())
+			continue;
+
 		auto img = (ovg_image_data*)atlas_img;
 		vg_image_desc_t desc = {};
 		if (img->valid)
@@ -6296,28 +6296,128 @@ void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 			2, 1
 		);
 	}
-
-	// ── 2. 矢量 glyph：逐个提交（每个独立 path） ──
-	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-		submit_vector_cmd(cb, rvg, cmd);
-	}
 }
-void ovg_ctx_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
+
+// 对象模式：整段文本复用同一个 path/state，避免每个字形都从 PMR 分配并释放
+void submit_vector_cmds(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list* list, bool stroke_mode, float stroke_width)
 {
-	auto cb = this;
+	ovg_path_t* path = nullptr;
+	vg_state_save_t* st = nullptr;
+	ovg_path_t* old_path = rvg->path;
+	vg_state_save_t* old_st = rvg->st;
+
 	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-		cb->save(rvg);
-		cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
+		if (cmd.type != glyph_draw_cmd::VECTOR)
+			continue;
+
+		if (!path) {
+			path = cb->new_path(cb->ac);
+			if (!path)
+				break;
+			st = cb->new_state(cb->ac);
+			if (!st)
+				break;
+		}
+
+		cb->clear_path(path);
+
+		// 复用 state：先复位上一个字形的矩阵，再设置当前字形
+		cb->identity_matrix(st);
+		cb->set_source_color(st, cmd.color);
+		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
+		cb->translate(st, cmd.pos.x, cmd.pos.y);
+		cb->scale(st, scale, scale);
+		if (stroke_mode)
+			cb->set_line_width(st, stroke_width / scale);
+
+		// add_path 内的曲线细分会用 path->t 的缩放计算像素容差，
+		// 必须在灌入路径前绑定当前字形的变换，否则会退化到身份矩阵过度细分。
+		path->t = st;
+		cb->add_path(path, cmd.entry->path_data, cmd.entry->path_size);
+
+		cb->set_path(rvg, path, st);
+		if (stroke_mode)
+			cb->stroke(rvg);	// ← stroke 而非 fill
+		else
+			cb->fill(rvg);
+	}
+
+	// 临时 path/state 销毁前恢复 rvg 自己的指针，避免后续 clip 等操作访问已释放对象
+	rvg->path = old_path;
+	rvg->st = old_st;
+	if (path)
+		cb->destroy_path(path);
+	if (st)
+		cb->state_destroy(st);
+}
+
+// ctx 模式：整段文本只 save/restore 一次，逐字形恢复基准矩阵后重新灌入路径
+void submit_vector_cmds_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list* list, bool stroke_mode, float stroke_width)
+{
+	bool saved = false;
+	glm::mat3x2 base_mat = glm::mat3x2(1.0);
+	for (const auto& cmd : list->cmds) {
+		if (cmd.type != glyph_draw_cmd::VECTOR)
+			continue;
+
+		if (!saved) {
+			cb->save(rvg);
+			cb->get_matrix(rvg, &base_mat);	// 保留调用方当前变换，文字仍跟随 ctx 变换
+			saved = true;
+		}
+
+		// 复用当前 state：先恢复基准矩阵，避免上一个字形的变换累积
+		cb->set_matrix(rvg, &base_mat);
 		cb->set_source_color(rvg, cmd.color);
 		float scale = (float)cmd.fontsize / (float)cmd.entry->em_units;
 		cb->translate(rvg, cmd.pos.x, cmd.pos.y);
 		cb->scale(rvg, scale, scale);
-		cb->set_line_width(rvg, (float)stroke_width / scale);
-		cb->stroke(rvg);  // ← stroke 而非 fill	 
-		cb->restore(rvg);
+		if (stroke_mode)
+			cb->set_line_width(rvg, stroke_width / scale);
+
+		cb->new_path(rvg);
+		// 同上：曲线细分容差依赖 path->t 的缩放
+		if (rvg->path)
+			rvg->path->t = rvg->st;
+		cb->add_path(rvg, cmd.entry->path_data, cmd.entry->path_size);
+
+		if (stroke_mode)
+			cb->stroke(rvg);	// ← stroke 而非 fill
+		else
+			cb->fill(rvg);
 	}
+	if (saved)
+		cb->restore(rvg);
+}
+
+// ovg_text.cpp 
+void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
+{
+	submit_vector_cmds(this, rvg, list, true, stroke_width);
+}
+void ovg_canvas_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
+{
+	auto cb = this;
+	gem_info_t info2d = {};
+	info2d.blendMode = (uint8_t)blendMode_e::normal_prem;
+	info2d.topology = 0;
+	info2d.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+	info2d.frontFace = 0;
+	info2d.cullMode = 0;
+	info2d.shader = ST_NONE;
+	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
+	cb->set_geom_state(rvg, &info2d, &mat);
+
+	// 位图 glyph：按 atlas 合批（容器复用）
+	build_raster_batches(batches, list);
+	submit_raster_batches(cb, rvg, batches);
+
+	// 矢量 glyph：整段复用 path/state
+	submit_vector_cmds(cb, rvg, list, false, 0.0f);
+}
+void ovg_ctx_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
+{
+	submit_vector_cmds_ctx(this, rvg, list, true, stroke_width);
 }
 void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 {
@@ -6332,68 +6432,12 @@ void ovg_ctx_cx::submit_draw_list(rvg_t* rvg, const text_draw_list* list)
 	auto mat = ovg_ortho(rvg->width, rvg->height, -1.0f, 1.0f, 0);
 	cb->set_geom_state(rvg, &info2d, &mat);
 
-	// 位图 batch（同上，只是调用 ctx 的 add_geometry）
+	// 位图 glyph：按 atlas 合批（容器复用）
+	build_raster_batches(batches, list);
+	submit_raster_batches(cb, rvg, batches);
 
-	batches.clear();
-
-	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::RASTER) continue;
-
-		auto& b = batches[cmd.entry->atlas_img];
-		uint16_t base = (uint16_t)(b.verts.size() / 2);
-
-		float x0 = cmd.pos.x + cmd.entry->offset.x;
-		float y0 = cmd.pos.y - cmd.entry->offset.y;
-		float w = cmd.size.x, h = cmd.size.y;
-
-		b.verts.insert(b.verts.end(), { x0,y0, x0 + w,y0, x0 + w,y0 + h, x0,y0 + h });
-		b.uvs.insert(b.uvs.end(), {
-			cmd.uv_rect.x, cmd.uv_rect.y,
-			cmd.uv_rect.z, cmd.uv_rect.y,
-			cmd.uv_rect.z, cmd.uv_rect.w,
-			cmd.uv_rect.x, cmd.uv_rect.w,
-			});
-		auto color = cmd.color;
-		if (list->has_color && cmd.entry->has_color)color = -1;
-		for (int i = 0; i < 4; i++) b.colors.push_back(color);
-		b.idx.push_back(base + 0); b.idx.push_back(base + 1); b.idx.push_back(base + 2);
-		b.idx.push_back(base + 0); b.idx.push_back(base + 2); b.idx.push_back(base + 3);
-	}
-
-	for (auto& [atlas_img, b] : batches) {
-		if (b.verts.empty()) continue;
-		auto img = (ovg_image_data*)atlas_img;
-		vg_image_desc_t desc = {};
-		if (img->valid)
-		{
-			desc.width = img->width;
-			desc.height = img->height;
-			desc.format = VG_FORMAT_BGRA8;
-			desc.stride = desc.width * sizeof(int);
-			desc.pixels = img->data;
-			desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
-			desc.is_copy = false;
-			img->valid = false;
-			//std::string fn = "temp/font_pack_ovg.png";
-			//write_png_bgra(fn.c_str(), (uint8_t*)img->data, img->width, img->height);
-			cb->image_update(rvg, img, &desc);
-		}
-		cb->add_geometry(
-			rvg, img,
-			b.verts.data(), sizeof(float) * 2,
-			b.colors.data(), sizeof(uint32_t),
-			b.uvs.data(), sizeof(float) * 2,
-			(int)b.verts.size() / 2,
-			b.idx.data(), (int)b.idx.size(),
-			2, 1
-		);
-	}
-
-	// 矢量逐个
-	for (const auto& cmd : list->cmds) {
-		if (cmd.type != glyph_draw_cmd::VECTOR) continue;
-		submit_vector_cmd_ctx(cb, rvg, cmd);
-	}
+	// 矢量 glyph：整段只 save/restore 一次
+	submit_vector_cmds_ctx(cb, rvg, list, false, 0.0f);
 }
 void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_run_cx* run)
 {
@@ -6454,8 +6498,9 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 				submit_vector_glyphs_stroked(*ocbp, rvg, &main_list, stroke);
 		}
 		else {
-			int pxx[4] = { -stroke, 0, stroke, 0 };
-			int pyy[4] = { 0, -stroke, 0, stroke };
+			const int stroke_px = (int)stroke;
+			int pxx[4] = { -stroke_px, 0, stroke_px, 0 };
+			int pyy[4] = { 0, -stroke_px, 0, stroke_px };
 			for (int e = 0; e < 4; e++)
 			{
 				glm::vec2 ps1 = { offset_x, baseline_y };
@@ -6491,15 +6536,15 @@ void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, 
 
 	auto ctxp = (ovg_ctx_cx*)ctx;
 	auto ocbp = (ovg_canvas_cx*)ocb;
-	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
 
-	// ── 1. shape ──
-	vg_text_run_cx* run = ctxp ? &ctxp->text_run : 0;
-	if (ocbp)run = &ocbp->text_run;
-	if (!run)
+	// ── 1. shape：按文本/字体缓存，命中时不再重复 ICU/HarfBuzz ──
+	vg_text_run_cx* run = nullptr;
+	if (ctxp)
+		run = ctxp->text_cache.get(p, ts, box);
+	else if (ocbp)
+		run = ocbp->text_cache.get(p, ts, box);
+	if (!run || run->glyph_count() == 0)
 		return;
-	auto ptr = new_text_run(run, p, ts, box);
-	if (ptr && run->glyph_count() == 0) return;
 	vg_add_text_run(ocb, ctx, rvg, run);
 }
 #else
