@@ -239,7 +239,7 @@ struct ovg_ctx_t {
 	// ─── 缓冲区 ────────────────────────────────────
 	OvgGpuBuffers* gpubuf = 0;
 	// 纹理管理
-	std::pmr::unordered_map<uint32_t, sdl3gpu_texture*> textures;
+	vg_unordered_map<uint32_t, sdl3gpu_texture*> textures;
 	// 释放列队
 	std::queue<sdl3gpu_texture*> texq;
 	uint32_t next_image_id = 0;

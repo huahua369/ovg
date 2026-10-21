@@ -35,15 +35,21 @@
 #endif
 
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <stack>
-#include <memory_resource> 
 #if (__has_include(<tesselator.h>))
 #include <tesselator.h>
 #define VG_FILL_NZ_GLUTESS2
@@ -58,63 +64,77 @@
 void init_ovg_cb(ovg_canvas_cb* cb);
 void init_ovg_ctx_cb(ovg_ctx_cb* cb);
 
-#ifndef MEMAC_PMR
-template<class _Ty>
-using pmalloc_t = std::pmr::polymorphic_allocator<_Ty>;		// 指定类型内存分配
-using uspool_t = std::pmr::unsynchronized_pool_resource;	// 线程不安全
-using mbpool_t = std::pmr::monotonic_buffer_resource;		// 线程不安全，多次分配，统一释放
-using spool_t = std::pmr::synchronized_pool_resource;		// 线程安全的
-
+namespace {
+struct vg_alloc_header {
+	void* base;
+};
+} // namespace
 
 vg_alloc_cx::vg_alloc_cx()
 {}
 
 vg_alloc_cx::~vg_alloc_cx()
 {}
+
 void* vg_alloc_cx::alloc(const size_t _Bytes, const size_t align)
 {
-	return nullptr;
+	size_t bytes = _Bytes ? _Bytes : 1;
+	size_t a = align ? align : alignof(std::max_align_t);
+	if (a < alignof(void*))
+		a = alignof(void*);
+	if ((a & (a - 1)) != 0)
+		a = alignof(std::max_align_t);
+	if (bytes > (std::numeric_limits<size_t>::max)() - a - sizeof(vg_alloc_header))
+		return nullptr;
+
+	unsigned char* base = (unsigned char*)std::malloc(bytes + a - 1 + sizeof(vg_alloc_header));
+	if (!base)
+		return nullptr;
+
+	std::uintptr_t p = (std::uintptr_t)(base + sizeof(vg_alloc_header));
+	p = (p + a - 1) & ~(std::uintptr_t)(a - 1);
+	((vg_alloc_header*)p)[-1].base = base;
+	return (void*)p;
 }
+
 void vg_alloc_cx::dealloc(void* t, size_t n)
-{}
+{
+	(void)n;
+	if (t)
+		std::free(((vg_alloc_header*)t)[-1].base);
+}
+
 class usp_ac_cx :public vg_alloc_cx
 {
-public:
-	size_t _Align = 16;
-	void* ptr = 0;
-	uspool_t _alloc = {};				// pmr内存分配
 public:
 	usp_ac_cx() {}
 	~usp_ac_cx() {}
 public:
-	void* alloc(const size_t _Bytes, const size_t align = 0) {
-		return  _alloc.allocate(_Bytes, align > 0 ? align : _Align);
-	}
 	void* allocate(const size_t _Bytes, const size_t align = 0) {
-		return  _alloc.allocate(_Bytes, align > 0 ? align : _Align);
+		return alloc(_Bytes, align > 0 ? align : _Align);
 	}
 	void* new_mem(size_t n)
 	{
 		n = std::max((size_t)1, n);
-		auto p = _alloc.allocate(n, _Align);
-		memset(p, 0, n);
+		auto p = alloc(n, _Align);
+		if (p)
+			memset(p, 0, n);
 		return p;
 	}
 	void* new_mem0(size_t n)
 	{
 		n = std::max((size_t)1, n);
-		auto p = _alloc.allocate(n, _Align);
-		return p;
+		return alloc(n, _Align);
 	}
 	template<class T>
 	T* new_mem(size_t n)
 	{
 		n = std::max((size_t)1, n);
-		auto p = (T*)_alloc.allocate(sizeof(T) * n, _Align);
-		auto ptr = p;
-		for (int i = 0; i < n; i++)
+		auto p = (T*)alloc(sizeof(T) * n, alignof(T));
+		if (p)
 		{
-			p[i] = {};
+			for (size_t i = 0; i < n; i++)
+				p[i] = {};
 		}
 		return p;
 	}
@@ -122,11 +142,11 @@ public:
 	T* new_mem(size_t n, T*& p)
 	{
 		n = std::max((size_t)1, n);
-		p = (T*)_alloc.allocate(sizeof(T) * n, _Align);
-		auto ptr = p;
-		for (int i = 0; i < n; i++)
+		p = (T*)alloc(sizeof(T) * n, alignof(T));
+		if (p)
 		{
-			p[i] = {};
+			for (size_t i = 0; i < n; i++)
+				p[i] = {};
 		}
 		return p;
 	}
@@ -134,8 +154,7 @@ public:
 	T* new_mem_o(size_t n)
 	{
 		n = std::max((size_t)1, n);
-		auto p = (T*)_alloc.allocate(sizeof(T) * n, _Align);
-		return p;
+		return (T*)alloc(sizeof(T) * n, alignof(T));
 	}
 	template<class T>
 	T* new_mem(T*& p, size_t n)
@@ -145,55 +164,47 @@ public:
 	template<class T>
 	void free_mem(T* t, size_t n)
 	{
-		auto ptr = t;
 		if (t && n > 0)
-		{
-			_alloc.deallocate(t, sizeof(T) * n, _Align);
-		}
+			dealloc(t, sizeof(T) * n);
 	}
 	void free_mem0(void* t, size_t n)
 	{
-		auto ptr = t;
 		if (t && n > 0)
-		{
-			_alloc.deallocate(t, n, _Align);
-		}
-	}
-	void dealloc(void* t, size_t n)
-	{
-		auto ptr = t;
-		if (t && n > 0)
-		{
-			_alloc.deallocate(t, n, _Align);
-		}
+			dealloc(t, n);
 	}
 	template<class T, class... Ts>
 	T* new_obj(Ts &&... args)
 	{
-		auto p = (T*)new_mem(sizeof(T));
+		auto p = (T*)alloc(sizeof(T), alignof(T));
 		if (p)
-		{
-#ifdef _WIN32
-			std::uninitialized_construct_using_allocator(p, _alloc, std::forward<Ts>(args)...);
-#else
-			std::__uninitialized_construct_using_allocator(p, _alloc, std::forward<Ts>(args)...);
-#endif
-		}
+			std::construct_at(p, std::forward<Ts>(args)...);
 		return p;
 	}
 	template<class T>
 	void free_obj(T* t)
 	{
-		auto ptr = t;
 		if (t)
 		{
-			std::destroy_at(ptr);
-			_alloc.deallocate(t, sizeof(T), _Align);
+			std::destroy_at(t);
+			dealloc(t, sizeof(T));
 		}
 	}
 };
 
-#endif // !MEMAC_PMR
+vg_alloc_cx* vg_get_default_allocator()
+{
+	// Intentionally never destroyed: allocators may be used by static
+	// containers during process shutdown.
+	static vg_alloc_cx* alloc = new usp_ac_cx();
+	return alloc;
+}
+
+namespace {
+usp_ac_cx* vg_default_ac()
+{
+	return (usp_ac_cx*)vg_get_default_allocator();
+}
+} // namespace
 
 struct text_draw_list;
 
@@ -455,9 +466,9 @@ void free_ctx_cb(ovg_ctx_cb* p) {
 #if 1
 struct ovg_path_t {
 	usp_ac_cx* ac = 0;
-	std::pmr::vector<glm::vec2> points;	// 点数组
-	std::pmr::vector<uint32_t> pathes;	// 每段大小
-	std::pmr::vector<uint32_t> colors;	// 颜色数组，和pathes大小一样
+	vg_vector<glm::vec2> points;	// 点数组
+	vg_vector<uint32_t> pathes;	// 每段大小
+	vg_vector<uint32_t> colors;	// 颜色数组，和pathes大小一样
 	uint32_t color = 0xffffffff;		// 默认颜色
 	uint32_t segmentPtr = 0;   // current segment count in current path having curves
 	uint32_t subpathCount = 0; // store count of subpath, not straight forward to retrieve from segmented path array
@@ -467,6 +478,9 @@ struct ovg_path_t {
 	uint32_t curVertOffset = 0;
 	bool     simpleConvex = false; // true if path is single rect or concave closed curve.
 	bool enable_tess2 = false;	// 是否启用tess2实现完整矢量交叉计算
+
+	explicit ovg_path_t(vg_alloc_cx* a)
+		: ac((usp_ac_cx*)a), points(a), pathes(a), colors(a) {}
 };
 
 #define PATH_CLOSED_BIT 0x80000000 /* most significant bit of path elmts is closed/open path state */
@@ -1487,9 +1501,11 @@ struct pat_act :public  vg_pattern_t {
 
 
 vg_pattern_t* ovg_pattern_create_for_surface(usp_ac_cx* ac, void* surf) {
-	if (!surf || !ac) {
+	if (!surf) {
 		return 0;
 	}
+	if (!ac)
+		ac = vg_default_ac();
 	pat_act* pat = (pat_act*)ac->new_obj<pat_act>();
 	if (!pat) {
 		return 0;
@@ -1713,10 +1729,7 @@ int _vg_pattern_edit_linear(vg_pattern_t* pat, float x0, float y0, float x1, flo
 }
 // 自定义分配
 vg_pattern_t* ovg_new_pattern_linear(mem_resource_t* ac0, float x0, float y0, float x1, float y1) {
-	auto ac = (usp_ac_cx*)ac0;
-	if (!ac) {
-		return 0;
-	}
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
 	pat_act* pat = (pat_act*)ac->new_obj<pat_act>();
 	if (!pat) {
 		return 0;
@@ -1771,10 +1784,7 @@ int vg_pattern_edit_sweep(pat_act* pat, float cx, float cy, float start_angle, f
 	return 0;
 }
 vg_pattern_t* ovg_new_pattern_radial(mem_resource_t* ac0, float cx0, float cy0, float radius0, float cx1, float cy1, float radius1, bool is_ellipse) {
-	auto ac = (usp_ac_cx*)ac0;
-	if (!ac) {
-		return 0;
-	}
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
 	pat_act* pat = (pat_act*)ac->new_obj<pat_act>();
 	if (!pat) {
 		return 0;
@@ -1789,10 +1799,7 @@ vg_pattern_t* ovg_new_pattern_radial(mem_resource_t* ac0, float cx0, float cy0, 
 	return pat;
 }
 vg_pattern_t* ovg_new_pattern_sweep(mem_resource_t* ac0, float cx, float cy, float start_angle, float end_angle) {
-	auto ac = (usp_ac_cx*)ac0;
-	if (!ac) {
-		return 0;
-	}
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
 	pat_act* pat = (pat_act*)ac->new_obj<pat_act>();
 	if (!pat) {
 		return 0;
@@ -1809,13 +1816,10 @@ vg_pattern_t* ovg_new_pattern_sweep(mem_resource_t* ac0, float cx, float cy, flo
 
 
 ovg_path_t* ovg_new_path(mem_resource_t* ac0) {
-	auto ac = (usp_ac_cx*)ac0;
-	ovg_path_t* p = 0;
-	if (ac) {
-		p = ac->new_obj<ovg_path_t>();
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
+	ovg_path_t* p = ac->new_obj<ovg_path_t>(ac);
+	if (p)
 		ovg_clear_path(p);
-		p->ac = ac;
-	}
 	return p;
 }
 void ovg_destroy_path(ovg_path_t* path) {
@@ -1829,26 +1833,25 @@ void ovg_set_enable_tess2(ovg_path_t* path, bool enable) {
 }
 
 vg_state_save_t* ovg_new_state(mem_resource_t* ac0) {
-	auto ac = (usp_ac_cx*)ac0;
-	vg_state_save_t* p = 0;
-	if (ac) {
-		auto pp = (ss_act*)ac->new_mem(sizeof(ss_act));
-		pp->ac = ac;
-		p = pp;
-		*p = {};
-		push_constants_t pc = {};
-		pc.source.w = 1;
-		pc.size = { (float)100, (float)100 };
-		pc.fsq_patternType = VG_PATTERN_TYPE_SOLID;
-		pc.opacity = 1.0f;
-		pc.mat = pc.matInv = glm::mat3x2(1.0);
-		p->lineWidth = 1.f;
-		p->miterLimit = 10.f;
-		p->curOperator = vg_operator_t::VG_OPERATOR_OVER;
-		p->curFillRule = VG_FILL_RULE_NON_ZERO;
-		p->pushConsts = pc;
-		p->references = 1;
-	}
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
+	auto pp = (ss_act*)ac->new_mem(sizeof(ss_act));
+	if (!pp)
+		return 0;
+	pp->ac = ac;
+	vg_state_save_t* p = pp;
+	*p = {};
+	push_constants_t pc = {};
+	pc.source.w = 1;
+	pc.size = { (float)100, (float)100 };
+	pc.fsq_patternType = VG_PATTERN_TYPE_SOLID;
+	pc.opacity = 1.0f;
+	pc.mat = pc.matInv = glm::mat3x2(1.0);
+	p->lineWidth = 1.f;
+	p->miterLimit = 10.f;
+	p->curOperator = vg_operator_t::VG_OPERATOR_OVER;
+	p->curFillRule = VG_FILL_RULE_NON_ZERO;
+	p->pushConsts = pc;
+	p->references = 1;
 	return p;
 }
 void ovg_state_destroy(vg_state_save_t* p) {
@@ -1857,7 +1860,7 @@ void ovg_state_destroy(vg_state_save_t* p) {
 	if (p0->dashes) {
 		p0->ac->free_mem(p0->dashes, p0->dashCount);
 	}
-	p0->ac->free_mem(p, sizeof(ss_act));
+	p0->ac->free_mem(p, 1);
 }
 // 渲染对象
 #if 1
@@ -1944,19 +1947,19 @@ public:
 		uint32_t color1;
 	};
 public:
-	std::pmr::vector<Vertex1> vd1;	// 单面顶点
-	std::pmr::vector<Vertex2> vd2;	// 双面顶点
-	std::pmr::vector<uint32_t> ids;	// 索引 
-	std::pmr::vector<glm::mat4> instance_mat;	// 实例矩阵 
+	vg_vector<Vertex1> vd1;	// 单面顶点
+	vg_vector<Vertex2> vd2;	// 双面顶点
+	vg_vector<uint32_t> ids;	// 索引
+	vg_vector<glm::mat4> instance_mat;	// 实例矩阵
 	glm::mat4 mat = glm::mat4(1.0f);// 当前矩阵
 	gem_info_t curState = {};		// 当前状态	 
-	std::pmr::vector<gcmd_t>* gt = 0;
-	std::pmr::vector<gem_info_t> build_pipes;
+	vg_vector<gcmd_t>* gt = 0;
+	vg_vector<gem_info_t> build_pipes;
 	rvg_cx* dc = 0;
 	size_t inst_count = 0;			// 当前实例
 	size_t inst_idx = 0;			// 当前实例
 public:
-	geom_primitive();
+	explicit geom_primitive(vg_alloc_cx* a);
 	~geom_primitive();
 public:
 	// 清空数据
@@ -1973,6 +1976,83 @@ public:
 	void add_image(ovg_image_r* r);
 };
 
+// Keeps temporary states/patterns alive until rvg_cx::clear_all().  Memory is
+// served from large chunks so the hot path stays pointer-bump fast, while the
+// chunks themselves still come from the configured allocator.
+class vg_bump_alloc
+{
+public:
+	explicit vg_bump_alloc(vg_alloc_cx* context = nullptr)
+		: ac(context), chunks(context) {}
+	~vg_bump_alloc() { release(); }
+	vg_bump_alloc(const vg_bump_alloc&) = delete;
+	vg_bump_alloc& operator=(const vg_bump_alloc&) = delete;
+
+	void* allocate(size_t bytes, size_t align = 0)
+	{
+		if (bytes == 0)
+			bytes = 1;
+		if (align == 0)
+			align = alignof(std::max_align_t);
+		if ((align & (align - 1)) != 0 || align < alignof(void*))
+			align = alignof(std::max_align_t);
+
+		if (!chunks.empty()) {
+			chunk& c = chunks.back();
+			std::uintptr_t begin = (std::uintptr_t)c.p;
+			std::uintptr_t p = (begin + c.used + align - 1) & ~(std::uintptr_t)(align - 1);
+			std::uintptr_t offset = p - begin;
+			if (p >= begin && offset <= c.size && bytes <= c.size - offset) {
+				c.used = (size_t)(offset + bytes);
+				return (void*)p;
+			}
+		}
+
+		if (bytes > (std::numeric_limits<size_t>::max)() - align - 1)
+			return nullptr;
+		const size_t min_chunk = 64 * 1024;
+		size_t chunk_size = bytes + align - 1;
+		if (chunk_size < min_chunk)
+			chunk_size = min_chunk;
+
+		vg_alloc_cx* context = ac ? ac : vg_get_default_allocator();
+		void* mem = context->alloc(chunk_size, alignof(std::max_align_t));
+		if (!mem)
+			return nullptr;
+		try {
+			chunks.push_back({ mem, chunk_size, 0 });
+		}
+		catch (...) {
+			context->dealloc(mem, chunk_size);
+			throw;
+		}
+
+		chunk& c = chunks.back();
+		std::uintptr_t begin = (std::uintptr_t)c.p;
+		std::uintptr_t p = (begin + align - 1) & ~(std::uintptr_t)(align - 1);
+		size_t offset = (size_t)(p - begin);
+		c.used = offset + bytes;
+		return (void*)p;
+	}
+
+	void release()
+	{
+		vg_alloc_cx* context = ac ? ac : vg_get_default_allocator();
+		for (const auto& c : chunks)
+			context->dealloc(c.p, c.size);
+		chunks.clear();
+	}
+
+private:
+	struct chunk {
+		void* p;
+		size_t size;
+		size_t used;
+	};
+	vg_alloc_cx* ac = nullptr;
+	vg_vector<chunk> chunks;
+};
+
 struct rvg_cx :public rvg_t {
 	struct Vertex {
 		glm::vec2	pos;
@@ -1985,19 +2065,19 @@ struct rvg_cx :public rvg_t {
 		struct ear_clip_point* next;
 	};
 	usp_ac_cx* ac = 0;
-	mbpool_t mac;
-	std::pmr::vector<gcmd_t> cmdlist;		// 命令列表
-	std::pmr::vector<Vertex> _vertex;		// 矢量顶点
-	std::pmr::vector<uint32_t> _indices;	// 矢量索引
+	vg_bump_alloc mac;
+	vg_vector<gcmd_t> cmdlist;		// 命令列表
+	vg_vector<Vertex> _vertex;		// 矢量顶点
+	vg_vector<uint32_t> _indices;	// 矢量索引
 	// 临时缓冲用
-	std::pmr::vector<ear_clip_point> ecpsd;
-	std::pmr::vector<glm::vec2> _normals;
+	vg_vector<ear_clip_point> ecpsd;
+	vg_vector<glm::vec2> _normals;
 
-	std::pmr::map<vg_image_t*, vg_image_desc_t> _images;
-	std::pmr::vector<vg_image_desc_t*> _images_up;
+	vg_map<vg_image_t*, vg_image_desc_t> _images;
+	vg_vector<vg_image_desc_t*> _images_up;
 
 	// 23d
-	geom_primitive gps = {};
+	geom_primitive gps;
 
 	size_t gCount = 0;	// ubo数量
 	size_t _curVertOffset = 0;
@@ -2005,7 +2085,7 @@ struct rvg_cx :public rvg_t {
 	glm::ivec4 curClip = {};
 	std::stack<vg_state_save_t*> _cst;	// 保存栈 
 public:
-	rvg_cx();
+	explicit rvg_cx(vg_alloc_cx* a);
 	~rvg_cx();
 	void clear_all();
 	void set_path(ovg_path_t* path, vg_state_save_t* st);
@@ -2044,7 +2124,17 @@ public:
 	void swap_state(vg_state_save_t* p, vg_state_save_t* p1);
 };
 
-rvg_cx::rvg_cx()
+rvg_cx::rvg_cx(vg_alloc_cx* a)
+	: ac((usp_ac_cx*)a),
+	mac(a),
+	cmdlist(a),
+	_vertex(a),
+	_indices(a),
+	ecpsd(a),
+	_normals(a),
+	_images(a),
+	_images_up(a),
+	gps(a)
 {
 	gps.gt = &cmdlist;
 	gps.dc = this;
@@ -3062,12 +3152,10 @@ void rvg_cx::image_destroy(vg_image_t* img)
 // todo 渲染操作，rvg_cx可以多次执行fill或stroke/clip
 rvg_t* ovg_new_rvg(mem_resource_t* ac0)
 {
-	auto ac = (usp_ac_cx*)ac0;
-	if (!ac) {
-		return 0;
-	}
-	auto p = ac->new_obj<rvg_cx>();
-	p->ac = ac;
+	auto ac = ac0 ? (usp_ac_cx*)ac0 : vg_default_ac();
+	auto p = ac->new_obj<rvg_cx>(ac);
+	if (p)
+		p->ac = ac;
 	return p;
 }
 void ovg_destroy_rvg(rvg_t* p0) {
@@ -3305,7 +3393,8 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 #endif // 1
 
 
-geom_primitive::geom_primitive()
+geom_primitive::geom_primitive(vg_alloc_cx* a)
+	: vd1(a), vd2(a), ids(a), instance_mat(a), build_pipes(a)
 {}
 
 geom_primitive::~geom_primitive()
@@ -4179,7 +4268,7 @@ rvg_t* vctx_new_rvg(mem_resource_t* ac) {
 	auto r = (rvg_cx*)ovg_new_rvg(ac);
 	if (r)
 	{
-		r->path = ovg_new_path(ac);
+		r->path = ovg_new_path((mem_resource_t*)r->ac);
 		r->st = r->new_state();
 		assert(r->path && r->st);
 	}
@@ -4820,13 +4909,15 @@ public:
 	float frame[4] = {};	// 输出坐标、大小
 	flex_item* parent = 0;	// 父级
 	size_t line_count = 0;
-	std::pmr::vector<flex_item*> children;	// 子级  
-	std::pmr::vector<char> temp_layout;
+	vg_alloc_cx* ac = nullptr;
+	vg_vector<flex_item*> children;	// 子级
+	vg_vector<char> temp_layout;
 public:
 	flex_item();
 	~flex_item();
 
 	void init();
+	void set_allocator(vg_alloc_cx* a);
 	void setdata(flex_data* d);
 	void update_should_order_children();	// 子元素属性改变时执行
 
@@ -4848,6 +4939,15 @@ flex_item::flex_item()
 
 flex_item::~flex_item()
 {}
+
+void flex_item::set_allocator(vg_alloc_cx* a)
+{
+	if (ac == a)
+		return;
+	ac = a;
+	children = vg_vector<flex_item*>(a);
+	temp_layout = vg_vector<char>(a);
+}
 
 
 
@@ -5553,25 +5653,21 @@ void flex_item::layout()
 	layout_item(width, height);
 }
 struct flex_run {
-	std::pmr::vector<flex_item> items;
+	vg_vector<flex_item> items;
 	std::stack<node_dt*> q;
 	usp_ac_cx* ac = 0;
-	bool meac = false;
+	explicit flex_run(vg_alloc_cx* a) : items(a), ac((usp_ac_cx*)a) {}
 };
 flex_run* new_flex_run(mem_resource_t* a) {
-	usp_ac_cx* ac = (usp_ac_cx*)a;
-	if (!ac) {
-		ac = new usp_ac_cx();
-	}
-	if (ac)return 0;
-	auto p = ac->new_obj<flex_run>();
-	if (p) {
-		p->ac = ac; p->meac = !a;
-	}
+	usp_ac_cx* ac = a ? (usp_ac_cx*)a : vg_default_ac();
+	auto p = ac->new_obj<flex_run>(ac);
+	if (p)
+		p->ac = ac;
 	return p;
 }
 void free_flex_run(flex_run* p) {
-	if (p && p->ac) { p->ac->free_obj(p); }
+	if (p && p->ac)
+		p->ac->free_obj(p);
 }
 mem_resource_t* flex_run_ac(flex_run* p) {
 	return (mem_resource_t*)(p ? p->ac : nullptr);
@@ -5582,7 +5678,10 @@ glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p
 	if (!fd || count == 0 || !p || !node_count || !p->child || !p->child_count || !ctx)
 		return rect;
 	auto& items = ctx->items;
+	size_t old_count = items.size();
 	items.resize(node_count);
+	for (size_t i = old_count; i < items.size(); i++)
+		items[i].set_allocator(ctx->ac);
 	auto fitem = items.data();
 	if (!fitem) return rect;
 	for (size_t i = 0; i < node_count; i++) {
@@ -6106,8 +6205,9 @@ void grid_layout(
 #endif // !NO_FLEX_IMP 
 
 struct font_familys_cx :public font_familys_t {
-	std::pmr::vector<font_family_t*> v;
+	vg_vector<font_family_t*> v;
 	usp_ac_cx* ac = 0;
+	explicit font_familys_cx(vg_alloc_cx* a) : v(a), ac((usp_ac_cx*)a) {}
 };
 void vg_split(std::string str, const std::string& pattern, std::vector<std::string>& result)
 {
@@ -6175,7 +6275,7 @@ font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const c
 		}
 		const char* style = st.size() ? st[0].c_str() : nullptr;
 		size_t ix = 1;
-		p = (font_familys_cx*)ac->new_obj<font_familys_cx>();
+		p = (font_familys_cx*)ac->new_obj<font_familys_cx>(ac);
 		if (!p) {
 			return 0;
 		}
@@ -6298,7 +6398,7 @@ void submit_raster_batches(CB* cb, rvg_t* rvg, text_raster_cache& cache)
 	}
 }
 
-// 对象模式：整段文本复用同一个 path/state，避免每个字形都从 PMR 分配并释放
+// 对象模式：整段文本复用同一个 path/state，避免每个字形都从 内存管理 分配并释放
 void submit_vector_cmds(ovg_canvas_cb* cb, rvg_t* rvg, const text_draw_list* list, bool stroke_mode, float stroke_width)
 {
 	ovg_path_t* path = nullptr;

@@ -11,6 +11,15 @@ typedef struct vg_fbo_t vg_fbo_t;
 
 #ifdef __cplusplus
 #include <cstdint>
+#include <cstddef>
+#include <functional>
+#include <limits>
+#include <map>
+#include <new>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 using uvec2 = glm::uvec2;
 using uvec3 = glm::uvec3;
 using vec2 = glm::vec2;
@@ -27,9 +36,93 @@ public:
 	virtual ~vg_alloc_cx();
 	virtual void* alloc(const size_t _Bytes, const size_t align);
 	virtual void dealloc(void* t, size_t n);
+
+	// These fields mirror mem_resource_t so a C++ allocator can be passed
+	// through the C API without an adapter object.
+	size_t _Align = 16;
+	void* ptr = 0;
 private:
 
 };
+
+/* Process-wide allocator used when a container has no explicit context.
+ * The default vg_alloc_cx implementation uses malloc/free. */
+vg_alloc_cx* vg_get_default_allocator();
+
+/* Minimal C++ allocator used by OVG's standard containers.  Passing a context
+ * routes all allocations through the caller's vg_alloc_cx implementation;
+ * leaving it null uses vg_get_default_allocator(). */
+template<class T>
+class vg_allocator
+{
+public:
+	using value_type = T;
+	using size_type = std::size_t;
+	using difference_type = std::ptrdiff_t;
+	using pointer = T*;
+	using const_pointer = const T*;
+	using propagate_on_container_move_assignment = std::true_type;
+	using propagate_on_container_copy_assignment = std::true_type;
+	using propagate_on_container_swap = std::true_type;
+	using is_always_equal = std::false_type;
+
+	template<class U>
+	struct rebind
+	{
+		using other = vg_allocator<U>;
+	};
+
+	vg_allocator() noexcept = default;
+	vg_allocator(vg_alloc_cx* context) noexcept : ac(context) {}
+	template<class U>
+	vg_allocator(const vg_allocator<U>& other) noexcept : ac(other.ac) {}
+
+	T* allocate(std::size_t n)
+	{
+		if (n > (std::numeric_limits<std::size_t>::max)() / sizeof(T))
+			throw std::bad_alloc();
+		vg_alloc_cx* context = ac ? ac : vg_get_default_allocator();
+		void* p = context->alloc(n * sizeof(T), alignof(T));
+		if (!p)
+			throw std::bad_alloc();
+		return static_cast<T*>(p);
+	}
+
+	void deallocate(T* p, std::size_t n) noexcept
+	{
+		if (!p)
+			return;
+		vg_alloc_cx* context = ac ? ac : vg_get_default_allocator();
+		context->dealloc(p, n * sizeof(T));
+	}
+
+	template<class U>
+	bool operator==(const vg_allocator<U>& other) const noexcept
+	{
+		return ac == other.ac;
+	}
+
+	template<class U>
+	bool operator!=(const vg_allocator<U>& other) const noexcept
+	{
+		return !(*this == other);
+	}
+
+private:
+	vg_alloc_cx* ac = nullptr;
+	template<class U> friend class vg_allocator;
+};
+
+template<class T>
+using vg_vector = std::vector<T, vg_allocator<T>>;
+
+template<class K, class V>
+using vg_map = std::map<K, V, std::less<K>, vg_allocator<std::pair<const K, V>>>;
+
+template<class K, class V>
+using vg_unordered_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>,
+	vg_allocator<std::pair<const K, V>>>;
+
 extern "C" {
 #else
 typedef struct uvec2 {
@@ -92,6 +185,11 @@ typedef struct mem_resource_t {
 	size_t _Align;
 	void* ptr;
 }mem_resource_t;
+
+#ifdef __cplusplus
+static_assert(sizeof(vg_alloc_cx) == sizeof(mem_resource_t),
+	"vg_alloc_cx must stay layout-compatible with mem_resource_t");
+#endif
 
 typedef struct quadratic_v_t
 {
