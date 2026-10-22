@@ -6647,20 +6647,16 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	float align_x = box->text_align.x;  // 0=左, 0.5=中, 1=右
 	float align_y = box->text_align.y;
 
-	float offset_x = run->_tt.pos.x + (box_w - extents.width) * align_x;
-	float offset_y = run->_tt.pos.y + (box_h - extents.height) * align_y;
-	//offset_y += -extents.y_bearing;
-    // 基线位置 = offset_y + ascender
+	int offset_x = run->_tt.pos.x + (box_w - extents.width) * align_x;
+	int offset_y = run->_tt.pos.y + (box_h - extents.height) * align_y;
+	// 基线位置 = offset_y + ascender
 	hb_font_extents_t fextents = {};
 	// 用主字体取 ascender
 	hb_font_t* primary = ts->family->familys[0]->font;
 	hb_font_set_scale(primary, fontsize, fontsize);
 	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
-	float baseline_y = offset_y + box->baseline;
-	// ── 3. 裁剪 ──
-	if (box && box->rc.z > 0 && box->rc.w > 0) {
-		//ovg_clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
-	}
+	int baseline_y = offset_y + box->baseline;
+
 	text_draw_list& main_list = run->drawable;
 	main_list.has_color = false;
 	// ── 4. 阴影 ──
@@ -6712,10 +6708,6 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	else if (ocbp)
 		submit_draw_list(*ocbp, rvg, &main_list);
 
-	// ── 7. 恢复裁剪 ──
-	if (box && box->rc.z > 0 && box->rc.w > 0) {
-		//ovg_reset_clip(rvg, 1);
-	}
 }
 
 void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
