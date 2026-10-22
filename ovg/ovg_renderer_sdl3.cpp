@@ -97,7 +97,15 @@ struct fx_texture_set {
 	sdl3gpu_texture* out = nullptr;
 	int width = 0;
 	int height = 0;
+	uint64_t last_use = 0;		// 最近使用的帧号，池淘汰用
 };
+
+// 特效纹理池总上限：按 (w,h) 分桶复用，超限时按 LRU 销毁，
+// 避免窗口反复缩放后旧尺寸的 RGBA32F 纹理一直常驻显存
+static constexpr size_t FX_POOL_MAX_SETS = 4;
+// 已提交但 GPU 尚未完成的集合上限：GPU 落后时 pending 会逐帧增长，
+// 超过该上限就等待 fence 完成并回收，保证显存占用有界
+static constexpr size_t FX_PENDING_MAX_SETS = 12;
 
 struct fx_result_t {
 	sdl3gpu_texture* tex = nullptr;		// blurred coverage
@@ -283,6 +291,7 @@ struct ovg_ctx_t {
 	std::map<uint64_t, std::vector<fx_texture_set>> fxPool;
 	std::vector<fx_texture_set> fxPending;
 	std::vector<fx_texture_set> fxUsed;
+	uint64_t fxFrame = 0;		// 帧号，用于特效纹理池 LRU 淘汰
 	struct per_item_t {
 		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
 		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
@@ -999,6 +1008,13 @@ static void destroy_texture(sdl3gpu_texture* tex) {
 		tex->texture = nullptr;
 	}
 	delete tex;
+}
+
+// 释放一组特效离屏纹理（mask/tmp/out），创建不完整或池淘汰时调用
+static void free_fx_set(fx_texture_set& s) {
+	if (s.mask) { destroy_texture(s.mask); s.mask = nullptr; }
+	if (s.tmp) { destroy_texture(s.tmp); s.tmp = nullptr; }
+	if (s.out) { destroy_texture(s.out); s.out = nullptr; }
 }
 
 // ========================================================================
@@ -1992,11 +2008,6 @@ void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 		if (p.pipeline)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p.pipeline);
 		if (p.defaultSampler) SDL_ReleaseGPUSampler(ctx->device->gpuDevice, p.defaultSampler);
 	}
-	auto free_fx_set = [](fx_texture_set& s) {
-		if (s.mask) { destroy_texture(s.mask); s.mask = nullptr; }
-		if (s.tmp) { destroy_texture(s.tmp); s.tmp = nullptr; }
-		if (s.out) { destroy_texture(s.out); s.out = nullptr; }
-	};
 	for (auto& [key, list] : ctx->fxPool) {
 		for (auto& s : list) free_fx_set(s);
 	}
@@ -2931,9 +2942,15 @@ static void recycle_fx_sets(ovg_ctx_t* ctx);
 void deferred_free_advance(ovg_ctx_t* r) {
 	if (!r) return;
 	if (r->texq.empty() && r->fxPending.empty()) return;
-	// 依赖上一帧的 fence：未 signaled 则 GPU 可能仍在使用纹理，推迟到下一帧
+	// 依赖上一帧的 fence：未 signaled 则 GPU 可能仍在使用纹理
 	if (r->tex_free_fence && !SDL_QueryGPUFence(r->device->gpuDevice, r->tex_free_fence))
-		return;
+	{
+		// 特效纹理待回收集合超过上限时强制等待，避免 GPU 落后时显存逐帧增长
+		if (r->fxPending.size() <= FX_PENDING_MAX_SETS)
+			return;
+		SDL_GPUFence* fences[1] = { r->tex_free_fence };
+		SDL_WaitForGPUFences(r->device->gpuDevice, true, fences, 1);
+	}
 	if (r->tex_free_fence) {
 		SDL_ReleaseGPUFence(r->device->gpuDevice, r->tex_free_fence);
 		r->tex_free_fence = nullptr;
@@ -3036,6 +3053,36 @@ static uint64_t fx_pool_key(int w, int h)
 	return ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
 }
 
+// 池中集合总数超过上限时，按 last_use 淘汰最久未使用的纹理。
+// keep_min：本帧实际并发需要的集合数，避免把刚用到的纹理也淘汰掉造成抖动。
+static void trim_fx_pool(ovg_ctx_t* ctx, size_t keep_min)
+{
+	size_t total = 0;
+	for (auto& kv : ctx->fxPool) total += kv.second.size();
+	while (total > FX_POOL_MAX_SETS && total > keep_min) {
+		auto victim_it = ctx->fxPool.end();
+		size_t victim_idx = 0;
+		uint64_t oldest = UINT64_MAX;
+		for (auto it = ctx->fxPool.begin(); it != ctx->fxPool.end(); ++it) {
+			auto& list = it->second;
+			for (size_t i = 0; i < list.size(); i++) {
+				if (list[i].last_use < oldest) {
+					oldest = list[i].last_use;
+					victim_it = it;
+					victim_idx = i;
+				}
+			}
+		}
+		if (victim_it == ctx->fxPool.end()) break;
+		auto& list = victim_it->second;
+		free_fx_set(list[victim_idx]);
+		list[victim_idx] = list.back();
+		list.pop_back();
+		if (list.empty()) ctx->fxPool.erase(victim_it);
+		total--;
+	}
+}
+
 static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h)
 {
 	fx_texture_set s = {};
@@ -3052,18 +3099,30 @@ static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h)
 		s.tmp = new_effect_texture(ctx, w, h);
 		s.out = new_effect_texture(ctx, w, h);
 	}
-	if (s.mask && s.tmp && s.out)
-		ctx->fxUsed.push_back(s);
+	// 任一纹理创建失败（如显存不足）时释放已创建的纹理，避免泄漏
+	if (!s.mask || !s.mask->texture || !s.tmp || !s.tmp->texture || !s.out || !s.out->texture) {
+		free_fx_set(s);
+		return fx_texture_set{};
+	}
+	s.last_use = ctx->fxFrame;
+	ctx->fxUsed.push_back(s);
 	return s;
 }
 
 static void recycle_fx_sets(ovg_ctx_t* ctx)
 {
+	size_t used = ctx->fxPending.size();
 	for (auto& s : ctx->fxPending) {
-		if (s.mask && s.tmp && s.out)
+		if (s.mask && s.mask->texture && s.tmp && s.tmp->texture && s.out && s.out->texture) {
+			s.last_use = ctx->fxFrame;
 			ctx->fxPool[fx_pool_key(s.width, s.height)].push_back(s);
+		}
+		else {
+			free_fx_set(s);
+		}
 	}
 	ctx->fxPending.clear();
+	trim_fx_pool(ctx, used);
 }
 
 static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
@@ -3262,6 +3321,7 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 
 	}
 	if (!cmd)return;
+	ctx->fxFrame++;
 	deferred_free_advance(ctx);   // 帧首尝试释放：此时 fence 为上一帧所提交，可能已完成
 	ctx->fxUsed.clear();
 	size_t total_vbo = 0;
