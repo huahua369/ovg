@@ -66,9 +66,9 @@ void init_ovg_cb(ovg_canvas_cb* cb);
 void init_ovg_ctx_cb(ovg_ctx_cb* cb);
 
 namespace {
-struct vg_alloc_header {
-	void* base;
-};
+	struct vg_alloc_header {
+		void* base;
+	};
 } // namespace
 
 vg_alloc_cx::vg_alloc_cx()
@@ -201,10 +201,10 @@ vg_alloc_cx* vg_get_default_allocator()
 }
 
 namespace {
-usp_ac_cx* vg_default_ac()
-{
-	return (usp_ac_cx*)vg_get_default_allocator();
-}
+	usp_ac_cx* vg_default_ac()
+	{
+		return (usp_ac_cx*)vg_get_default_allocator();
+	}
 } // namespace
 
 struct text_draw_list;
@@ -2362,7 +2362,7 @@ void rvg_cx::apply_effect_bounds(vgcmd_t* c, bool isStroke)
 	x1 -= grow; y1 -= grow; x2 += grow; y2 += grow;
 	// 变换到设备空间
 	const glm::vec2 corners[4] = {
-		{x1, y1}, {x2, y1}, {x1, y2}, {x2, y2}
+		{ x1, y1 },{ x2, y1 },{ x1, y2 },{ x2, y2 }
 	};
 	float minx = FLT_MAX, miny = FLT_MAX, maxx = -FLT_MAX, maxy = -FLT_MAX;
 	for (int i = 0; i < 4; i++) {
@@ -6422,7 +6422,7 @@ void build_raster_batches(text_raster_cache& cache, const text_draw_list* list)
 		float x0 = cmd.pos.x + cmd.entry->offset.x;
 		float y0 = cmd.pos.y - cmd.entry->offset.y;
 		float w = cmd.size.x;
-		float h = cmd.size.y; 
+		float h = cmd.size.y;
 		b.verts.push_back(x0);     b.verts.push_back(y0);
 		b.verts.push_back(x0 + w); b.verts.push_back(y0);
 		b.verts.push_back(x0 + w); b.verts.push_back(y0 + h);
@@ -6644,22 +6644,22 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	float box_w = box && box->rc.z > 0 ? (float)box->rc.z : extents.width;
 	float box_h = box && box->rc.w > 0 ? (float)box->rc.w : extents.height;
 
-	float align_x = ts->align.x;  // 0=左, 0.5=中, 1=右
-	float align_y = ts->align.y;
+	float align_x = box->text_align.x;  // 0=左, 0.5=中, 1=右
+	float align_y = box->text_align.y;
 
 	float offset_x = run->_tt.pos.x + (box_w - extents.width) * align_x;
 	float offset_y = run->_tt.pos.y + (box_h - extents.height) * align_y;
-
-	// 基线位置 = offset_y + ascender
+	//offset_y += -extents.y_bearing;
+    // 基线位置 = offset_y + ascender
 	hb_font_extents_t fextents = {};
 	// 用主字体取 ascender
 	hb_font_t* primary = ts->family->familys[0]->font;
 	hb_font_set_scale(primary, fontsize, fontsize);
 	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
-	float baseline_y = offset_y;
+	float baseline_y = offset_y + box->baseline;
 	// ── 3. 裁剪 ──
 	if (box && box->rc.z > 0 && box->rc.w > 0) {
-		ovg_clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
+		//ovg_clip_rect(rvg, box->rc.x, box->rc.y, box->rc.z, box->rc.w);
 	}
 	text_draw_list& main_list = run->drawable;
 	main_list.has_color = false;
@@ -6714,7 +6714,7 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 
 	// ── 7. 恢复裁剪 ──
 	if (box && box->rc.z > 0 && box->rc.w > 0) {
-		ovg_reset_clip(rvg, 1);
+		//ovg_reset_clip(rvg, 1);
 	}
 }
 

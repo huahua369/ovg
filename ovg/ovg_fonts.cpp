@@ -2441,7 +2441,45 @@ void vg_text_run_cx::shape() {
 		}
 		_shaped.push_back(std::move(out));
 	}
-	// todo 计算_extents
+	// ─── 计算整体 extents ───
+	// 与 populate_draw_list 的排版规则保持一致：按 segment 顺序累计 advance，
+	// 遇到 new_line 换行；宽度取最长行，高度 = 行数 × 行高。
+	int fs = _fontsize > 0 ? _fontsize : 16;
+	hb_font_t* primary = _ffs->familys[0] ? _ffs->familys[0]->font : nullptr;
+	hb_font_extents_t fextents = {};
+	if (primary) {
+		hb_font_set_scale(primary, fs, fs);
+		hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
+	}
+	float line_height = _st.lineheight;
+	if (line_height <= 0.0f && primary)
+		line_height = (float)(fextents.ascender - fextents.descender + fextents.line_gap);
+	if (line_height <= 0.0f)
+		line_height = fs * 1.2f;
+
+	_extents = {};
+	float cur_width = 0.0f;
+	float max_width = 0.0f;
+	int line_count = 1;
+	for (const auto& seg : _shaped) {
+		for (const auto& g : seg.glyphs)
+			cur_width += std::fabs(g.x_advance);
+		if (seg.new_line) {
+			max_width = std::max(max_width, cur_width);
+			cur_width = 0.0f;
+			line_count++;
+		}
+	}
+	max_width = std::max(max_width, cur_width);
+	_extents.width = max_width;
+	_extents.height = line_height * line_count;
+	_extents.x_advance = max_width;
+	_extents.y_advance = _extents.height;
+	// bearing：以首字形相对基线的偏移 + 首行 ascent 给出
+	if (!_shaped.empty() && !_shaped[0].glyphs.empty()) {
+		_extents.x_bearing = _shaped[0].glyphs[0].x_offset;
+		_extents.y_bearing = fextents.ascender > 0 ? -(float)fextents.ascender : _shaped[0].glyphs[0].y_offset;
+	}
 	_glyph_count = (uint32_t)_glyphs.size();
 
 }

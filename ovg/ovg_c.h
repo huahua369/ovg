@@ -744,7 +744,6 @@ typedef struct text_style_t
 	font_familys_t* family;
 	float fontsize;
 	float lineheight;
-	vec2 align;// = { 0.50,0.50 };	// 文本对齐
 	vec2 shadow_pos;// = { 1.0,1.0 };
 	float stroke;					// 描边宽度，正数使用矢量路径实现、负数用偏移4方向实现描边
 	uint32_t color;// = 0xffc2c2c2;		// 文本颜色
@@ -756,8 +755,9 @@ typedef struct text_style_t
 typedef struct text_box_rt {
 	ivec4 rc;		// 设置文本渲染区域，偏移/大小
 	vec2 text_align;// 文本对齐
+	int baseline;		// 设置自定义基线
 	int8_t auto_break;	// 是否自动换行
-	int8_t word_wrap;// = 2;	// 0字符换行，1单词换行，2换行点，3句子断开，4标题大小写断点
+	int8_t word_wrap;	// = 2;	// 0字符换行，1单词换行，2换行点，3句子断开，4标题大小写断点
 	int8_t ellipsis;	// 省略号
 }text_box_rt;
 
@@ -920,12 +920,12 @@ typedef struct ovg_ctx_cb {
 
 }ovg_ctx_cb;
 // 工具函数：渲染两色交替的格子
-void draw_grid_fill(rvg_t * vg, vec2 size, ivec2 cols, int width);
+void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
 // tiny flex
-flex_run* new_flex_run(mem_resource_t * a);
-void free_flex_run(flex_run * p);
-mem_resource_t* flex_run_ac(flex_run * p);
-vec4 flex_run_layout(flex_run * ctx, flex_data * fd, size_t count, node_dt * p, size_t node_count);
+flex_run* new_flex_run(mem_resource_t* a);
+void free_flex_run(flex_run* p);
+mem_resource_t* flex_run_ac(flex_run* p);
+vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
 
 
 /* ---- 生命周期 ---- */
