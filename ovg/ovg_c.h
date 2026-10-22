@@ -511,6 +511,27 @@ typedef struct vg_pattern_t {
 	void* data;	// Surface指针或vg_gradient_t
 }vg_pattern_t;
 
+/* 矢量路径特效：外发光、内发光、阴影。
+ * 特效随状态保存/恢复，作用于后续每次 fill/stroke，直到 type 设为 NONE。
+ * sigma/offset 单位为设备像素；spread 取值 -1~1，用于近似扩张/收缩。 */
+typedef enum vg_effect_type_t {
+	VG_EFFECT_NONE = 0,
+	VG_EFFECT_OUTER_GLOW = 1,
+	VG_EFFECT_INNER_GLOW = 2,
+	VG_EFFECT_SHADOW = 3,
+} vg_effect_type_t;
+
+typedef struct vg_effect_t {
+	uint8_t		type;		// vg_effect_type_t
+	uint8_t		blend;		// 0=over, 1=add（预留）
+	uint16_t	reserved;
+	uint32_t	color;		// 0xAARRGGBB
+	float		sigma;		// 高斯模糊半径（设备像素）
+	float		spread;		// -1~1，正数向外扩张
+	float		opacity;	// 特效强度 0~1
+	vec2		offset;		// 阴影偏移（设备像素）
+} vg_effect_t;
+
 typedef struct vg_state_save_t {
 	float		lineWidth;
 	float		miterLimit;
@@ -527,6 +548,7 @@ typedef struct vg_state_save_t {
 	vg_clip_state_t		clippingState;
 	uint32_t			references;
 	bool aa;
+	vg_effect_t			effect;
 }vg_state_save_t;
 enum depth_stencil_State {
 	d_depthtest_enable = 0x01,
@@ -820,6 +842,8 @@ typedef struct ovg_ctx_cb {
 	void(*circle)(rvg_t* ctx, float x, float y, float radius);
 	// 配置状态
 	void(*set_opacity)(rvg_t* ctx, float opacity);
+	// 设置路径特效，effect 为 NULL 或 type=NONE 时关闭
+	void(*set_effect)(rvg_t* ctx, const vg_effect_t* effect);
 	void(*set_source_color)(rvg_t* ctx, uint32_t c);
 	void(*set_source_rgba)(rvg_t* ctx, float r, float g, float b, float a);
 	void(*set_source_rgb)(rvg_t* ctx, float r, float g, float b);

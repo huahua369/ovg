@@ -74,6 +74,8 @@ shader规则：
 #include "shaders/spv_c/a_base3d_dsc_inst.frag.h"
 
 #include "shaders/spv_c/blur.spv.h" 
+#include "shaders/spv_c/effect_present.vert.h"
+#include "shaders/spv_c/effect_present.frag.h"
 #include "shaders/spv_c/noise.spv.h" 
 #include "shaders/spv_c/displace.spv.h" 
 #include "shaders/spv_c/blit.vert.h"
@@ -86,6 +88,32 @@ shader规则：
 // 内部数据结构
 // ========================================================================
 
+
+typedef struct sdl3gpu_texture sdl3gpu_texture;
+
+struct fx_texture_set {
+	sdl3gpu_texture* mask = nullptr;
+	sdl3gpu_texture* tmp = nullptr;
+	sdl3gpu_texture* out = nullptr;
+	int width = 0;
+	int height = 0;
+};
+
+struct fx_result_t {
+	sdl3gpu_texture* tex = nullptr;		// blurred coverage
+	sdl3gpu_texture* mask = nullptr;	// original coverage
+	glm::vec4 rect = {};	// x,y,w,h in device pixels
+	glm::vec4 color = {};	// straight RGBA
+	glm::vec2 offset = {};
+	float spread = 0.0f;
+	float opacity = 1.0f;
+	int mode = 0;			// 0 outer, 1 inner, 2 shadow
+};
+
+struct render_item_t {
+	ovg_draw_data_t data = {};
+	std::vector<fx_result_t> fx;
+};
 
 struct sdl3gpu_texture {
 	SDL_GPUTexture* texture = nullptr;
@@ -229,6 +257,8 @@ struct ovg_ctx_t {
 	SDL_GPUGraphicsPipeline* pipeClipInc = nullptr;      // push
 	SDL_GPUGraphicsPipeline* pipeClipDec = nullptr;      // pop
 	SDL_GPUGraphicsPipeline* pipeStencilDraw = nullptr;  // 在裁剪区内绘制 
+	SDL_GPUGraphicsPipeline* pipeEffectMask = nullptr;   // 特效掩码写入离屏纹理
+	SDL_GPUGraphicsPipeline* pipeEffectComposite = nullptr; // 特效纹理叠加到主画布
 	std::set<SDL_GPUGraphicsPipeline*> freepipe;
 	int clipDepth = 0;   // 当前裁剪深度（0 = 无裁剪）
 	// ─── 几何管线缓存 ─────────────────────────────
@@ -247,6 +277,12 @@ struct ovg_ctx_t {
 	uint32_t         gradientOffset = 0;
 	// 缓冲用
 	std::vector<upload_desc_t> _uploads;
+	// ─── 特效资源 ────────────────────────────────
+	SDL_GPUSampler* fxSampler = nullptr;
+	bool fxSupported = false;
+	std::map<uint64_t, std::vector<fx_texture_set>> fxPool;
+	std::vector<fx_texture_set> fxPending;
+	std::vector<fx_texture_set> fxUsed;
 	struct per_item_t {
 		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
 		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
@@ -260,7 +296,7 @@ struct ovg_ctx_t {
 		uint32_t gpu_row_bytes;    /* buffer 里每行实际字节（紧密 or 对齐后） */
 	};
 	std::vector<per_item_t> _items;
-	std::vector<ovg_draw_data_t> _fbo_data;
+	std::vector<render_item_t> _fbo_data;
 	// ─── 视口 ──────────────────────────────────────
 	int viewportW = 0;
 	int viewportH = 0;
@@ -1137,7 +1173,7 @@ static void init_shader_modules(ovg_device_t* dev) {
 		dev->shaderModules[i].frag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, shaders[i].f, shaders[i].flen, nums[i].fnum, "main");
 	}
 	glm::uvec3 ccount = { 8,8,1 };
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < (int)(sizeof(comp_shaders) / sizeof(comp_shaders[0])); i++)
 	{
 		auto& it = comp_shaders[i];
 		dev->comp_pipe[i] = new_compute_pipe(dev->gpuDevice, it.vlen, it.c, "main", it.tex_uniform_count, it.rw, ccount, dev->supportedFormats);
@@ -1562,6 +1598,58 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		ctx->pipeStencilDraw = create_graphics_pipeline(dev, &inputs, ctx);
 	}
+	// ═══════════════════════════════════════════════════════════════
+	// ⑥ 特效管线：掩码离屏渲染 + 特效层叠加
+	// ═══════════════════════════════════════════════════════════════
+	{
+		vg_pipeline_inputs inputs = {};
+		inputs.vertShader = vgVert;
+		inputs.fragShader = vgFrag;
+		inputs.colorFormat = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+		inputs.depthFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+		inputs.samples = SDL_GPU_SAMPLECOUNT_1;
+		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+		inputs.depthTestEnable = false;
+		inputs.depthWriteEnable = false;
+		inputs.stencilTestEnable = false;
+		inputs.blendMode = blendMode_e::none;
+		inputs.vertexStride = sizeof(ovgVertex);
+		inputs.numAttributes = 3;
+		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
+		inputs.enable_color_write_mask = true;
+		inputs.color_write_mask = SDL_GPU_COLORCOMPONENT_R |
+			SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+		ctx->pipeEffectMask = create_graphics_pipeline(dev, &inputs, ctx);
+	}
+	{
+		SDL_GPUShader* epVert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX,
+			a_effect_present_vert, sizeof(a_effect_present_vert), glm::ivec4(0, 0, 0, 0), "main");
+		SDL_GPUShader* epFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT,
+			a_effect_present_frag, sizeof(a_effect_present_frag), glm::ivec4(2, 1, 0, 0), "main");
+		vg_pipeline_inputs inputs = {};
+		inputs.vertShader = epVert;
+		inputs.fragShader = epFrag;
+		inputs.colorFormat = ctx->colorFormat;
+		inputs.depthFormat = ctx->depthFormat;
+		inputs.samples = ctx->samples;
+		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+		inputs.depthTestEnable = false;
+		inputs.depthWriteEnable = false;
+		inputs.stencilTestEnable = false;
+		inputs.blendMode = blendMode_e::normal_prem;
+		inputs.vertexStride = 0;
+		inputs.numAttributes = 0;
+		inputs.ds.compare_mask = STENCIL_CLIP_BIT;
+		inputs.ds.write_mask = 0x0;
+		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_EQUAL;
+		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_KEEP;
+		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
+		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+		inputs.stencilBack = inputs.stencilFront;
+		ctx->pipeEffectComposite = create_graphics_pipeline(dev, &inputs, ctx);
+		if (epVert) SDL_ReleaseGPUShader(dev->gpuDevice, epVert);
+		if (epFrag) SDL_ReleaseGPUShader(dev->gpuDevice, epFrag);
+	}
 	// 释放 VG 着色器（管道已持有引用）
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgVert);
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgFrag);
@@ -1853,6 +1941,21 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 	ctx->samples = samples;
 	ctx->gpubuf = new OvgGpuBuffers();
 	ctx->gpubuf->init(dev->gpuDevice);
+	ctx->fxSupported = SDL_GPUTextureSupportsFormat(dev->gpuDevice,
+		SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+		SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+	if (ctx->fxSupported) {
+		SDL_GPUSamplerCreateInfo sci = {};
+		sci.min_filter = SDL_GPU_FILTER_NEAREST;
+		sci.mag_filter = SDL_GPU_FILTER_NEAREST;
+		sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+		sci.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+		sci.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+		sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+		sci.max_anisotropy = 1.0f;
+		ctx->fxSampler = SDL_CreateGPUSampler(dev->gpuDevice, &sci);
+	}
 	ctx->textures[0] = dev->emptyTexture;
 	ctx->next_image_id++;
 	init_vg_pipelines(ctx);
@@ -1888,6 +1991,23 @@ void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 	for (auto& [key, p] : ctx->geomPipelines) {
 		if (p.pipeline)      SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p.pipeline);
 		if (p.defaultSampler) SDL_ReleaseGPUSampler(ctx->device->gpuDevice, p.defaultSampler);
+	}
+	auto free_fx_set = [](fx_texture_set& s) {
+		if (s.mask) { destroy_texture(s.mask); s.mask = nullptr; }
+		if (s.tmp) { destroy_texture(s.tmp); s.tmp = nullptr; }
+		if (s.out) { destroy_texture(s.out); s.out = nullptr; }
+	};
+	for (auto& [key, list] : ctx->fxPool) {
+		for (auto& s : list) free_fx_set(s);
+	}
+	for (auto& s : ctx->fxPending) free_fx_set(s);
+	for (auto& s : ctx->fxUsed) free_fx_set(s);
+	ctx->fxPool.clear();
+	ctx->fxPending.clear();
+	ctx->fxUsed.clear();
+	if (ctx->fxSampler) {
+		SDL_ReleaseGPUSampler(ctx->device->gpuDevice, ctx->fxSampler);
+		ctx->fxSampler = nullptr;
 	}
 	ctx->textures.clear();
 	ctx->freepipe.clear();
@@ -2326,13 +2446,70 @@ void draw_ct(SDL_GPURenderPass* pass, vgcmd_t* c)
 		SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
 	}
 }
-void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip, const glm::uvec2& offset)
+static void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass, const fx_result_t* fx, SDL_Rect* clip)
+{
+	if (!fbo || !pass || !fx || !fx->tex) return;
+	ovg_ctx_t* ctx = fbo->ctx;
+	if (!ctx || !ctx->pipeEffectComposite || !ctx->fxSampler) return;
+	SDL_BindGPUGraphicsPipeline(pass, ctx->pipeEffectComposite);
+
+	int x0 = (int)fx->rect.x;
+	int y0 = (int)fx->rect.y;
+	int x1 = x0 + (int)fx->rect.z;
+	int y1 = y0 + (int)fx->rect.w;
+	if (clip && clip->w > 0 && clip->h > 0) {
+		x0 = std::max(x0, clip->x);
+		y0 = std::max(y0, clip->y);
+		x1 = std::min(x1, clip->x + clip->w);
+		y1 = std::min(y1, clip->y + clip->h);
+	}
+	x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+	x1 = std::min(x1, (int)fbo->width); y1 = std::min(y1, (int)fbo->height);
+	if (x1 <= x0 || y1 <= y0) return;
+	SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
+	SDL_SetGPUScissor(pass, &rc);
+
+	SDL_GPUTextureSamplerBinding b[2] = {
+		{ fx->mask->texture, ctx->fxSampler },
+		{ fx->tex->texture, ctx->fxSampler }
+	};
+	SDL_BindGPUFragmentSamplers(pass, 0, b, 2);
+	struct fx_present_params_t {
+		int mode;
+		float spread;
+		float opacity;
+		float pad0;
+		float offset[2];
+		float color[4];
+		float rect[4];
+	};
+	static_assert(sizeof(fx_present_params_t) == 56, "fx_present_params_t must match Slang layout");
+	fx_present_params_t pu = {};
+	pu.mode = fx->mode;
+	pu.spread = fx->spread;
+	pu.opacity = fx->opacity;
+	pu.offset[0] = fx->offset.x; pu.offset[1] = fx->offset.y;
+	pu.color[0] = fx->color.x; pu.color[1] = fx->color.y;
+	pu.color[2] = fx->color.z; pu.color[3] = fx->color.w;
+	pu.rect[0] = fx->rect.x; pu.rect[1] = fx->rect.y;
+	pu.rect[2] = fx->rect.z; pu.rect[3] = fx->rect.w;
+	SDL_PushGPUFragmentUniformData(ctx->currentCmdBuf, 0, &pu, sizeof(pu));
+	SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+
+	SDL_Rect full = { 0, 0, (int)fbo->width, (int)fbo->height };
+	SDL_SetGPUScissor(pass, (clip && clip->w > 0 && clip->h > 0) ? clip : &full);
+}
+
+void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cuclip, const glm::uvec2& offset, const fx_result_t* fx = nullptr)
 {
 	push_constants_t pc = {};
 	auto t = c->state;
 	bind_vbo_cached(fbo->ctx, pass, offset.x);
 	bind_ibo_cached(fbo->ctx, pass, offset.y);
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
+
+	if (fx && fx->tex && fx->mask && fx->mode != 1)
+		draw_effect_quad(fbo, pass, fx, cuclip);
 
 	if (t) {
 		int smax = std::max(fbo->width, fbo->height);
@@ -2397,6 +2574,8 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 	case 0:
 	case 1:
 		draw_ct(pass, c);
+		if (fx && fx->tex && fx->mask && fx->mode == 1)
+			draw_effect_quad(fbo, pass, fx, cuclip);
 		break;
 	case 2:
 	{
@@ -2747,27 +2926,29 @@ void deferred_free_push(ovg_ctx_t* ctx, sdl3gpu_texture* tex) {
 	ctx->texq.push(tex);
 }
 
+static void recycle_fx_sets(ovg_ctx_t* ctx);
+
 void deferred_free_advance(ovg_ctx_t* r) {
-	if (r->texq.size())
-	{
-		// 依赖上一帧的 fence：未 signaled 则 GPU 可能仍在使用纹理，推迟到下一帧
-		if (r->tex_free_fence && !SDL_QueryGPUFence(r->device->gpuDevice, r->tex_free_fence))
-			return;
-		if (r->tex_free_fence) {
-			SDL_ReleaseGPUFence(r->device->gpuDevice, r->tex_free_fence);
-			r->tex_free_fence = nullptr;
-		}
-		for (; r->texq.size();)
-		{
-			auto p = r->texq.front();
-			if (p && p->id > 0)
-			{
-				r->textures.erase(p->id);
-				destroy_texture(p);
-			}
-			r->texq.pop();
-		}
+	if (!r) return;
+	if (r->texq.empty() && r->fxPending.empty()) return;
+	// 依赖上一帧的 fence：未 signaled 则 GPU 可能仍在使用纹理，推迟到下一帧
+	if (r->tex_free_fence && !SDL_QueryGPUFence(r->device->gpuDevice, r->tex_free_fence))
+		return;
+	if (r->tex_free_fence) {
+		SDL_ReleaseGPUFence(r->device->gpuDevice, r->tex_free_fence);
+		r->tex_free_fence = nullptr;
 	}
+	for (; r->texq.size();)
+	{
+		auto p = r->texq.front();
+		if (p && p->id > 0)
+		{
+			r->textures.erase(p->id);
+			destroy_texture(p);
+		}
+		r->texq.pop();
+	}
+	recycle_fx_sets(r);
 }
 
 int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd) {
@@ -2833,6 +3014,177 @@ int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd)
 	upload_result_t hr = upload_pixels_batched(ctx, cmd, uploads.data(), uploads.size());
 	return errornum;
 }
+
+// ========================================================================
+// 矢量特效：掩码 -> 模糊 -> 合成
+// ========================================================================
+struct fx_blur_params_t {
+	glm::vec2 texel;
+	float sigma;
+	int axis;
+};
+
+static sdl3gpu_texture* new_effect_texture(ovg_ctx_t* ctx, int w, int h)
+{
+	return new_texture(ctx->device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, w, h,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+		SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+}
+
+static uint64_t fx_pool_key(int w, int h)
+{
+	return ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+}
+
+static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h)
+{
+	fx_texture_set s = {};
+	uint64_t key = fx_pool_key(w, h);
+	auto it = ctx->fxPool.find(key);
+	if (it != ctx->fxPool.end() && !it->second.empty()) {
+		s = it->second.back();
+		it->second.pop_back();
+	}
+	else {
+		s.width = w;
+		s.height = h;
+		s.mask = new_effect_texture(ctx, w, h);
+		s.tmp = new_effect_texture(ctx, w, h);
+		s.out = new_effect_texture(ctx, w, h);
+	}
+	if (s.mask && s.tmp && s.out)
+		ctx->fxUsed.push_back(s);
+	return s;
+}
+
+static void recycle_fx_sets(ovg_ctx_t* ctx)
+{
+	for (auto& s : ctx->fxPending) {
+		if (s.mask && s.tmp && s.out)
+			ctx->fxPool[fx_pool_key(s.width, s.height)].push_back(s);
+	}
+	ctx->fxPending.clear();
+}
+
+static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	ovg_draw_data_t* kd, vgcmd_t* c, sdl3gpu_texture* mask,
+	const glm::ivec4& roi, const glm::ivec2& fbo_size)
+{
+	if (!ctx || !cmd || !kd || !c || !c->state || !mask || roi.z <= 0 || roi.w <= 0)
+		return;
+	SDL_GPUColorTargetInfo ct = {};
+	ct.texture = mask->texture;
+	ct.load_op = SDL_GPU_LOADOP_CLEAR;
+	ct.store_op = SDL_GPU_STOREOP_STORE;
+	ct.clear_color = { 0, 0, 0, 0 };
+	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+	if (!pass) return;
+
+	set_viewport2d(pass, fbo_size);
+	SDL_Rect sc = { 0, 0, roi.z, roi.w };
+	SDL_SetGPUScissor(pass, &sc);
+	SDL_BindGPUGraphicsPipeline(pass, ctx->pipeEffectMask);
+
+	ctx->bind_dirty = true;
+	bind_vbo_cached(ctx, pass, kd->vg_offset.x);
+	bind_ibo_cached(ctx, pass, kd->vg_offset.y);
+
+	push_constants_t pc = c->state->pushConsts;
+	pc.size = { (float)fbo_size.x, (float)fbo_size.y };
+	pc.source = { 1, 1, 1, 1 };
+	pc.fsq_patternType = VG_PATTERN_TYPE_SOLID;
+	pc.opacity = 1.0f;
+	SDL_PushGPUVertexUniformData(cmd, 0, &pc, sizeof(pc));
+	vg_gradient_t gr = {};
+	SDL_PushGPUFragmentUniformData(cmd, 0, &gr, sizeof(gr));
+
+	SDL_GPUTextureSamplerBinding empty = {
+		ctx->device->emptyTexture->texture, ctx->device->emptyTexture->sampler };
+	SDL_BindGPUFragmentSamplers(pass, 0, &empty, 1);
+
+	if (c->index.y > 0)
+		SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, c->vertex.x, 0);
+	else
+		SDL_DrawGPUPrimitives(pass, c->vertex.y, 1, c->vertex.x, 0);
+
+	SDL_EndGPURenderPass(pass);
+	ctx->bind_dirty = true;
+}
+
+static void dispatch_fx_compute(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	SDL_GPUComputePipeline* pipe, sdl3gpu_texture* dst,
+	sdl3gpu_texture* src0, sdl3gpu_texture* src1,
+	const void* params, uint32_t params_size, int w, int h)
+{
+	if (!ctx || !cmd || !pipe || !dst || !src0 || w <= 0 || h <= 0)
+		return;
+	compute_pass cp;
+	cp.add_rw_texture(dst->texture, 0, 0, false);
+	cp.begin(cmd);
+	if (!cp.pass) return;
+	cp.bind_pipe(pipe);
+	cp.push_texture(src0->texture, ctx->fxSampler);
+	if (src1) cp.push_texture(src1->texture, ctx->fxSampler);
+	cp.push_uniformdata(0, params, params_size);
+	cp.dispatch(glm::uvec3((uint32_t)((w + 7) / 8), (uint32_t)((h + 7) / 8), 1));
+	cp.end();
+}
+
+static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	ovg_draw_data_t* kd, vgcmd_t* c, vg_fbo_t* fbo, fx_result_t* out)
+{
+	if (!out) return;
+	out->tex = nullptr;
+	if (!ctx || !ctx->fxSupported || !cmd || !kd || !c || !c->state || !fbo)
+		return;
+	const vg_effect_t& e = c->state->effect;
+	if (c->ref < 0 || e.type == VG_EFFECT_NONE || e.opacity <= 0.0f)
+		return;
+	if (((e.color >> 24) & 0xFF) == 0)
+		return;
+
+	int x0 = 0;
+	int y0 = 0;
+	int x1 = (int)fbo->width;
+	int y1 = (int)fbo->height;
+	if (x1 <= x0 || y1 <= y0) return;
+	int w = x1 - x0;
+	int h = y1 - y0;
+
+	fx_texture_set set = acquire_fx_set(ctx, w, h);
+	if (!set.mask || !set.tmp || !set.out) return;
+
+	render_effect_mask(ctx, cmd, kd, c, set.mask, glm::ivec4(x0, y0, w, h),
+		glm::ivec2((int)fbo->width, (int)fbo->height));
+
+	if (e.sigma > 0.01f) {
+		fx_blur_params_t bp = {};
+		bp.texel = { 1.0f / w, 1.0f / h };
+		bp.sigma = e.sigma;
+		bp.axis = 0;
+		dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.tmp,
+			set.mask, nullptr, &bp, sizeof(bp), w, h);
+		bp.axis = 1;
+		dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.out,
+			set.tmp, nullptr, &bp, sizeof(bp), w, h);
+	}
+
+	sdl3gpu_texture* blurred = (e.sigma > 0.01f) ? set.out : set.mask;
+	out->tex = blurred;
+	out->mask = set.mask;
+	out->rect = glm::vec4((float)x0, (float)y0, (float)w, (float)h);
+	out->color = glm::vec4(
+		(float)(e.color & 0xFF) / 255.0f,
+		(float)((e.color >> 8) & 0xFF) / 255.0f,
+		(float)((e.color >> 16) & 0xFF) / 255.0f,
+		(float)((e.color >> 24) & 0xFF) / 255.0f);
+	out->offset = e.offset;
+	out->spread = e.spread;
+	out->opacity = e.opacity;
+	out->mode = (e.type == VG_EFFECT_OUTER_GLOW) ? 0 :
+		(e.type == VG_EFFECT_INNER_GLOW) ? 1 : 2;
+}
+
 #if 0
 void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count)
 {
@@ -2911,6 +3263,7 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	}
 	if (!cmd)return;
 	deferred_free_advance(ctx);   // 帧首尝试释放：此时 fence 为上一帧所提交，可能已完成
+	ctx->fxUsed.clear();
 	size_t total_vbo = 0;
 	size_t total_ibo = 0;
 	size_t total_ssbo = 0;
@@ -2920,7 +3273,9 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	for (size_t i = 0; i < count; i++) {
 		auto kd = &data[i];
 		if (!kd->fbo || !(kd->fbo->window || kd->fbo->colorTex))continue;
-		tfb.push_back(*kd);
+		render_item_t item;
+		item.data = *kd;
+		tfb.push_back(std::move(item));
 		total_vbo += data[i].v_count * sizeof(ovgVertex);
 		total_vbo += data[i].v1_count * sizeof(geomVertex1);
 		total_vbo += data[i].v2_count * sizeof(geomVertex2);
@@ -2938,9 +3293,9 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	assert(errornum == 0);
 	ctx->currentCmdBuf = cmd;
 	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
-	std::stable_sort(tfb.begin(), tfb.end(), [](const ovg_draw_data_t& a, const ovg_draw_data_t& b) { return a.fbo < b.fbo; });
+	std::stable_sort(tfb.begin(), tfb.end(), [](const render_item_t& a, const render_item_t& b) { return a.data.fbo < b.data.fbo; });
 	for (size_t i = 0; i < tfb.size(); i++) {
-		auto kd = &tfb[i];
+		auto kd = &tfb[i].data;
 		kd->vg_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
 		kd->vg_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
 		kd->geom_offset.x = ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
@@ -2949,12 +3304,40 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
 	}
 	ctx->gpubuf->end(cmd);
+
+	// 主 RenderPass 之前先完成所有特效的离屏掩码/模糊/合成
+	if (ctx->fxSupported) {
+		for (size_t d = 0; d < tfb.size(); d++) {
+			auto& item = tfb[d];
+			auto kd = &item.data;
+			int maxslot = -1;
+			for (size_t i = 0; i < kd->count; i++) {
+				auto& it = kd->d[i];
+				if ((cmd_type_e)it.g.stype != cmd_type_e::DRAW_VG) continue;
+				auto& cc = it.vg;
+				if ((cc.type == 0 || cc.type == 1) && cc.state &&
+					cc.state->effect.type != VG_EFFECT_NONE && cc.ref >= 0)
+					maxslot = std::max(maxslot, (int)cc.ref);
+			}
+			if (maxslot < 0) continue;
+			item.fx.assign((size_t)maxslot + 1, fx_result_t{});
+			for (size_t i = 0; i < kd->count; i++) {
+				auto& it = kd->d[i];
+				if ((cmd_type_e)it.g.stype != cmd_type_e::DRAW_VG) continue;
+				auto& cc = it.vg;
+				if ((cc.type == 0 || cc.type == 1) && cc.state &&
+					cc.state->effect.type != VG_EFFECT_NONE && cc.ref >= 0)
+					prepare_effect(ctx, cmd, kd, &cc, kd->fbo, &item.fx[(size_t)cc.ref]);
+			}
+		}
+	}
 	vg_fbo_t* current_fbo = nullptr;
 
 	SDL_Rect cuClip = {};
 	for (size_t d = 0; d < tfb.size(); d++)
 	{
-		auto kd = &tfb[d];
+		auto& item = tfb[d];
+		auto kd = &item.data;
 		vg_fbo_t* fbo = kd->fbo;
 		if (fbo != current_fbo) {
 			if (current_fbo) {
@@ -2971,7 +3354,11 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 			switch ((cmd_type_e)it.g.stype) {
 			case cmd_type_e::DRAW_VG:
 			{
-				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset);
+				const fx_result_t* fx = nullptr;
+				if (it.vg.state && it.vg.state->effect.type != VG_EFFECT_NONE &&
+					it.vg.ref >= 0 && (size_t)it.vg.ref < item.fx.size())
+					fx = &item.fx[(size_t)it.vg.ref];
+				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset, fx);
 			}
 			break;
 			case cmd_type_e::DRAW_GEOM:
@@ -2991,6 +3378,9 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	}
 	ctx->tex_free_fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
 	ctx->currentCmdBuf = 0;
+	for (auto& s : ctx->fxUsed)
+		ctx->fxPending.push_back(s);
+	ctx->fxUsed.clear();
 }
 
 sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)

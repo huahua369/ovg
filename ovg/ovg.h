@@ -43,6 +43,8 @@ struct ovg_canvas_cb {
 	vg_state_save_t* (*new_state)(mem_resource_t* ac);
 	void (*state_destroy)(vg_state_save_t* p);
 	void(*set_opacity)(vg_state_save_t* ctx, float opacity);
+	// 设置路径特效，effect 为 NULL 或 type=NONE 时关闭
+	void(*set_effect)(vg_state_save_t* ctx, const vg_effect_t* effect);
 	void(*set_source_color)(vg_state_save_t* ctx, uint32_t c);
 	void(*set_source_rgba)(vg_state_save_t* ctx, float r, float g, float b, float a);
 	void(*set_source_rgb)(vg_state_save_t* ctx, float r, float g, float b);

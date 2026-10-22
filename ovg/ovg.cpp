@@ -1524,6 +1524,19 @@ vg_pattern_t* ovg_pattern_create_for_surface(usp_ac_cx* ac, void* surf) {
 void ovg_set_opacity(vg_state_save_t* ctx, float opacity) {
 	if (ctx)ctx->pushConsts.opacity = opacity;
 }
+void ovg_set_effect(vg_state_save_t* ctx, const vg_effect_t* effect) {
+	if (!ctx) return;
+	if (!effect || effect->type == VG_EFFECT_NONE || effect->type > VG_EFFECT_SHADOW) {
+		ctx->effect = {};
+		return;
+	}
+	ctx->effect = *effect;
+	if (ctx->effect.sigma < 0.0f) ctx->effect.sigma = 0.0f;
+	if (ctx->effect.opacity < 0.0f) ctx->effect.opacity = 0.0f;
+	if (ctx->effect.opacity > 1.0f) ctx->effect.opacity = 1.0f;
+	if (ctx->effect.spread < -1.0f) ctx->effect.spread = -1.0f;
+	if (ctx->effect.spread > 1.0f) ctx->effect.spread = 1.0f;
+}
 void ovg_set_source_color(vg_state_save_t* ctx, uint32_t c) {
 	if (ctx)
 	{
@@ -2089,6 +2102,7 @@ struct rvg_cx :public rvg_t {
 	size_t gCount = 0;	// ubo数量
 	size_t _curVertOffset = 0;
 	uint32_t curColor = 0;
+	uint32_t fxCount = 0;	// 本draw list的特效槽位计数
 	glm::ivec4 curClip = {};
 	std::stack<vg_state_save_t*> _cst;	// 保存栈 
 public:
@@ -2122,6 +2136,8 @@ public:
 	void _add_triangle_indices(ovg_path_t* ctx, uint32_t i0, uint32_t i1, uint32_t i2);
 	void _add_tri_indices_for_rect(uint32_t i);
 	void _add_vertexf(ovg_path_t* ctx, float x, float y);
+	// 计算特效ROI并分配槽位，写入cmd.ref/cmd.bounds
+	void apply_effect_bounds(vgcmd_t* c, bool isStroke);
 	// 复制状态，自动释放
 	void cp_cmdt(vgcmd_t* c, vg_state_save_t* t);
 
@@ -2155,6 +2171,7 @@ void rvg_cx::clear_all()
 	ovg_clear_path(path);
 	_curVertOffset = 0;
 	gCount = 0;
+	fxCount = 0;
 	mac.release();
 	_vertex.clear();
 	_indices.clear();
@@ -2195,6 +2212,7 @@ void rvg_cx::stroke_preserve()
 	c.index.x = _indices.size();
 	c.type = 1;
 	cp_cmdt(&c, st);
+	apply_effect_bounds(&c, true);
 	ctx->curVertOffset = c.vertex.x;
 	stroke_context_t str = { 0 };
 	str.hw = p->t->lineWidth * 0.5f;
@@ -2324,6 +2342,46 @@ void rvg_cx::stroke_preserve()
 
 }
 
+void rvg_cx::apply_effect_bounds(vgcmd_t* c, bool isStroke)
+{
+	if (!c || !st || st->effect.type == VG_EFFECT_NONE || st->effect.opacity <= 0.0f)
+		return;
+	if (((st->effect.color >> 24) & 0xFF) == 0)
+		return;
+	float x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+	ovg_path_extents(path, &x1, &y1, &x2, &y2);
+	if (!(x2 > x1) || !(y2 > y1))
+		return;
+	// 描边几何在路径两侧展开
+	float grow = 0.0f;
+	if (isStroke && st->lineWidth > 0.0f) {
+		float ml = st->miterLimit > 1.0f ? st->miterLimit : 2.0f;
+		if (ml > 10.0f) ml = 10.0f;
+		grow = st->lineWidth * 0.5f * ml;
+	}
+	x1 -= grow; y1 -= grow; x2 += grow; y2 += grow;
+	// 变换到设备空间
+	const glm::vec2 corners[4] = {
+		{x1, y1}, {x2, y1}, {x1, y2}, {x2, y2}
+	};
+	float minx = FLT_MAX, miny = FLT_MAX, maxx = -FLT_MAX, maxy = -FLT_MAX;
+	for (int i = 0; i < 4; i++) {
+		glm::vec2 p = st->pushConsts.mat * glm::vec3(corners[i], 1.0f);
+		minx = std::min(minx, p.x); miny = std::min(miny, p.y);
+		maxx = std::max(maxx, p.x); maxy = std::max(maxy, p.y);
+	}
+	const auto& fx = st->effect;
+	float pad = ceilf(fx.sigma * 3.0f) + fabsf(fx.spread) * fx.sigma * 2.0f
+		+ fabsf(fx.offset.x) + fabsf(fx.offset.y) + 2.0f;
+	if (fxCount >= 127) {
+		c->ref = -1;
+		return;
+	}
+	c->ref = (int8_t)fxCount++;
+	c->bounds = glm::vec4(minx - pad, miny - pad,
+		(maxx - minx) + pad * 2.0f, (maxy - miny) + pad * 2.0f);
+}
+
 void rvg_cx::fill_preserve()
 {
 	o_finish_path(path);
@@ -2341,6 +2399,7 @@ void rvg_cx::fill_preserve()
 	c.index.x = _indices.size();
 	c.type = 0;
 	cp_cmdt(&c, st);
+	apply_effect_bounds(&c, false);
 	p->curVertOffset = c.vertex.x;
 	fill_non_zero(p);
 	c.vertex.y = _vertex.size() - c.vertex.x;
@@ -3349,6 +3408,7 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 	cb->new_state = ovg_new_state;
 	cb->state_destroy = ovg_state_destroy;
 	cb->set_opacity = ovg_set_opacity;
+	cb->set_effect = ovg_set_effect;
 	cb->set_source_color = ovg_set_source_color;
 	cb->set_source_rgba = ovg_set_source_rgba;
 	cb->set_source_rgb = ovg_set_source_rgb;
@@ -4213,6 +4273,7 @@ void vctx_rel_elliptic_arc_to(rvg_t* ctx, float x, float y, bool large_arc_flag,
 void vctx_circle(rvg_t* ctx, float x, float y, float radius);
 // 配置
 void vctx_set_opacity(rvg_t* ctx, float opacity);
+void vctx_set_effect(rvg_t* ctx, const vg_effect_t* effect);
 void vctx_set_source_color(rvg_t* ctx, uint32_t c);
 void vctx_set_source_rgba(rvg_t* ctx, float r, float g, float b, float a);
 void vctx_set_source_rgb(rvg_t* ctx, float r, float g, float b);
@@ -4439,6 +4500,9 @@ void vctx_circle(rvg_t* ctx, float x, float y, float radius) {
 // 配置 
 void vctx_set_opacity(rvg_t* ctx, float opacity) {
 	if (ctx) ovg_set_opacity(ctx->st, opacity);
+}
+void vctx_set_effect(rvg_t* ctx, const vg_effect_t* effect) {
+	if (ctx) ovg_set_effect(ctx->st, effect);
 }
 
 void vctx_set_source_color(rvg_t* ctx, uint32_t c) {
@@ -4805,6 +4869,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->rel_elliptic_arc_to = vctx_rel_elliptic_arc_to;
 	cb->circle = vctx_circle;
 	cb->set_opacity = vctx_set_opacity;
+	cb->set_effect = vctx_set_effect;
 	cb->set_source_color = vctx_set_source_color;
 	cb->set_source_rgba = vctx_set_source_rgba;
 	cb->set_source_rgb = vctx_set_source_rgb;

@@ -662,6 +662,45 @@ void draw_test3d(vg_fbo_t* fbo, ovg_ctx_cb* cb, rvg_t* vg) {
 	cb->add_image(vg, &rimg);
 }
 
+void draw_effects(ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vg_effect_t fx = {};
+	// 外发光
+	fx.type = VG_EFFECT_OUTER_GLOW;
+	fx.color = 0xC0FFFF00;	// 青色
+	fx.sigma = 14.0f;
+	fx.spread = 0.15f;
+	fx.opacity = 1.0f;
+	cb->set_effect(vg, &fx);
+	cb->set_source_color(vg, 0xFF303030);
+	cb->rounded_rectangle(vg, 690, 500, 250, 70, 16);
+	cb->fill(vg);
+
+	// 阴影
+	fx.type = VG_EFFECT_SHADOW;
+	fx.color = 0xC0000000;
+	fx.sigma = 10.0f;
+	fx.spread = 0.2f;
+	fx.offset = { 8.0f, 10.0f };
+	cb->set_effect(vg, &fx);
+	cb->set_source_color(vg, 0xFF2050C0);
+	cb->rounded_rectangle(vg, 690, 600, 250, 70, 16);
+	cb->fill(vg);
+
+	// 内发光
+	fx.type = VG_EFFECT_INNER_GLOW;
+	fx.color = 0xE0FFFFFF;
+	fx.sigma = 12.0f;
+	fx.spread = 0.0f;
+	fx.offset = { 0.0f, 0.0f };
+	cb->set_effect(vg, &fx);
+	cb->set_source_color(vg, 0xFF101010);
+	cb->rounded_rectangle(vg, 690, 700, 250, 70, 16);
+	cb->fill(vg);
+
+	cb->set_effect(vg, nullptr);
+}
+
 int main()
 {
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
@@ -761,6 +800,7 @@ int main()
 		run_dst->text_shape(&text4);
 	}
 	bool testvg = true;
+	bool fx_test = getenv("OVG_FX_TEST") != nullptr;
 
 	SDL_Event e = {};
 	while (running) {
@@ -772,6 +812,19 @@ int main()
 		}
 		if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
 		{
+			if (fx_test) {
+				cb->clear(vg);
+				cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
+				cb->reset_clip(vg, 1);
+				cb->set_source_color(vg, 0xffe8e8e8);
+				cb->paint(vg);
+				draw_effects(cb, vg);
+				vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
+				ovg_draw_data_t dl[] = { get_draw_list(vg) };
+				dl[0].fbo = &fbo;
+				ovg_render_frame(ctx, dl, 1);
+				continue;
+			}
 			rtc.begin();
 			cb->clear(vg);
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
@@ -780,6 +833,7 @@ int main()
 			cb->reset_clip(vg, 1);
 			if (testvg)
 				draw(cb, vg, fbo.display_size);// 录制图元
+			draw_effects(cb, vg);
 
 			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
 
