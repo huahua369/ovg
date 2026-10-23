@@ -730,6 +730,46 @@ typedef struct ovg_image_r
 	uint32_t color;		// 混合颜色
 	int8_t type;		// img的类型
 }ovg_image_r;
+
+/*
+ * 原生 GPU 纹理句柄（值类型）。
+ *
+ * 由后端通过 ovg_texture_init_native / ovg_texture_update_native 填充，
+ * 只借用调用方的 SDL_GPUTexture，不负责释放。句柄地址必须保持稳定，直到
+ * 本次录制的 draw data 被渲染器消费完成。
+ */
+typedef struct ovg_texture_t
+{
+	vg_image_t image;
+}ovg_texture_t;
+
+/*
+ * 原生纹理绘制参数。
+ *
+ * - rc:     源纹理区域 {x,y,w,h}；x < 0 或 w/h <= 0 表示整张纹理。
+ * - sliced: 九宫格边宽 {left,top,right,bottom}；x <= 0 表示不切片。
+ * - dst:    目标矩形 {x,y,w,h}，必须为正。
+ * - color:  顶点颜色/tint（直通乘到纹理采样结果）。
+ * - flip:   ImageFlipMode 位组合，按目标矩形中心镜像整个结果。
+ * - angle:  旋转角度（度）。center_set != 0 时 center 为相对 dst 左上角的
+ *           旋转中心；否则使用 dst 中心。
+ * - matrix: 可选的 glm::mat3x2（列主序），在翻转/旋转之后应用。
+ *
+ * 先在 CPU 端生成顶点，再依次执行翻转、旋转、矩阵变换；UV 保持不变。
+ */
+typedef struct ovg_texture_r
+{
+	ovg_texture_t* tex;
+	ivec4 rc;
+	ivec4 sliced;
+	ivec4 dst;
+	uint32_t color;
+	int8_t flip;
+	int8_t center_set;
+	float angle;
+	vec2 center;
+	const void* matrix;
+}ovg_texture_r;
 typedef struct text_st_t {
 	vec2 pos;
 	vec2 size;
@@ -899,6 +939,8 @@ typedef struct ovg_ctx_cb {
 	void (*add_text)(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box);
 	// 普通图片，支持九宫格、混合颜色
 	void (*add_image)(rvg_t* dc, ovg_image_r* r);
+	// 原生纹理，支持源裁剪、tint、翻转、九宫格、旋转、矩阵，按当前 clip 裁剪
+	void (*add_texture)(rvg_t* dc, ovg_texture_r* r);
 
 	// 原始三角形
 	// gem_info_t或矩阵输入空指针则不修改该值

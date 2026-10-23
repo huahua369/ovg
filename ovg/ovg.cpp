@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -1949,6 +1950,11 @@ public:
 	void add_image_sliced(void* user_image, const glm::ivec2& texsize, const glm::ivec4& a, const glm::ivec4& sliced, const glm::ivec4& rect, uint32_t col, const glm::ivec4& clip);
 	// 添加旋转图片渲染，angle为旋转角度，center为旋转中心坐标（相对于dst）
 	void add_image_angle(void* img, const glm::ivec2& texsize, const glm::ivec4& src, const glm::ivec4& dst, float angle, const glm::vec2* center, uint32_t col, const glm::ivec4& clip, int flip);
+	// 原生纹理：源裁剪、tint、翻转、九宫格、旋转、矩阵。clip 为 {x,y,x1,y1}。
+	void add_texture0(void* img, const glm::ivec2& texsize, const glm::ivec4& clip,
+		const glm::ivec4& dst, const glm::ivec4& src, const glm::ivec4& sliced,
+		uint32_t color, int flip, float angle, const glm::vec2& center,
+		bool center_set, const glm::mat3x2* matrix);
 private:
 
 };
@@ -1994,6 +2000,7 @@ public:
 		, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 
 	void add_image(ovg_image_r* r);
+	void add_texture(ovg_texture_r* r);
 };
 
 // Keeps temporary states/patterns alive until rvg_cx::clear_all().  Memory is
@@ -2447,6 +2454,9 @@ void rvg_cx::clip_preserve()
 }
 void rvg_cx::clip0(uint8_t ref)
 {
+	// reset_clip 同时清空矩形裁剪状态；否则后续 add_texture/add_image 仍会
+	// 读取上一帧的 curClip 并在 CPU 端提前剔除。
+	curClip = {};
 	vgcmd_t c = { .full_screen_quad = -1 };
 	c.type = 2;
 	c.ref = ref;
@@ -3343,6 +3353,15 @@ void  ovg_add_image(rvg_t* v0, ovg_image_r* r)
 		dc->gps.add_image(r);
 	}
 }
+// 原生纹理，支持源裁剪、tint、翻转、九宫格、旋转、矩阵，按当前 clip 裁剪
+void ovg_add_texture(rvg_t* v0, ovg_texture_r* r)
+{
+	auto dc = (rvg_cx*)v0;
+	if (dc && r && r->tex) {
+		dc->gps.set_viewport({ 0,0,dc->width,dc->height });
+		dc->gps.add_texture(r);
+	}
+}
 // 原始三角形，输入0则不修改
 void  ovg_set_geom_state(rvg_t* v0, gem_info_t* info, const glm::mat4* matrix)
 {
@@ -3469,6 +3488,7 @@ void init_ovg_cb(ovg_canvas_cb* cb) {
 	cb->get_clip_rect = ovg_get_clip_rect;
 	cb->add_text = ovg_add_text;
 	cb->add_image = ovg_add_image;
+	cb->add_texture = ovg_add_texture;
 	cb->set_geom_state = (void (*)(rvg_t*, gem_info_t*, const void*)) ovg_set_geom_state;
 	cb->set_instance_mat = (size_t(*)(rvg_t*, const void*, size_t)) ovg_set_instance_mat;
 	cb->add_geometry = ovg_add_geometry;
@@ -3855,6 +3875,41 @@ void geom_primitive::add_image(ovg_image_r* r)
 	add_image0(r->img, { r->img->width,r->img->height }, {}, r->dst, r->rc, r->sliced, r->color);
 	draw_mesh2d_x(dc, this, { 1.0,1.0 });
 }
+
+void geom_primitive::add_texture(ovg_texture_r* r)
+{
+	if (!dc || !r || !r->tex || r->tex->image.id == 0)return;
+	const int tw = r->tex->image.width;
+	const int th = r->tex->image.height;
+	if (tw <= 0 || th <= 0 || r->dst.z <= 0 || r->dst.w <= 0)return;
+
+	// curClip 使用 {x,y,w,h}；draw_mesh2d_x 的 mesh 命令使用 {x,y,x1,y1}。
+	glm::ivec4 clip = dc->curClip;
+	if (clip.z <= 0 || clip.w <= 0)
+		clip = {};
+	set_clip(clip);
+	if (nohas_clip(r->dst))
+	{
+		clear_m2d();
+		return;
+	}
+	glm::ivec4 mesh_clip = {};
+	if (clip.z > 0 && clip.w > 0)
+		mesh_clip = { clip.x, clip.y, clip.x + clip.z, clip.y + clip.w };
+
+	add_texture0(&r->tex->image, { tw, th }, mesh_clip, r->dst, r->rc, r->sliced,
+		r->color, r->flip, r->angle, { r->center.x, r->center.y },
+		r->center_set != 0, (const glm::mat3x2*)r->matrix);
+
+	// 空 mesh 不能调用 draw_mesh2d_x：它会把 scissor 改成 viewport，
+	// 且不会执行末尾的 oldclip 恢复。
+	if (vtxs.empty())
+	{
+		clear_m2d();
+		return;
+	}
+	draw_mesh2d_x(dc, this, { 1.0,1.0 });
+}
 #if 1
 
 mesh2d_x::mesh2d_x()
@@ -4048,7 +4103,8 @@ sliced.x=左宽，y上高，z右宽，w下高
 */
 void mesh2d_x::add_image_sliced(void* user_image, const glm::ivec2& texsize, const glm::ivec4& a, const glm::ivec4& sliced, const glm::ivec4& rect, uint32_t col, const glm::ivec4& clip)
 {
-	static std::vector<int> vt_index =// { 0,8,12,4,14,6,2,10,11,6,7,4,5,8,9,1,5,13,7,15,11,3 };//E_TRIANGLE_STRIP
+	// add() 合批时会修改索引数组，所以这里使用局部副本。
+	int vt_index[] =// { 0,8,12,4,14,6,2,10,11,6,7,4,5,8,9,1,5,13,7,15,11,3 };//E_TRIANGLE_STRIP
 	{ 0, 8, 12, 8, 12, 4, 12, 4, 14, 4, 14, 6, 14, 6, 2, 6, 2, 10,
 		6, 7, 10, 7, 10, 11, 4, 5, 6, 5, 6, 7, 8, 9, 4, 9, 4, 5,
 		9, 1, 5, 1, 5, 13, 5, 13, 7, 13, 7, 15, 7, 15, 11, 15, 11, 3 };//E_TRIANGLE_LIST
@@ -4105,10 +4161,160 @@ void mesh2d_x::add_image_sliced(void* user_image, const glm::ivec2& texsize, con
 		{ { x + width - right, y + height },{ suv.z, uv.w }, col }
 	};
 
-	add(user_image, vertex, 16, vt_index.data(), vt_index.size(), clip);
+	add(user_image, vertex, 16, vt_index, sizeof(vt_index) / sizeof(vt_index[0]), clip);
 
 	return;
 }
+void mesh2d_x::add_texture0(void* img, const glm::ivec2& texsize, const glm::ivec4& clip,
+	const glm::ivec4& dst, const glm::ivec4& src, const glm::ivec4& sliced,
+	uint32_t color, int flip, float angle, const glm::vec2& center,
+	bool center_set, const glm::mat3x2* matrix)
+{
+	if (!img || texsize.x <= 0 || texsize.y <= 0 || dst.z <= 0 || dst.w <= 0)
+		return;
+
+	// 源区域；x < 0 或宽高非法表示整张纹理。
+	glm::vec4 s4 = { 0, 0, (float)texsize.x, (float)texsize.y };
+	glm::vec4 uv = { 0, 0, 1, 1 };
+	if (src.x >= 0 && src.z > 0 && src.w > 0)
+	{
+		const float sx = (float)std::max(src.x, 0);
+		const float sy = (float)std::max(src.y, 0);
+		const float ex = (float)std::min(src.x + src.z, texsize.x);
+		const float ey = (float)std::min(src.y + src.w, texsize.y);
+		if (ex <= sx || ey <= sy)
+			return;
+		s4 = { sx, sy, ex, ey };
+		uv = { sx / texsize.x, sy / texsize.y, ex / texsize.x, ey / texsize.y };
+	}
+
+	const float x = (float)dst.x;
+	const float y = (float)dst.y;
+	const float width = (float)dst.z;
+	const float height = (float)dst.w;
+	const float dst_cx = x + width * 0.5f;
+	const float dst_cy = y + height * 0.5f;
+	const float rot_cx = center_set ? x + center.x : dst_cx;
+	const float rot_cy = center_set ? y + center.y : dst_cy;
+	const bool flip_x = (flip & FLIP_HORIZONTAL) != 0;
+	const bool flip_y = (flip & FLIP_VERTICAL) != 0;
+	const bool rotate = angle != 0.0f;
+	const float rad = glm::radians(angle);
+	const float cs = std::cos(rad);
+	const float sn = std::sin(rad);
+
+	auto xform = [&](glm::vec2 p) -> glm::vec2
+	{
+		if (flip_x) p.x = dst_cx * 2.0f - p.x;
+		if (flip_y) p.y = dst_cy * 2.0f - p.y;
+		if (rotate)
+		{
+			const float dx = p.x - rot_cx;
+			const float dy = p.y - rot_cy;
+			p.x = rot_cx + cs * dx - sn * dy;
+			p.y = rot_cy + sn * dx + cs * dy;
+		}
+		if (matrix)
+		{
+			const glm::vec2 q = (*matrix) * glm::vec3(p.x, p.y, 1.0f);
+			p = q;
+		}
+		return p;
+	};
+
+	if (sliced.x <= 0)
+	{
+		vertex_t vertex[] = {
+			{ { x, y }, { uv.x, uv.y }, color },
+			{ { x + width, y }, { uv.z, uv.y }, color },
+			{ { x + width, y + height }, { uv.z, uv.w }, color },
+			{ { x, y + height }, { uv.x, uv.w }, color },
+		};
+		for (auto& v : vertex)
+			v.position = xform(v.position);
+		int rect_index_order[] = { 0, 1, 2, 0, 2, 3 };
+		add(img, vertex, 4, rect_index_order, 6, clip);
+		return;
+	}
+
+	// 九宫格边宽同时用于目标布局。目标过小时按比例压缩，避免出现负宽高。
+	float left = (float)std::max(sliced.x, 0);
+	float top = (float)std::max(sliced.y, 0);
+	float right = (float)std::max(sliced.z, 0);
+	float bottom = (float)std::max(sliced.w, 0);
+	if (left + right > width && left + right > 0.0f)
+	{
+		const float k = width / (left + right);
+		left *= k;
+		right *= k;
+	}
+	if (top + bottom > height && top + bottom > 0.0f)
+	{
+		const float k = height / (top + bottom);
+		top *= k;
+		bottom *= k;
+	}
+
+	// 源纹理上的边宽按源区域裁剪；目标边宽仍使用上面的值。
+	const float src_w = s4.z - s4.x;
+	const float src_h = s4.w - s4.y;
+	const float src_left = std::min(left, src_w);
+	const float src_top = std::min(top, src_h);
+	const float src_right = std::min(right, std::max(0.0f, src_w - src_left));
+	const float src_bottom = std::min(bottom, std::max(0.0f, src_h - src_top));
+	const glm::vec4 suv = {
+		(s4.x + src_left) / texsize.x,
+		(s4.y + src_top) / texsize.y,
+		(s4.z - src_right) / texsize.x,
+		(s4.w - src_bottom) / texsize.y,
+	};
+
+	vertex_t vertex[] = {
+		// 0
+		{ { x, y }, { uv.x, uv.y }, color },
+		// 1
+		{ { x, y + height }, { uv.x, uv.w }, color },
+		// 2
+		{ { x + width, y }, { uv.z, uv.y }, color },
+		// 3
+		{ { x + width, y + height }, { uv.z, uv.w }, color },
+		// 4
+		{ { x + left, y + top }, { suv.x, suv.y }, color },
+		// 5
+		{ { x + left, y + height - bottom }, { suv.x, suv.w }, color },
+		// 6
+		{ { x + width - right, y + top }, { suv.z, suv.y }, color },
+		// 7
+		{ { x + width - right, y + height - bottom }, { suv.z, suv.w }, color },
+		// 8
+		{ { x, y + top }, { uv.x, suv.y }, color },
+		// 9
+		{ { x, y + height - bottom }, { uv.x, suv.w }, color },
+		// 10
+		{ { x + width, y + top }, { uv.z, suv.y }, color },
+		// 11
+		{ { x + width, y + height - bottom }, { uv.z, suv.w }, color },
+		// 12
+		{ { x + left, y }, { suv.x, uv.y }, color },
+		// 13
+		{ { x + left, y + height }, { suv.x, uv.w }, color },
+		// 14
+		{ { x + width - right, y }, { suv.z, uv.y }, color },
+		// 15
+		{ { x + width - right, y + height }, { suv.z, uv.w }, color },
+	};
+	for (auto& v : vertex)
+		v.position = xform(v.position);
+
+	// add() 合批时会修改索引数组，所以这里使用局部副本。
+	int vt_index[] = {
+		0, 8, 12, 8, 12, 4, 12, 4, 14, 4, 14, 6, 14, 6, 2, 6, 2, 10,
+		6, 7, 10, 7, 10, 11, 4, 5, 6, 5, 6, 7, 8, 9, 4, 9, 4, 5,
+		9, 1, 5, 1, 5, 13, 5, 13, 7, 13, 7, 15, 7, 15, 11, 15, 11, 3,
+	};
+	add(img, vertex, 16, vt_index, sizeof(vt_index) / sizeof(vt_index[0]), clip);
+}
+
 void mesh2d_x::add_image_angle(void* img, const glm::ivec2& texsize, const glm::ivec4& srcrect, const glm::ivec4& dstrect, float angle, const glm::vec2* center, uint32_t col, const glm::ivec4& clip, int flip)
 {
 	int rect_index_order[] = { 0, 1, 2, 0, 2, 3 };
@@ -4332,6 +4538,8 @@ void vctx_get_clip_rect(rvg_t* v, void* rc);	// 获取矩形裁剪
 void  vctx_add_text(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box);
 // 普通图片，支持九宫格、混合颜色
 void  vctx_add_image(rvg_t* dc, ovg_image_r* r);
+// 原生纹理，支持源裁剪、tint、翻转、九宫格、旋转、矩阵
+void  vctx_add_texture(rvg_t* dc, ovg_texture_r* r);
 // 原始三角形，输入0则不修改
 void  vctx_set_geom_state(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
 // 添加几何数据到缓冲区，xy顶点坐标，color顶点颜色，uv顶点纹理坐标，indices索引数据，color_type=0表示float4，1表示uint32_t
@@ -4770,6 +4978,11 @@ void vctx_add_image(rvg_t* dc, ovg_image_r* r) {
 	if (dc) ovg_add_image(dc, r);
 }
 
+// 原生纹理，支持源裁剪、tint、翻转、九宫格、旋转、矩阵
+void vctx_add_texture(rvg_t* dc, ovg_texture_r* r) {
+	if (dc) ovg_add_texture(dc, r);
+}
+
 // 原始三角形，输入0则不修改
 void vctx_set_geom_state(rvg_t* dc, gem_info_t* info, const void* matrix4x4) {
 	if (dc) ovg_set_geom_state(dc, info, (glm::mat4*)matrix4x4);
@@ -4926,6 +5139,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->get_clip_rect = vctx_get_clip_rect;
 	cb->add_text = vctx_add_text;
 	cb->add_image = vctx_add_image;
+	cb->add_texture = vctx_add_texture;
 	cb->set_geom_state = vctx_set_geom_state;
 	cb->set_instance_mat = (size_t(*)(rvg_t*, const void*, size_t)) ovg_set_instance_mat;
 	cb->add_geometry = vctx_add_geometry;

@@ -138,6 +138,8 @@ struct sdl3gpu_texture {
 	void* user_ptr = 0;
 	uint32_t id = 0;
 	bool                 hasStencil = false;
+	// 原生纹理由调用方持有，包装器只借用 SDL_GPUTexture。
+	bool                 owns_texture = true;
 };
 
 struct shadermodule_vf {
@@ -1016,7 +1018,7 @@ static void destroy_texture(sdl3gpu_texture* tex) {
 		SDL_ReleaseGPUSampler(tex->device, tex->sampler);
 		tex->sampler = nullptr;
 	}
-	if (tex->texture) {
+	if (tex->texture && tex->owns_texture) {
 		SDL_ReleaseGPUTexture(tex->device, tex->texture);
 		tex->texture = nullptr;
 	}
@@ -2081,6 +2083,13 @@ vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* windo
 	return fbo;
 }
 
+SDL_GPUTexture* ovg_fbo_color_texture(vg_fbo_t* fbo) {
+	if (!fbo) return nullptr;
+	if (fbo->swapchain) return fbo->swapchain;
+	if (fbo->colorTex) return ((sdl3gpu_texture*)fbo->colorTex)->texture;
+	return nullptr;
+}
+
 void free_vgfbo_sdl3(vg_fbo_t* fbo) {
 	if (!fbo) return;
 	if (fbo->colorTex) { destroy_texture((sdl3gpu_texture*)fbo->colorTex);     fbo->colorTex = nullptr; }
@@ -3020,6 +3029,14 @@ int build_devres(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd, ovg_draw_data_t* kd)
 	{
 		auto it = kd->image_desc[i];
 		auto tex = ctx->textures[it->img->id];
+		// 原生纹理由 ovg_texture_fini_native 管理生命周期；image_update /
+		// image_destroy 不得覆盖或释放调用方的 SDL_GPUTexture。
+		if (tex && !tex->owns_texture)
+		{
+			it->is_destroy = false;
+			it->dirty = false;
+			continue;
+		}
 		if (tex && it->is_destroy && tex != ctx->device->emptyTexture)
 		{
 			ctx->texq.push(tex);
@@ -3587,6 +3604,92 @@ sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)
 	SDL_GPUTextureFormat f = vg_to_sdl_format((vg_format_t)format);
 	auto p = new_texture(ctx->device, f, w, h, 0);
 	return p;
+}
+
+bool ovg_texture_init_native(ovg_ctx_t* ctx, ovg_texture_t* out,
+	SDL_GPUTexture* texture, int width, int height, vg_format_t format)
+{
+	if (!ctx || !ctx->device || !out || !texture || width <= 0 || height <= 0)
+		return false;
+	if (out->image.id != 0)
+		return false;
+	const SDL_GPUTextureFormat fmt = vg_to_sdl_format(format);
+	if (fmt == SDL_GPU_TEXTUREFORMAT_INVALID)
+		return false;
+
+	auto* tex = new sdl3gpu_texture();
+	if (!tex)
+		return false;
+	tex->texture = texture;
+	tex->device = ctx->device->gpuDevice;
+	tex->format = fmt;
+	tex->width = width;
+	tex->height = height;
+	tex->references = 1;
+	tex->owns_texture = false;
+	create_sampler(tex, SDL_GPU_FILTER_LINEAR, SDL_GPU_FILTER_LINEAR,
+		SDL_GPU_SAMPLERMIPMAPMODE_LINEAR, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
+	if (!tex->sampler)
+	{
+		delete tex;
+		return false;
+	}
+
+	uint32_t id = ctx->next_image_id++;
+	if (id == 0)
+		id = ctx->next_image_id++;
+	tex->id = id;
+	ctx->textures[id] = tex;
+
+	out->image.id = id;
+	out->image.width = width;
+	out->image.height = height;
+	out->image.valid = false;
+	out->image.copy_status = false;
+	return true;
+}
+
+bool ovg_texture_update_native(ovg_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, vg_format_t format)
+{
+	if (!ctx || !tex || tex->image.id == 0 || !texture || width <= 0 || height <= 0)
+		return false;
+	auto it = ctx->textures.find(tex->image.id);
+	if (it == ctx->textures.end() || !it->second)
+		return false;
+	sdl3gpu_texture* wrap = it->second;
+	if (wrap->owns_texture)
+		return false;
+	const SDL_GPUTextureFormat fmt = vg_to_sdl_format(format);
+	if (fmt == SDL_GPU_TEXTUREFORMAT_INVALID)
+		return false;
+
+	wrap->texture = texture;
+	wrap->format = fmt;
+	wrap->width = width;
+	wrap->height = height;
+	tex->image.width = width;
+	tex->image.height = height;
+	tex->image.valid = false;
+	return true;
+}
+
+void ovg_texture_fini_native(ovg_ctx_t* ctx, ovg_texture_t* tex)
+{
+	if (!ctx || !tex || tex->image.id == 0)
+		return;
+	auto it = ctx->textures.find(tex->image.id);
+	if (it != ctx->textures.end())
+	{
+		sdl3gpu_texture* wrap = it->second;
+		ctx->textures.erase(it);
+		if (wrap)
+			ctx->texq.push(wrap);
+	}
+	tex->image.id = 0;
+	tex->image.width = 0;
+	tex->image.height = 0;
+	tex->image.valid = false;
 }
 
 bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {

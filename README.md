@@ -18,6 +18,7 @@ OVG 是一个 **C/C++ 即时模式（Immediate Mode）2D 图形录制与渲染�
   - [变换](#变换)
   - [渐变与图案](#渐变与图案)
   - [图片](#图片)
+  - [原生纹理](#原生纹理sdl_gputexture)
   - [文本](#文本)
   - [几何（2D / 3D 三角形）](#几何2d--3d-三角形)
   - [裁剪](#裁剪)
@@ -38,6 +39,7 @@ OVG 是一个 **C/C++ 即时模式（Immediate Mode）2D 图形录制与渲染�
 | **描边与填充** | 线宽、虚线（float 数组 / 8×uint8 紧凑）、线帽（Butt/Round/Square）、线连接（Miter/Round/Bevel）、填充规则（EvenOdd/NonZero） |
 | **渐变** | 线性渐变、径向渐变（支持椭圆）、锥形（Sweep）渐变，最多 32 个颜色停靠点 |
 | **图片** | RGBA8 / BGRA8 / sRGB / RGBA16F / RGBA32F；脏矩形局部更新；九宫格（9-slice）拉伸；混合着色；垂直/水平翻转 |
+| **原生纹理** | 直接采样应用已有的 `SDL_GPUTexture`；源裁剪、tint、flip、九宫格、旋转、任意 `mat3x2`，按当前 clip 裁剪 |
 | **文本** | HarfBuzz 驱动；描边、阴影、对齐、自动换行、省略号、多字体族回退 |
 | **几何** | 自定义 2D / 3D 三角形（任意顶点布局）；单面 / 双面；实例化渲染；遮罩纹理 |
 | **混合模式** | Normal / Additive / Multiply / Modulate / Screen（含预乘 Alpha 版本） |
@@ -259,6 +261,63 @@ ir.color  = 0xFFFFFFFF;         // 混合颜色
 ir.type   = 0;
 cb->add_image(vg, &ir);
 ```
+
+### 原生纹理（SDL_GPUTexture）
+
+`ovg_texture_t` 是后端原生纹理句柄。SDL3 后端允许直接借用应用已经创建的
+`SDL_GPUTexture`，不复制像素，也不负责释放纹理本身。
+
+```c
+ovg_texture_t tex = {0};
+if (!ovg_texture_init_native(ctx, &tex, sdl_texture,
+        width, height, VG_FORMAT_RGBA8))
+    return;
+
+ovg_texture_r tr = {0};
+tr.tex   = &tex;
+tr.rc    = (ivec4){0, 0, width, height}; // x < 0 或 w/h <= 0 表示整张
+tr.dst   = (ivec4){40, 40, 320, 200};
+tr.color = 0xFFFFFFFF;
+tr.flip  = FLIP_NONE;
+cb->add_texture(vg, &tr);
+
+/* FBO 重建后原地更新，image.id 保持不变： */
+if (!ovg_texture_update_native(ctx, &tex, new_texture,
+        new_width, new_height, VG_FORMAT_RGBA8))
+    return;
+/* 旧 SDL 纹理由调用方在 ovg_wait_idle(ctx) 之后释放。 */
+
+ovg_texture_fini_native(ctx, &tex);
+```
+
+| 函数 | 说明 |
+|---|---|
+| `ovg_texture_init_native(ctx, out, texture, w, h, format)` | 创建句柄并登记到上下文；要求 `out->image.id == 0`。只借用纹理 |
+| `ovg_texture_update_native(ctx, tex, texture, w, h, format)` | 原地替换纹理指针/尺寸；旧纹理仍由调用方在 GPU idle 后释放 |
+| `ovg_texture_fini_native(ctx, tex)` | 从上下文移除句柄并延迟释放采样器；不释放应用纹理 |
+| `cb->add_texture(vg, &tr)` | 把原生纹理录制到当前 draw list |
+
+`ovg_texture_r` 字段：
+
+| 字段 | 说明 |
+|---|---|
+| `tex` | `ovg_texture_t*`；地址必须稳定到本帧 draw data 被消费完成 |
+| `rc` | 源区域 `{x,y,w,h}`；`x < 0` 或 `w/h <= 0` 表示整张纹理 |
+| `sliced` | 九宫格边宽 `{left,top,right,bottom}`；`x <= 0` 表示不切片 |
+| `dst` | 目标矩形 `{x,y,w,h}`；宽高必须为正 |
+| `color` | 顶点颜色/tint，直接乘到纹理采样结果 |
+| `flip` | `FLIP_HORIZONTAL` / `FLIP_VERTICAL` 位组合，按目标矩形中心镜像 |
+| `angle` | 旋转角度（度） |
+| `center_set` / `center` | `center_set != 0` 时 `center` 是相对 `dst` 左上角的旋转中心；否则使用 `dst` 中心 |
+| `matrix` | 可选 `glm::mat3x2`（列主序），在翻转/旋转之后应用 |
+
+行为说明：
+
+- 变换顺序：先按目标中心 flip，再绕 `dst + center` 旋转，最后应用 `matrix`；UV 不变。
+- 九宫格复用 `add_image` 的 16 顶点/54 索引布局；`sliced` 同时表示源边框和目标边框，源边框会按源区域裁剪。
+- 当前矩形 clip 会参与 CPU 端剔除和 GPU 裁剪；若目标完全在 clip 外，不会提交空 mesh，也不会破坏渲染器 scissor 状态。
+- SDL3 原生纹理默认采样器为 **linear + clamp**；CPU 图片仍保持 nearest。
+- 离屏测试可用 `ovg_renderer_sdl3.h` 的 `ovg_fbo_color_texture(fbo)` 取得颜色纹理，再用 `SDL_DownloadFromGPUTexture` 读回。
 
 ### 文本
 

@@ -57,6 +57,23 @@ vg_fbo_t new_vgfbo_sdl3(ovg_ctx_t* ctx, int width, int height, SDL_Window* windo
 void free_vgfbo_sdl3(vg_fbo_t* fbo);
 void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height);
 sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format);
+
+// 获取 FBO 颜色纹理：窗口 FBO 返回 swapchain，离屏 FBO 返回 colorTex。
+// 主要用于离屏测试的 SDL_DownloadFromGPUTexture 读回。
+SDL_GPUTexture* ovg_fbo_color_texture(vg_fbo_t* fbo);
+
+// 采样调用方已有的 SDL_GPUTexture。ovg 只借用纹理，不释放它；后端创建
+// linear + clamp 采样器并在 fini 时延迟释放。纹理必须带
+// SDL_GPU_TEXTUREUSAGE_SAMPLER。
+bool ovg_texture_init_native(ovg_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, vg_format_t format);
+// 原地替换纹理指针/尺寸，保持 image.id 不变；旧纹理由调用方在
+// ovg_wait_idle 之后释放。适用于 FBO 重建。
+bool ovg_texture_update_native(ovg_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, vg_format_t format);
+// 从 ctx 移除句柄并延迟释放采样器；不会释放借用的 SDL_GPUTexture。
+void ovg_texture_fini_native(ovg_ctx_t* ctx, ovg_texture_t* tex);
+
 // 获取fbo和cmd
 int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
 // 绘制一帧，提交命令到GPU，消耗前面获取的cmd

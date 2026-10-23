@@ -103,6 +103,8 @@ struct ovg_canvas_cb {
 	void (*add_text)(rvg_t* dc, text_st_t* p, text_style_t* ts, text_box_rt* box);
 	// 普通图片，支持九宫格、混合颜色
 	void (*add_image)(rvg_t* dc, ovg_image_r* r);
+	// 原生纹理，支持源裁剪、tint、翻转、九宫格、旋转、矩阵
+	void (*add_texture)(rvg_t* dc, ovg_texture_r* r);
 	// 原始三角形
 	// gem_info_t或矩阵输入空指针则不修改该值
 	void (*set_geom_state)(rvg_t* dc, gem_info_t* info, const void* matrix4x4);
