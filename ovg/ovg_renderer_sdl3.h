@@ -62,3 +62,18 @@ int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait
 // 绘制一帧，提交命令到GPU，消耗前面获取的cmd
 void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count);
 void ovg_wait_idle(ovg_ctx_t* ctx);
+
+// 特效离屏资源统计（只读，用于验收/调预算）
+typedef struct ovg_fx_stats_t {
+	size_t pool_sets;        // 空闲缓存中的集合数
+	size_t pending_sets;     // 已提交、等待 GPU fence 的集合数
+	size_t pool_bytes;       // 空闲缓存字节数
+	size_t pending_bytes;    // pending 字节数
+	size_t frame_effects;    // 本帧真正生成纹理的 effect 数
+	size_t frame_roi_pixels; // 本帧 ROI 像素总数
+	size_t frame_bytes;      // 本帧使用的纹理字节数
+} ovg_fx_stats_t;
+
+void ovg_fx_get_stats(ovg_ctx_t* ctx, ovg_fx_stats_t* out);
+// 设置池/待回收预算；传 0 表示恢复默认值（下限 1MB）
+void ovg_fx_set_budget(ovg_ctx_t* ctx, size_t pool_bytes, size_t pending_bytes);

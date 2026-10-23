@@ -19,6 +19,7 @@ slangc -lang slang base3d.slang.h -target glsl -profile glsl_450 -force-glsl-sca
 slangc -lang slang blur.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -stage compute -entry main -o spv_c/blur.comp.glsl
 slangc -lang slang effect_present.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -entry vs -o spv_c/effect_present.vert.glsl
 slangc -lang slang effect_present.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -entry fs -o spv_c/effect_present.frag.glsl
+slangc -lang slang effect_mask.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -entry fs -o spv_c/effect_mask.frag.glsl
 slangc -lang slang displace.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -stage compute -entry main -o spv_c/displace.comp.glsl
 slangc -lang slang noise.slang.h -target glsl -profile glsl_450 -force-glsl-scalar-layout -stage compute -entry main -o spv_c/noise.comp.glsl
 
@@ -49,5 +50,6 @@ glslangValidator spv_c/blit.frag.glsl -V --vn a_blit_frag -o spv_c/blit.frag.h
 glslangValidator -V -S comp spv_c/blur.comp.glsl --vn a_blur_comp -o spv_c/blur.spv.h
 glslangValidator spv_c/effect_present.vert.glsl -V --vn a_effect_present_vert -o spv_c/effect_present.vert.h
 glslangValidator spv_c/effect_present.frag.glsl -V --vn a_effect_present_frag -o spv_c/effect_present.frag.h
+glslangValidator spv_c/effect_mask.frag.glsl -V --vn a_effect_mask_frag -o spv_c/effect_mask.frag.h
 glslangValidator -V -S comp spv_c/displace.comp.glsl --vn a_displace_comp -o spv_c/displace.spv.h
 glslangValidator -V -S comp spv_c/noise.comp.glsl --vn a_noise_comp -o spv_c/noise.spv.h

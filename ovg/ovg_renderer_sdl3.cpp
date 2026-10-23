@@ -76,6 +76,7 @@ shader规则：
 #include "shaders/spv_c/blur.spv.h" 
 #include "shaders/spv_c/effect_present.vert.h"
 #include "shaders/spv_c/effect_present.frag.h"
+#include "shaders/spv_c/effect_mask.frag.h"
 #include "shaders/spv_c/noise.spv.h" 
 #include "shaders/spv_c/displace.spv.h" 
 #include "shaders/spv_c/blit.vert.h"
@@ -97,15 +98,18 @@ struct fx_texture_set {
 	sdl3gpu_texture* out = nullptr;
 	int width = 0;
 	int height = 0;
+	size_t bytes = 0;			// 本套纹理的显存估算，池按字节限额
+	bool need_blur = false;		// false 时 tmp/out 为空，仅分配 mask
 	uint64_t last_use = 0;		// 最近使用的帧号，池淘汰用
 };
 
-// 特效纹理池总上限：按 (w,h) 分桶复用，超限时按 LRU 销毁，
-// 避免窗口反复缩放后旧尺寸的 RGBA32F 纹理一直常驻显存
-static constexpr size_t FX_POOL_MAX_SETS = 4;
+// 特效纹理池：按 (w,h,need_blur) 分桶复用，超预算时按 LRU 销毁。
+// 这里只约束空闲缓存；本帧正在使用的纹理由 keep_bytes/keep_sets 保护。
+static constexpr size_t FX_POOL_MAX_SETS = 64;
+static constexpr size_t FX_POOL_MAX_BYTES = 64ull << 20;
 // 已提交但 GPU 尚未完成的集合上限：GPU 落后时 pending 会逐帧增长，
-// 超过该上限就等待 fence 完成并回收，保证显存占用有界
-static constexpr size_t FX_PENDING_MAX_SETS = 12;
+// 超过该预算就等待 fence 完成并回收，保证显存占用有界。
+static constexpr size_t FX_PENDING_MAX_BYTES = 96ull << 20;
 
 struct fx_result_t {
 	sdl3gpu_texture* tex = nullptr;		// blurred coverage
@@ -288,10 +292,18 @@ struct ovg_ctx_t {
 	// ─── 特效资源 ────────────────────────────────
 	SDL_GPUSampler* fxSampler = nullptr;
 	bool fxSupported = false;
+	SDL_GPUTextureFormat fxMaskFormat = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+	SDL_GPUTextureFormat fxBlurFormat = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	size_t fxPoolBudget = FX_POOL_MAX_BYTES;
+	size_t fxPendingBudget = FX_PENDING_MAX_BYTES;
+	size_t fxFrameBytes = 0;		// 本帧使用的特效纹理字节数
+	size_t fxPrevFrameBytes = 0;	// 上一帧使用的字节数，用于动态 pending 上限
 	std::map<uint64_t, std::vector<fx_texture_set>> fxPool;
 	std::vector<fx_texture_set> fxPending;
 	std::vector<fx_texture_set> fxUsed;
 	uint64_t fxFrame = 0;		// 帧号，用于特效纹理池 LRU 淘汰
+	size_t fxStatEffects = 0;	// 本帧生成纹理的 effect 数
+	size_t fxStatRoiPixels = 0;	// 本帧 ROI 像素总数
 	struct per_item_t {
 		uint32_t src_offset;       /* CPU 源像素起始字节（原始纹理坐标系） */
 		uint32_t gpu_offset;       /* transfer buffer 中的字节偏移 */
@@ -781,7 +793,8 @@ void bind_vbo_cached(ovg_ctx_t* ctx, SDL_GPURenderPass* pass, uint32_t offset)
 	SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
 	ctx->last_vbo = buf;
 	ctx->last_vbo_off = offset;
-	ctx->bind_dirty = false;
+	// bind_dirty 由 IBO 绑定负责清除：新 render pass 里 VBO/IBO 都必须重新绑定，
+	// 若在这里提前清除，IBO 缓存命中时会跳过绑定。
 }
 
 void bind_ibo_cached(ovg_ctx_t* ctx, SDL_GPURenderPass* pass, uint32_t offset)
@@ -1338,6 +1351,10 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	// 编译 VG 着色器
 	SDL_GPUShader* vgVert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX, vg_vert, sizeof(vg_vert), vnum, "main");
 	SDL_GPUShader* vgFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, vg_frag, sizeof(vg_frag), fnum, "main");
+	// mask 专用 FS：只输出填充 alpha，无 sampler/UBO
+	glm::ivec4 fmask = { 0,0,0,0 };
+	SDL_GPUShader* effectMaskFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT,
+		a_effect_mask_frag, sizeof(a_effect_mask_frag), fmask, "main");
 
 	// 公共顶点属性: pos(2) + uv(2) + color(1) = 20 bytes
 	SDL_GPUVertexAttribute vgAttrs[3] = {
@@ -1620,8 +1637,8 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	{
 		vg_pipeline_inputs inputs = {};
 		inputs.vertShader = vgVert;
-		inputs.fragShader = vgFrag;
-		inputs.colorFormat = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+		inputs.fragShader = effectMaskFrag;
+		inputs.colorFormat = ctx->fxMaskFormat;
 		inputs.depthFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
 		inputs.samples = SDL_GPU_SAMPLECOUNT_1;
 		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
@@ -1633,8 +1650,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.numAttributes = 3;
 		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
 		inputs.enable_color_write_mask = true;
-		inputs.color_write_mask = SDL_GPU_COLORCOMPONENT_R |
-			SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+		inputs.color_write_mask = SDL_GPU_COLORCOMPONENT_R;
 		ctx->pipeEffectMask = create_graphics_pipeline(dev, &inputs, ctx);
 	}
 	{
@@ -1669,6 +1685,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	// 释放 VG 着色器（管道已持有引用）
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgVert);
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgFrag);
+	if (effectMaskFrag) SDL_ReleaseGPUShader(dev->gpuDevice, effectMaskFrag);
 }
 
 // ========================================================================
@@ -1957,10 +1974,20 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 	ctx->samples = samples;
 	ctx->gpubuf = new OvgGpuBuffers();
 	ctx->gpubuf->init(dev->gpuDevice);
-	ctx->fxSupported = SDL_GPUTextureSupportsFormat(dev->gpuDevice,
-		SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, SDL_GPU_TEXTURETYPE_2D,
-		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-		SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+	bool mask_r8 = SDL_GPUTextureSupportsFormat(dev->gpuDevice,
+		SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+	bool mask_rgba8 = SDL_GPUTextureSupportsFormat(dev->gpuDevice,
+		SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+	bool blur_r16 = SDL_GPUTextureSupportsFormat(dev->gpuDevice,
+		SDL_GPU_TEXTUREFORMAT_R16_FLOAT, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+	// mask 只需要 alpha；R8 不可用时退回 RGBA8（mask shader 会把 alpha 写到所有通道）
+	ctx->fxMaskFormat = mask_r8 ? SDL_GPU_TEXTUREFORMAT_R8_UNORM
+		: SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	ctx->fxBlurFormat = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	ctx->fxSupported = (mask_r8 || mask_rgba8) && blur_r16;
 	if (ctx->fxSupported) {
 		SDL_GPUSamplerCreateInfo sci = {};
 		sci.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -2938,6 +2965,7 @@ void deferred_free_push(ovg_ctx_t* ctx, sdl3gpu_texture* tex) {
 }
 
 static void recycle_fx_sets(ovg_ctx_t* ctx);
+static size_t fx_pending_bytes(const ovg_ctx_t* ctx);
 
 void deferred_free_advance(ovg_ctx_t* r) {
 	if (!r) return;
@@ -2945,8 +2973,10 @@ void deferred_free_advance(ovg_ctx_t* r) {
 	// 依赖上一帧的 fence：未 signaled 则 GPU 可能仍在使用纹理
 	if (r->tex_free_fence && !SDL_QueryGPUFence(r->device->gpuDevice, r->tex_free_fence))
 	{
-		// 特效纹理待回收集合超过上限时强制等待，避免 GPU 落后时显存逐帧增长
-		if (r->fxPending.size() <= FX_PENDING_MAX_SETS)
+		// 特效纹理待回收集合超过预算时强制等待，避免 GPU 落后时显存逐帧增长。
+		// 上限至少为上一帧工作集的 2 倍，避免大 ROI 场景每帧都等待。
+		size_t cap = std::max(r->fxPendingBudget, r->fxPrevFrameBytes * 2);
+		if (fx_pending_bytes(r) <= cap)
 			return;
 		SDL_GPUFence* fences[1] = { r->tex_free_fence };
 		SDL_WaitForGPUFences(r->device->gpuDevice, true, fences, 1);
@@ -3041,25 +3071,65 @@ struct fx_blur_params_t {
 	int axis;
 };
 
-static sdl3gpu_texture* new_effect_texture(ovg_ctx_t* ctx, int w, int h)
+static size_t fx_format_bytes(SDL_GPUTextureFormat f)
 {
-	return new_texture(ctx->device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, w, h,
-		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-		SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+	switch (f) {
+	case SDL_GPU_TEXTUREFORMAT_R8_UNORM: return 1;
+	case SDL_GPU_TEXTUREFORMAT_R16_FLOAT: return 2;
+	case SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM: return 4;
+	case SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT: return 8;
+	case SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT: return 16;
+	default: return 4;
+	}
 }
 
-static uint64_t fx_pool_key(int w, int h)
+static size_t fx_set_bytes(const ovg_ctx_t* ctx, int w, int h, bool need_blur)
 {
-	return ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+	size_t px = (size_t)w * (size_t)h;
+	size_t bytes = px * fx_format_bytes(ctx->fxMaskFormat);
+	if (need_blur)
+		bytes += px * fx_format_bytes(ctx->fxBlurFormat) * 2;
+	return bytes;
 }
 
-// 池中集合总数超过上限时，按 last_use 淘汰最久未使用的纹理。
-// keep_min：本帧实际并发需要的集合数，避免把刚用到的纹理也淘汰掉造成抖动。
-static void trim_fx_pool(ovg_ctx_t* ctx, size_t keep_min)
+static sdl3gpu_texture* new_effect_texture(ovg_ctx_t* ctx, int w, int h,
+	SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage)
+{
+	return new_texture(ctx->device, format, w, h, usage);
+}
+
+static uint64_t fx_pool_key(int w, int h, bool need_blur)
+{
+	uint64_t key = ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+	if (need_blur) key |= (1ull << 63);
+	return key;
+}
+
+static size_t fx_pool_bytes(const ovg_ctx_t* ctx)
 {
 	size_t total = 0;
-	for (auto& kv : ctx->fxPool) total += kv.second.size();
-	while (total > FX_POOL_MAX_SETS && total > keep_min) {
+	for (auto& kv : ctx->fxPool)
+		for (auto& s : kv.second) total += s.bytes;
+	return total;
+}
+
+static size_t fx_pending_bytes(const ovg_ctx_t* ctx)
+{
+	size_t total = 0;
+	for (auto& s : ctx->fxPending) total += s.bytes;
+	return total;
+}
+
+// 池超过预算时按 last_use 淘汰最久未使用的集合。
+// keep_bytes/keep_sets：本帧工作集，避免把刚用到的纹理淘汰掉造成抖动。
+// 预算只约束空闲缓存，允许本帧工作集暂时超过预算。
+static void trim_fx_pool(ovg_ctx_t* ctx, size_t keep_bytes, size_t keep_sets)
+{
+	size_t total = fx_pool_bytes(ctx);
+	size_t count = 0;
+	for (auto& kv : ctx->fxPool) count += kv.second.size();
+	while ((total > ctx->fxPoolBudget && total > keep_bytes) ||
+		(count > FX_POOL_MAX_SETS && count > keep_sets)) {
 		auto victim_it = ctx->fxPool.end();
 		size_t victim_idx = 0;
 		uint64_t oldest = UINT64_MAX;
@@ -3075,18 +3145,20 @@ static void trim_fx_pool(ovg_ctx_t* ctx, size_t keep_min)
 		}
 		if (victim_it == ctx->fxPool.end()) break;
 		auto& list = victim_it->second;
+		size_t victim_bytes = list[victim_idx].bytes;
 		free_fx_set(list[victim_idx]);
 		list[victim_idx] = list.back();
 		list.pop_back();
 		if (list.empty()) ctx->fxPool.erase(victim_it);
-		total--;
+		total -= victim_bytes;
+		count--;
 	}
 }
 
-static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h)
+static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h, bool need_blur)
 {
 	fx_texture_set s = {};
-	uint64_t key = fx_pool_key(w, h);
+	uint64_t key = fx_pool_key(w, h, need_blur);
 	auto it = ctx->fxPool.find(key);
 	if (it != ctx->fxPool.end() && !it->second.empty()) {
 		s = it->second.back();
@@ -3095,39 +3167,55 @@ static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h)
 	else {
 		s.width = w;
 		s.height = h;
-		s.mask = new_effect_texture(ctx, w, h);
-		s.tmp = new_effect_texture(ctx, w, h);
-		s.out = new_effect_texture(ctx, w, h);
+		s.need_blur = need_blur;
+		s.bytes = fx_set_bytes(ctx, w, h, need_blur);
+		s.mask = new_effect_texture(ctx, w, h, ctx->fxMaskFormat,
+			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+		if (need_blur) {
+			s.tmp = new_effect_texture(ctx, w, h, ctx->fxBlurFormat,
+				SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+			s.out = new_effect_texture(ctx, w, h, ctx->fxBlurFormat,
+				SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+		}
 	}
-	// 任一纹理创建失败（如显存不足）时释放已创建的纹理，避免泄漏
-	if (!s.mask || !s.mask->texture || !s.tmp || !s.tmp->texture || !s.out || !s.out->texture) {
+	// 任一必需纹理创建失败（如显存不足）时释放已创建的纹理，避免泄漏
+	bool ok = s.mask && s.mask->texture;
+	if (need_blur)
+		ok = ok && s.tmp && s.tmp->texture && s.out && s.out->texture;
+	if (!ok) {
 		free_fx_set(s);
 		return fx_texture_set{};
 	}
 	s.last_use = ctx->fxFrame;
 	ctx->fxUsed.push_back(s);
+	ctx->fxFrameBytes += s.bytes;
 	return s;
 }
 
 static void recycle_fx_sets(ovg_ctx_t* ctx)
 {
-	size_t used = ctx->fxPending.size();
+	size_t used_bytes = 0;
+	for (auto& s : ctx->fxPending) used_bytes += s.bytes;
+	size_t used_sets = ctx->fxPending.size();
 	for (auto& s : ctx->fxPending) {
-		if (s.mask && s.mask->texture && s.tmp && s.tmp->texture && s.out && s.out->texture) {
+		bool ok = s.mask && s.mask->texture;
+		if (s.need_blur)
+			ok = ok && s.tmp && s.tmp->texture && s.out && s.out->texture;
+		if (ok) {
 			s.last_use = ctx->fxFrame;
-			ctx->fxPool[fx_pool_key(s.width, s.height)].push_back(s);
+			ctx->fxPool[fx_pool_key(s.width, s.height, s.need_blur)].push_back(s);
 		}
 		else {
 			free_fx_set(s);
 		}
 	}
 	ctx->fxPending.clear();
-	trim_fx_pool(ctx, used);
+	trim_fx_pool(ctx, used_bytes, used_sets);
 }
 
 static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	ovg_draw_data_t* kd, vgcmd_t* c, sdl3gpu_texture* mask,
-	const glm::ivec4& roi, const glm::ivec2& fbo_size)
+	const glm::ivec4& roi)
 {
 	if (!ctx || !cmd || !kd || !c || !c->state || !mask || roi.z <= 0 || roi.w <= 0)
 		return;
@@ -3139,7 +3227,8 @@ static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
 	if (!pass) return;
 
-	set_viewport2d(pass, fbo_size);
+	// mask 纹理本身就是 ROI 大小：viewport 用 ROI 尺寸，几何平移到 ROI 原点
+	set_viewport2d(pass, glm::ivec2(roi.z, roi.w));
 	SDL_Rect sc = { 0, 0, roi.z, roi.w };
 	SDL_SetGPUScissor(pass, &sc);
 	SDL_BindGPUGraphicsPipeline(pass, ctx->pipeEffectMask);
@@ -3149,17 +3238,14 @@ static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	bind_ibo_cached(ctx, pass, kd->vg_offset.y);
 
 	push_constants_t pc = c->state->pushConsts;
-	pc.size = { (float)fbo_size.x, (float)fbo_size.y };
+	pc.size = { (float)roi.z, (float)roi.w };
+	// 设备空间后平移 p' = p - roi.xy；平移位于 mat3x2 的第三列。
+	pc.mat[2].x -= (float)roi.x;
+	pc.mat[2].y -= (float)roi.y;
 	pc.source = { 1, 1, 1, 1 };
 	pc.fsq_patternType = VG_PATTERN_TYPE_SOLID;
 	pc.opacity = 1.0f;
 	SDL_PushGPUVertexUniformData(cmd, 0, &pc, sizeof(pc));
-	vg_gradient_t gr = {};
-	SDL_PushGPUFragmentUniformData(cmd, 0, &gr, sizeof(gr));
-
-	SDL_GPUTextureSamplerBinding empty = {
-		ctx->device->emptyTexture->texture, ctx->device->emptyTexture->sampler };
-	SDL_BindGPUFragmentSamplers(pass, 0, &empty, 1);
 
 	if (c->index.y > 0)
 		SDL_DrawGPUIndexedPrimitives(pass, c->index.y, 1, c->index.x, c->vertex.x, 0);
@@ -3189,6 +3275,27 @@ static void dispatch_fx_compute(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	cp.end();
 }
 
+static bool fx_roi_from_bounds(const vgcmd_t* c, const vg_fbo_t* fbo, glm::ivec4& roi)
+{
+	if (!c || !fbo || !(c->bounds.z > 0.0f) || !(c->bounds.w > 0.0f))
+		return false;
+	// 先在 float 域裁剪，避免负坐标/超大坐标直接转 int 溢出
+	float fx0 = std::max(c->bounds.x, 0.0f);
+	float fy0 = std::max(c->bounds.y, 0.0f);
+	float fx1 = std::min(c->bounds.x + c->bounds.z, (float)fbo->width);
+	float fy1 = std::min(c->bounds.y + c->bounds.w, (float)fbo->height);
+	if (!(fx1 > fx0) || !(fy1 > fy0))
+		return false;
+	int x0 = (int)floorf(fx0);
+	int y0 = (int)floorf(fy0);
+	int x1 = (int)ceilf(fx1);
+	int y1 = (int)ceilf(fy1);
+	if (x1 <= x0 || y1 <= y0)
+		return false;
+	roi = glm::ivec4(x0, y0, x1 - x0, y1 - y0);
+	return true;
+}
+
 static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	ovg_draw_data_t* kd, vgcmd_t* c, vg_fbo_t* fbo, fx_result_t* out)
 {
@@ -3201,22 +3308,26 @@ static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 		return;
 	if (((e.color >> 24) & 0xFF) == 0)
 		return;
+	if (c->index.y == 0 && c->vertex.y == 0)
+		return;
 
-	int x0 = 0;
-	int y0 = 0;
-	int x1 = (int)fbo->width;
-	int y1 = (int)fbo->height;
-	if (x1 <= x0 || y1 <= y0) return;
-	int w = x1 - x0;
-	int h = y1 - y0;
+	glm::ivec4 roi;
+	if (!fx_roi_from_bounds(c, fbo, roi))
+		return;
+	const int w = roi.z;
+	const int h = roi.w;
+	if (w <= 0 || h <= 0) return;
+	const bool need_blur = e.sigma > 0.01f;
 
-	fx_texture_set set = acquire_fx_set(ctx, w, h);
-	if (!set.mask || !set.tmp || !set.out) return;
+	fx_texture_set set = acquire_fx_set(ctx, w, h, need_blur);
+	if (!set.mask || !set.mask->texture) return;
+	if (need_blur && (!set.tmp || !set.tmp->texture || !set.out || !set.out->texture)) return;
 
-	render_effect_mask(ctx, cmd, kd, c, set.mask, glm::ivec4(x0, y0, w, h),
-		glm::ivec2((int)fbo->width, (int)fbo->height));
+	ctx->fxStatEffects++;
+	ctx->fxStatRoiPixels += (size_t)w * (size_t)h;
+	render_effect_mask(ctx, cmd, kd, c, set.mask, roi);
 
-	if (e.sigma > 0.01f) {
+	if (need_blur) {
 		fx_blur_params_t bp = {};
 		bp.texel = { 1.0f / w, 1.0f / h };
 		bp.sigma = e.sigma;
@@ -3228,10 +3339,10 @@ static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 			set.tmp, nullptr, &bp, sizeof(bp), w, h);
 	}
 
-	sdl3gpu_texture* blurred = (e.sigma > 0.01f) ? set.out : set.mask;
+	sdl3gpu_texture* blurred = need_blur ? set.out : set.mask;
 	out->tex = blurred;
 	out->mask = set.mask;
-	out->rect = glm::vec4((float)x0, (float)y0, (float)w, (float)h);
+	out->rect = glm::vec4((float)roi.x, (float)roi.y, (float)w, (float)h);
 	out->color = glm::vec4(
 		(float)(e.color & 0xFF) / 255.0f,
 		(float)((e.color >> 8) & 0xFF) / 255.0f,
@@ -3322,6 +3433,10 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	}
 	if (!cmd)return;
 	ctx->fxFrame++;
+	ctx->fxPrevFrameBytes = ctx->fxFrameBytes;
+	ctx->fxFrameBytes = 0;
+	ctx->fxStatEffects = 0;
+	ctx->fxStatRoiPixels = 0;
 	deferred_free_advance(ctx);   // 帧首尝试释放：此时 fence 为上一帧所提交，可能已完成
 	ctx->fxUsed.clear();
 	size_t total_vbo = 0;
@@ -3441,6 +3556,30 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	for (auto& s : ctx->fxUsed)
 		ctx->fxPending.push_back(s);
 	ctx->fxUsed.clear();
+}
+
+void ovg_fx_get_stats(ovg_ctx_t* ctx, ovg_fx_stats_t* out)
+{
+	if (!out) return;
+	*out = {};
+	if (!ctx) return;
+	size_t pool_sets = 0;
+	for (auto& kv : ctx->fxPool) pool_sets += kv.second.size();
+	out->pool_sets = pool_sets;
+	out->pending_sets = ctx->fxPending.size();
+	out->pool_bytes = fx_pool_bytes(ctx);
+	out->pending_bytes = fx_pending_bytes(ctx);
+	out->frame_effects = ctx->fxStatEffects;
+	out->frame_roi_pixels = ctx->fxStatRoiPixels;
+	out->frame_bytes = ctx->fxFrameBytes;
+}
+
+void ovg_fx_set_budget(ovg_ctx_t* ctx, size_t pool_bytes, size_t pending_bytes)
+{
+	if (!ctx) return;
+	// 0 表示恢复默认；下限 1MB，避免误设成 0 后每帧强制等待
+	ctx->fxPoolBudget = pool_bytes ? std::max<size_t>(pool_bytes, 1ull << 20) : FX_POOL_MAX_BYTES;
+	ctx->fxPendingBudget = pending_bytes ? std::max<size_t>(pending_bytes, 1ull << 20) : FX_PENDING_MAX_BYTES;
 }
 
 sdl3gpu_texture* new_texture_def(ovg_ctx_t* ctx, int w, int h, uint32_t format)

@@ -43,9 +43,9 @@ float4 fs(VSOut input) : SV_Target
 	float2 uv = (input.pos.xy - pu.rect.xy) / pu.rect.zw;
 	float2 texel = 1.0 / pu.rect.zw;
 
-	float m = maskSrc.SampleLevel(uv, 0.0).a;
+	float m = maskSrc.SampleLevel(uv, 0.0).r;
 	float2 off = float2(-pu.offset.x, pu.offset.y) * texel;
-	float b = blurSrc.SampleLevel(uv + off, 0.0).a;
+	float b = blurSrc.SampleLevel(uv + off, 0.0).r;
 
 	float a;
 	if (pu.mode == 1) {

@@ -57,9 +57,9 @@ void main()
     vec2 uv_0 = (gl_FragCoord.xy - pu_0.rect_0.xy) / pu_0.rect_0.zw;
 
 
-    float m_0 = (textureLod((maskSrc_0), (uv_0), (0.0))).w;
+    float m_0 = (textureLod((maskSrc_0), (uv_0), (0.0))).x;
 
-    float b_0 = (textureLod((blurSrc_0), (uv_0 + vec2(- pu_0.offset_0.x, pu_0.offset_0.y) * (1.0 / pu_0.rect_0.zw)), (0.0))).w;
+    float b_0 = (textureLod((blurSrc_0), (uv_0 + vec2(- pu_0.offset_0.x, pu_0.offset_0.y) * (1.0 / pu_0.rect_0.zw)), (0.0))).x;
 
 #line 48
     float a_0;

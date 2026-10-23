@@ -2344,7 +2344,12 @@ void rvg_cx::stroke_preserve()
 
 void rvg_cx::apply_effect_bounds(vgcmd_t* c, bool isStroke)
 {
-	if (!c || !st || st->effect.type == VG_EFFECT_NONE || st->effect.opacity <= 0.0f)
+	if (!c)
+		return;
+	// 默认无特效槽位；早退时不能保留 slot 0，否则空路径会误用并覆盖第一个真实特效
+	c->ref = -1;
+	c->bounds = glm::vec4(0.0f);
+	if (!st || st->effect.type == VG_EFFECT_NONE || st->effect.opacity <= 0.0f)
 		return;
 	if (((st->effect.color >> 24) & 0xFF) == 0)
 		return;
@@ -2371,15 +2376,18 @@ void rvg_cx::apply_effect_bounds(vgcmd_t* c, bool isStroke)
 		maxx = std::max(maxx, p.x); maxy = std::max(maxy, p.y);
 	}
 	const auto& fx = st->effect;
-	float pad = ceilf(fx.sigma * 3.0f) + fabsf(fx.spread) * fx.sigma * 2.0f
-		+ fabsf(fx.offset.x) + fabsf(fx.offset.y) + 2.0f;
+	// 模糊核半径固定为 3*sigma；spread 只放大 alpha，不扩大半径。
+	// offset 只沿各自轴扩展，因此 x/y 分开计算，避免大 offset 时四边都过度膨胀。
+	float blur = ceilf(fx.sigma * 3.0f);
+	float pad_x = blur + fabsf(fx.offset.x) + 2.0f;
+	float pad_y = blur + fabsf(fx.offset.y) + 2.0f;
 	if (fxCount >= 127) {
 		c->ref = -1;
 		return;
 	}
 	c->ref = (int8_t)fxCount++;
-	c->bounds = glm::vec4(minx - pad, miny - pad,
-		(maxx - minx) + pad * 2.0f, (maxy - miny) + pad * 2.0f);
+	c->bounds = glm::vec4(minx - pad_x, miny - pad_y,
+		(maxx - minx) + pad_x * 2.0f, (maxy - miny) + pad_y * 2.0f);
 }
 
 void rvg_cx::fill_preserve()

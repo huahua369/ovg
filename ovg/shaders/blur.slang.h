@@ -5,7 +5,8 @@
 Sampler2D src;
 
 [[vk::binding(0, 1)]]
-RWTexture2D<float4> dst;
+[[vk::image_format("r16f")]]
+RWTexture2D<float> dst;
 
 struct Params {
 	float2 texel;   // 1.0 / texture_size
@@ -28,7 +29,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 	dst.GetDimensions(sz.x, sz.y);
 	if (any(p >= sz)) return;
 	int R = max(1, int(ceil(pu.sigma * 3.0)));
-	float4 sum = float4(0, 0, 0, 0);
+	float sum = 0.0;
 	float wsum = 0.0;
 	for (int i = -R; i <= R; i++) {
 		float ww = gauss(float(i), pu.sigma);
@@ -37,7 +38,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 		else              sp.y += i;
 		sp = clamp(sp, int2(0, 0), sz - int2(1, 1));
 		float2 sampleUV = (float2(sp) + 0.5) * pu.texel;
-		float4 c = src.SampleLevel(sampleUV, 0.0);
+		float c = src.SampleLevel(sampleUV, 0.0).r;
 		sum += c * ww;
 		wsum += ww;
 	}
