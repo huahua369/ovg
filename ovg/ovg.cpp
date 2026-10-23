@@ -2112,6 +2112,13 @@ struct rvg_cx :public rvg_t {
 	uint32_t fxCount = 0;	// 本draw list的特效槽位计数
 	glm::ivec4 curClip = {};
 	std::stack<vg_state_save_t*> _cst;	// 保存栈 
+
+	// 录制快照：start_recording 时记录当前各 vector 的末尾位置，
+	// stop_recording 时将 [快照起点, 当前末尾) 区间深拷贝进 ovg_recording_t。
+	bool     _recording = false;
+	uint32_t _rec_start_cmd = 0;
+	uint32_t _rec_start_vtx = 0;
+	uint32_t _rec_start_idx = 0;
 public:
 	explicit rvg_cx(vg_alloc_cx* a);
 	~rvg_cx();
@@ -2197,6 +2204,10 @@ void rvg_cx::clear_all()
 		}
 	}
 	_images.clear();
+	// 清空录制快照 — clear_all() 在帧边界调用，cmdlist/_vertex/_indices 都被清了，
+	// 此时旧的 _rec_start_* 索引已经失效，必须复位，否则 stop_recording 会越界读。
+	_recording = false;
+	_rec_start_cmd = _rec_start_vtx = _rec_start_idx = 0;
 }
 void rvg_cx::set_path(ovg_path_t* path0, vg_state_save_t* st0)
 {
@@ -5031,26 +5042,257 @@ void vctx_add_geometry3d(rvg_t* dc,
 }
 
 
-void vctx_start_recording(rvg_t* ctx) {
+// ============================================================
+// 录制 / 回放
+// 设计思路：start_recording 记录当前各 vector 的末尾位置作为"快照起点"；
+// stop_recording 时将 [起点, 当前末尾) 区间的命令、顶点、索引深拷贝进
+// ovg_recording_t，同时把 vgcmd_t 里的 state 和 pattern 也深拷贝，
+// 并把顶点/索引偏移改写为相对于 recording 内部存储的坐标。
+// replay 时把 recording 追加到目标 ctx，重新计算绝对偏移并把 state
+// 克隆到目标 ctx 的 bump allocator 上。
+// ============================================================
+struct ovg_recording_t
+{
+	usp_ac_cx* ac = nullptr;
+	vg_vector<gcmd_t> cmds;              // 命令（偏移已指向 recording 内部）
+	vg_vector<rvg_cx::Vertex> vertices;  // 2D 矢量顶点快照
+	vg_vector<uint32_t> indices;          // 2D 矢量索引快照
+	// 需要手动释放的深拷贝资源（state dashes / pattern）
+	std::vector<std::pair<void*, size_t>> owned;
+};
 
+// 深拷贝一条 vg_state_save_t（含 dashes 和 pattern），
+// 结果中的裸指针全部存入 owner，供 recording_destroy 释放。
+static vg_state_save_t* rec_clone_state(vg_state_save_t* src,
+                                        std::vector<std::pair<void*, size_t>>& owned)
+{
+	if (!src) return nullptr;
+	auto ns = (vg_state_save_t*)malloc(sizeof(vg_state_save_t));
+	*ns = *src;
+	owned.push_back({ ns, sizeof(vg_state_save_t) });
+	if (src->dashes && src->dashCount > 0) {
+		size_t ds = sizeof(float) * src->dashCount;
+		ns->dashes = (float*)malloc(ds);
+		memcpy(ns->dashes, src->dashes, ds);
+		owned.push_back({ ns->dashes, ds });
+	}
+	if (src->pattern) {
+		size_t ps = sizeof(pat_act);
+		auto np = (pat_act*)malloc(ps);
+		memcpy(np, src->pattern, ps);
+		np->data = &np->g;   // 更新 data 指针指向新对象内部的 gradient
+		ns->pattern = np;
+		owned.push_back({ np, ps });
+	}
+	return ns;
 }
-ovg_recording_t* vctx_stop_recording(rvg_t* ctx) {
-	return 0;
-}
-void vctx_replay(rvg_t* ctx, ovg_recording_t* rec) {
 
+void vctx_start_recording(rvg_t* ctx0)
+{
+	auto v = (rvg_cx*)ctx0;
+	if (!v) return;
+	v->_recording = true;
+	v->_rec_start_cmd = (uint32_t)v->cmdlist.size();
+	v->_rec_start_vtx = (uint32_t)v->_vertex.size();
+	v->_rec_start_idx = (uint32_t)v->_indices.size();
 }
-void vctx_replay_command(rvg_t* ctx, ovg_recording_t* rec, uint32_t cmdIndex) {
 
-}
-uint32_t vctx_recording_get_count(ovg_recording_t* rec) {
-	return 0;
-}
-void* vctx_recording_get_data(ovg_recording_t* rec) {
-	return 0;
-}
-void  vctx_recording_destroy(ovg_recording_t* rec) {
+ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
+{
+	auto v = (rvg_cx*)ctx0;
+	if (!v || !v->_recording) return nullptr;
+	v->_recording = false;
 
+	auto rec = new ovg_recording_t();
+	rec->ac = v->ac;
+
+	uint32_t sc = v->_rec_start_cmd;
+	uint32_t sv = v->_rec_start_vtx;
+	uint32_t si = v->_rec_start_idx;
+
+	// 1) 拷贝命令
+	uint32_t cmd_count = (uint32_t)v->cmdlist.size() - sc;
+	rec->cmds = vg_vector<gcmd_t>(v->ac);
+	rec->cmds.resize(cmd_count);
+	memcpy(rec->cmds.data(), &v->cmdlist[sc], sizeof(gcmd_t) * cmd_count);
+
+	// 2) 遍历命令 — 深拷贝 state/pattern & 重写顶点/索引偏移
+	//    同时追踪实际被引用的 [copy_v_from, copy_v_to) 和 [copy_i_from, copy_i_to)
+	uint32_t copy_v_from = UINT_MAX, copy_v_to = sv;
+	uint32_t copy_i_from = UINT_MAX, copy_i_to = si;
+
+	for (uint32_t i = 0; i < cmd_count; i++)
+	{
+		auto& c = rec->cmds[i];
+		if (c.vg.stype == 0)  // vgcmd_t — 2D 矢量命令
+		{
+			// 顶点引用范围
+			if (c.vg.vertex.y > 0)
+			{
+				copy_v_from = std::min(copy_v_from, (uint32_t)c.vg.vertex.x);
+				copy_v_to   = std::max(copy_v_to,   (uint32_t)(c.vg.vertex.x + c.vg.vertex.y));
+				// 重写：从绝对偏移 → 相对 recording 内部的偏移
+				c.vg.vertex.x = (int)(c.vg.vertex.x - sv);
+			}
+			if (c.vg.index.y > 0)
+			{
+				copy_i_from = std::min(copy_i_from, (uint32_t)c.vg.index.x);
+				copy_i_to   = std::max(copy_i_to,   (uint32_t)(c.vg.index.x + c.vg.index.y));
+				c.vg.index.x = (int)(c.vg.index.x - si);
+			}
+			c.vg.state = rec_clone_state(c.vg.state, rec->owned);
+		}
+		else if (c.g.stype == 1)  // geom_cmd_t — 3D 几何（vertexOffset 已指向 rvg 外部，保持不动）
+		{
+			// 暂做浅拷贝：geom 顶点不在 _vertex/_indices 里，而是 gps 自己管理的
+		}
+	}
+
+	// 3) 拷贝顶点（[sv, copy_v_to) — 快照起点到引用末尾）
+	if (copy_v_from != UINT_MAX && copy_v_to > sv)
+	{
+		uint32_t vcount = copy_v_to - sv;
+		rec->vertices = vg_vector<rvg_cx::Vertex>(v->ac);
+		rec->vertices.resize(vcount);
+		memcpy(rec->vertices.data(), &v->_vertex[sv], sizeof(rvg_cx::Vertex) * vcount);
+	}
+
+	// 4) 拷贝索引
+	if (copy_i_from != UINT_MAX && copy_i_to > si)
+	{
+		uint32_t icount = copy_i_to - si;
+		rec->indices = vg_vector<uint32_t>(v->ac);
+		rec->indices.resize(icount);
+		memcpy(rec->indices.data(), &v->_indices[si], sizeof(uint32_t) * icount);
+	}
+
+	return rec;
+}
+
+// 在目标 ctx 的 bump allocator 上克隆一条 state（与 cp_cmdt 逻辑相同）
+static vg_state_save_t* rec_clone_state_into_target(rvg_cx* v, vg_state_save_t* src)
+{
+	if (!src) return nullptr;
+	auto ns = (vg_state_save_t*)v->mac.allocate(sizeof(vg_state_save_t));
+	*ns = *src;
+	ns->dashes = nullptr;
+	if (src->dashes && src->dashCount > 0)
+	{
+		ns->dashes = (float*)v->mac.allocate(sizeof(float) * src->dashCount);
+		memcpy(ns->dashes, src->dashes, sizeof(float) * src->dashCount);
+		ns->dashCount = src->dashCount;
+	}
+	if (src->pattern)
+	{
+		auto pat = (pat_act*)v->mac.allocate(sizeof(pat_act));
+		memcpy(pat, src->pattern, sizeof(pat_act));
+		pat->data = &pat->g;
+		ns->pattern = pat;
+	}
+	return ns;
+}
+
+void vctx_replay(rvg_t* ctx0, ovg_recording_t* rec)
+{
+	auto v = (rvg_cx*)ctx0;
+	if (!v || !rec) return;
+
+	uint32_t delta_vtx = (uint32_t)v->_vertex.size();
+	uint32_t delta_idx = (uint32_t)v->_indices.size();
+
+	// 1) 追加顶点
+	if (rec->vertices.size() > 0)
+	{
+		uint32_t old = (uint32_t)v->_vertex.size();
+		v->_vertex.resize(old + rec->vertices.size());
+		memcpy(&v->_vertex[old], rec->vertices.data(),
+			sizeof(rvg_cx::Vertex) * rec->vertices.size());
+	}
+
+	// 2) 追加索引
+	if (rec->indices.size() > 0)
+	{
+		uint32_t old = (uint32_t)v->_indices.size();
+		v->_indices.resize(old + rec->indices.size());
+		memcpy(&v->_indices[old], rec->indices.data(),
+			sizeof(uint32_t) * rec->indices.size());
+	}
+
+	// 3) 追加命令（重写偏移 + 深拷贝 state 到目标 ctx 的 mac）
+	for (size_t i = 0; i < rec->cmds.size(); i++)
+	{
+		auto c = rec->cmds[i];
+		if (c.vg.stype == 0)
+		{
+			if (c.vg.vertex.y > 0) c.vg.vertex.x += (int)delta_vtx;
+			if (c.vg.index.y > 0)   c.vg.index.x   += (int)delta_idx;
+			c.vg.state = rec_clone_state_into_target(v, c.vg.state);
+		}
+		v->cmdlist.push_back(c);
+	}
+}
+
+void vctx_replay_command(rvg_t* ctx0, ovg_recording_t* rec, uint32_t cmdIndex)
+{
+	auto v = (rvg_cx*)ctx0;
+	if (!v || !rec || cmdIndex >= rec->cmds.size()) return;
+
+	auto& rc = rec->cmds[cmdIndex];
+	if (rc.vg.stype != 0) return;   // 3D geom 暂不支持单命令回放
+
+	uint32_t delta_vtx = (uint32_t)v->_vertex.size();
+	uint32_t delta_idx = (uint32_t)v->_indices.size();
+
+	// 只拷贝这条命令需要的顶点/索引
+	if (rc.vg.vertex.y > 0)
+	{
+		uint32_t start = (uint32_t)rc.vg.vertex.x;
+		uint32_t count = (uint32_t)rc.vg.vertex.y;
+		if (start + count <= rec->vertices.size())
+		{
+			uint32_t old = (uint32_t)v->_vertex.size();
+			v->_vertex.resize(old + count);
+			memcpy(&v->_vertex[old], &rec->vertices[start],
+				sizeof(rvg_cx::Vertex) * count);
+		}
+	}
+	if (rc.vg.index.y > 0)
+	{
+		uint32_t start = (uint32_t)rc.vg.index.x;
+		uint32_t count = (uint32_t)rc.vg.index.y;
+		if (start + count <= rec->indices.size())
+		{
+			uint32_t old = (uint32_t)v->_indices.size();
+			v->_indices.resize(old + count);
+			memcpy(&v->_indices[old], &rec->indices[start],
+				sizeof(uint32_t) * count);
+		}
+	}
+
+	auto c = rc;
+	if (c.vg.vertex.y > 0) c.vg.vertex.x += (int)delta_vtx;
+	if (c.vg.index.y > 0)   c.vg.index.x   += (int)delta_idx;
+	c.vg.state = rec_clone_state_into_target(v, c.vg.state);
+
+	v->cmdlist.push_back(c);
+}
+
+uint32_t vctx_recording_get_count(ovg_recording_t* rec)
+{
+	return rec ? (uint32_t)rec->cmds.size() : 0;
+}
+
+void* vctx_recording_get_data(ovg_recording_t* rec)
+{
+	return rec ? rec->cmds.data() : nullptr;
+}
+
+void vctx_recording_destroy(ovg_recording_t* rec)
+{
+	if (!rec) return;
+	for (auto& o : rec->owned)
+		free(o.first);
+	delete rec;
 }
 
 
