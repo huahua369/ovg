@@ -740,7 +740,6 @@ int main()
 
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, wg->window);
 	bool running = true;
-	runtime_cx rtc = {};
 	auto str1 = u8"agyh🍕☂️按钮";
 	auto str = u8"➗🍕☂️6bg太妹";
 	auto rst = glm::mat3x2(1.0);
@@ -755,23 +754,15 @@ int main()
 	//run.set_text(str, -1);
 	//run.shape();
 
-	// 渲染 
+	// 渲染
 	int channels = 0;
 	ovg_image_data img[1] = {};
 	//img->data = (uint32_t*)stbi_load("./temp/nig.png", &img->width, &img->height, &channels, 4);
 	img->data = (uint32_t*)stbi_load("./temp/button.png", &img->width, &img->height, &channels, 4);
-	img->valid = true;
-	auto fp = fopen("E:\\1.txt", "r");
-	std::string buff;
-	if (fp) {
-		fseeki64(fp, 0L, SEEK_END);
-		auto size = ftelli64(fp);
-		fseeki64(fp, 0L, SEEK_SET);
-		buff.resize(size);
-		auto retval = fread(buff.data(), size, 1, fp);
-		assert(retval == 1);
-		fclose(fp);
-	}
+	if (img->data)
+		img->valid = true;
+	else
+		SDL_Log("WARN: load ./temp/button.png failed");
 	text_run_dst_cx* run_dst = new text_run_dst_cx();
 	{
 		text_style_t style4 = {};
@@ -801,18 +792,25 @@ int main()
 	}
 	bool testvg = true;
 	bool fx_test = getenv("OVG_FX_TEST") != nullptr;
+	const char* mf = getenv("OVG_MAX_FRAMES");
+	int max_frames = mf ? atoi(mf) : 0;
+	uint64_t perf_freq = SDL_GetPerformanceFrequency();
+	uint64_t frames = 0;
+	double rec_total = 0, rec_max = 0, ren_total = 0, ren_max = 0;
 
 	SDL_Event e = {};
 	while (running) {
-		if (SDL_PollEvent(&e) != 0)
-		{
+		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_EVENT_QUIT) {
+				running = false;
 				break;
 			}
 		}
+		if (!running)break;
 		if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
 		{
 			if (fx_test) {
+				uint64_t t0 = SDL_GetPerformanceCounter();
 				cb->clear(vg);
 				cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 				cb->reset_clip(vg, 1);
@@ -823,9 +821,14 @@ int main()
 				ovg_draw_data_t dl[] = { get_draw_list(vg) };
 				dl[0].fbo = &fbo;
 				ovg_render_frame(ctx, dl, 1);
+				uint64_t t1 = SDL_GetPerformanceCounter();
+				double rec = (double)(t1 - t0) * 1000.0 / perf_freq;
+				rec_total += rec; if (rec > rec_max) rec_max = rec;
+				frames++;
+				if (max_frames > 0 && frames >= (uint64_t)max_frames) running = false;
 				continue;
 			}
-			rtc.begin();
+			uint64_t t0 = SDL_GetPerformanceCounter();
 			cb->clear(vg);
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 			glm::vec2 sf = fbo.display_size;
@@ -903,18 +906,23 @@ int main()
 				img->valid = false;
 				cb->image_update(vg, img, &desc);
 			}
-			int ms = rtc.end();
-			//if (ms > 0)
-			//	printf("draw build ms: %d\n", ms);
+			uint64_t t1 = SDL_GetPerformanceCounter();
 			ovg_draw_data_t dlist[] = { get_draw_list(vg) };
 			dlist[0].fbo = &fbo;
-			rtc.begin();
-			ovg_render_frame(ctx, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
-			ms = rtc.end();
-			//if (ms > 0)
-			//	printf("submit draw ms: %d\n", ms);
+			ovg_render_frame(ctx, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染
+			uint64_t t2 = SDL_GetPerformanceCounter();
+			double rec = (double)(t1 - t0) * 1000.0 / perf_freq;
+			double ren = (double)(t2 - t1) * 1000.0 / perf_freq;
+			rec_total += rec; if (rec > rec_max) rec_max = rec;
+			ren_total += ren; if (ren > ren_max) ren_max = ren;
+			frames++;
+			if (max_frames > 0 && frames >= (uint64_t)max_frames) running = false;
 		}
 		//SDL_Delay(16);  /* ~60 FPS */
+	}
+	if (frames > 0) {
+		printf("[ovg] frames=%llu  record avg=%.3f max=%.3f ms  |  render avg=%.3f max=%.3f ms\n",
+			(unsigned long long)frames, rec_total / (double)frames, rec_max, ren_total / (double)frames, ren_max);
 	}
 	if (run_dst)delete run_dst;
 	SDL_WaitForGPUIdle(wg->device);

@@ -49,7 +49,13 @@ shader规则：
 #include <cstring>
 #include <cassert>
 #include <cmath>
+// 仅 vg_sdl3_init 的 is_vulkan 分支用到 Vulkan 特性结构；头不可用时跳过该分支
+#if __has_include(<vulkan/vulkan.h>)
 #include <vulkan/vulkan.h>
+#define OVG_HAS_VULKAN_HEADERS 1
+#else
+#define OVG_HAS_VULKAN_HEADERS 0
+#endif
 #include "ovg_renderer_sdl3.h"
  // ========================================================================
  // 着色器 SPIR-V 数据（extern 声明，链接时从 spv 数组引入）
@@ -253,6 +259,21 @@ struct upload_desc_t {
 };
 
 // 渲染上下文
+// 渐变 fragment uniform 缓存键：命中则该命令跳过 708B 拷贝/3x3 求逆/stop 排序/推送。
+// 键含帧号——录制器可在帧间修改 stop 内容（指针不变），同帧内录制已结束、内容冻结。
+struct grad_cache_key_t {
+	const void* src = nullptr;      // pattern->data；nullptr 表示纯色零渐变
+	uint32_t    frame = 0;
+	int         type = 0;
+	bool        hasMatrix = false;
+	glm::mat3x2 patmat = glm::mat3x2(1.0f);
+	glm::mat3x2 vmat = glm::mat3x2(1.0f);
+	bool operator==(const grad_cache_key_t& o) const {
+		return src == o.src && frame == o.frame && type == o.type && hasMatrix == o.hasMatrix
+			&& patmat == o.patmat && vmat == o.vmat;
+	}
+};
+
 struct ovg_ctx_t {
 	ovg_device_t* device = nullptr;
 
@@ -267,14 +288,9 @@ struct ovg_ctx_t {
 	SDL_GPUGraphicsPipeline* pipeClipping = nullptr;  // 裁剪掩码写入 (stencil REPLACE)
 
 	SDL_GPUGraphicsPipeline* pipeStencilClear = nullptr; // 清 0
-	SDL_GPUGraphicsPipeline* pipeStencilFill = nullptr;  // 非零填充
-	SDL_GPUGraphicsPipeline* pipeClipInc = nullptr;      // push
-	SDL_GPUGraphicsPipeline* pipeClipDec = nullptr;      // pop
-	SDL_GPUGraphicsPipeline* pipeStencilDraw = nullptr;  // 在裁剪区内绘制 
 	SDL_GPUGraphicsPipeline* pipeEffectMask = nullptr;   // 特效掩码写入离屏纹理
 	SDL_GPUGraphicsPipeline* pipeEffectComposite = nullptr; // 特效纹理叠加到主画布
 	std::set<SDL_GPUGraphicsPipeline*> freepipe;
-	int clipDepth = 0;   // 当前裁剪深度（0 = 无裁剪）
 	// ─── 几何管线缓存 ─────────────────────────────
 	std::map<uint64_t, pipelinestate_p_internal> geomPipelines;
 	pipelinestate_p_internal* currentPipeline = nullptr;
@@ -333,7 +349,7 @@ struct ovg_ctx_t {
 	SDL_GPUCommandBuffer* currentCmdBuf = nullptr;
 
 	// ─── 当前绑定的 VG 管道索引（用于自动设 ref）──
-	int currentVgPipeIndex = -1;  // 0=OVER,1=CLEAR,2=SUB,3=POLYFILL,4=CLIPPING
+	int currentVgPipeIndex = -1;  // VG_PIPE_OVER=0, VG_PIPE_CLEAR=1, VG_PIPE_SUB=2, VG_PIPE_CLIPPING=3
 
 	// ─── 纹理延迟释放 fence（避免每帧 WaitForGPUIdle 全局卡顿）───
 	SDL_GPUFence* tex_free_fence = nullptr;
@@ -344,14 +360,14 @@ struct ovg_ctx_t {
 	uint32_t last_vbo_off = 0;
 	uint32_t last_ibo_off = 0;
 	bool     bind_dirty = true;   // 新 render pass 或 gpubuf 重建后置 true
+	// ─── 渐变 fragment uniform 缓存（draw_vg 每命令去重）───
+	grad_cache_key_t gradKey;
+	bool             gradDirty = true;  // slot0 被其他数据占用（特效/掩码/新 pass）时置位
 };
 
 // ========================================================================
 // 常量
 // ========================================================================
-#define VG_PTS_SIZE         1024
-#define VG_VBO_SIZE         (VG_PTS_SIZE * 4)
-#define VG_IBO_SIZE         (VG_VBO_SIZE * 6)
 
 
 // 顶点布局
@@ -605,6 +621,8 @@ void gpu_buffer_cx::init(SDL_GPUDevice* d, const SDL_GPUBufferCreateInfo* create
 	if (d && createinfo) {
 		dev = d;
 		buf = SDL_CreateGPUBuffer(dev, createinfo);
+		if (!buf)
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create GPU buffer: %s", SDL_GetError());
 		info = *createinfo;
 	}
 }
@@ -617,6 +635,8 @@ void gpu_buffer_cx::init(SDL_GPUDevice* d, uint32_t usage, size_t capacity)
 	if (d)
 		dev = d;
 	buf = SDL_CreateGPUBuffer(dev, &c);
+	if (!buf)
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create GPU buffer: %s", SDL_GetError());
 	info = c;
 	size = c.size;
 }
@@ -644,6 +664,8 @@ void gpu_buffer_cx::resize(size_t newsize)
 			SDL_ReleaseGPUBuffer(dev, buf);
 		info.size = newsize;
 		buf = SDL_CreateGPUBuffer(dev, &info);
+		if (!buf)
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to resize GPU buffer: %s", SDL_GetError());
 	}
 }
 
@@ -727,7 +749,10 @@ uint32_t OvgGpuBuffers::add_ssbo(const void* data, uint32_t size)
 
 void OvgGpuBuffers::end(SDL_GPUCommandBuffer* cmd)
 {
-	SDL_UnmapGPUTransferBuffer(_device, _staging);
+	if (mapdt) {
+		SDL_UnmapGPUTransferBuffer(_device, _staging);
+		mapdt = nullptr;
+	}
 	if (!(_vbo.size + _ibo.size + _ssbo.size > 0))return;
 	auto copyPass = SDL_BeginGPUCopyPass(cmd);
 	SDL_GPUTransferBufferLocation tbl = { .transfer_buffer = _staging, .offset = 0 };
@@ -814,76 +839,6 @@ void bind_ibo_cached(ovg_ctx_t* ctx, SDL_GPURenderPass* pass, uint32_t offset)
 }
 
 
-struct gpu_ssbo_t {
-	SDL_GPUDevice* device;
-	SDL_GPUBuffer* buf;
-	Uint32          capacity;
-	Uint32          size;
-};
-bool matrix_buffer_create(SDL_GPUDevice* device, Uint32 max_count, gpu_ssbo_t* out)
-{
-	if (max_count == 0) return false;
-	Uint32 size = align_up(max_count * 64, 256);
-
-	SDL_GPUBufferCreateInfo bi = {
-		.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-		.size = size,
-	};
-	SDL_GPUBuffer* buf = SDL_CreateGPUBuffer(device, &bi);
-	if (!buf) return false;
-
-	out->device = device;
-	out->buf = buf;
-	out->capacity = max_count;
-	out->size = size;
-	return true;
-}
-
-bool matrix_buffer_update(gpu_ssbo_t* mb, const glm::mat4* matrices, Uint32 count)
-{
-	if (count > mb->capacity) return false;
-
-	SDL_GPUDevice* device = mb->device;
-	Uint32 raw = count * 64;
-
-	SDL_GPUTransferBufferCreateInfo ti = {
-		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-		.size = raw,
-	};
-	SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(device, &ti);
-	if (!tb) return false;
-
-	void* ptr = SDL_MapGPUTransferBuffer(device, tb, false);
-	if (!ptr) { SDL_ReleaseGPUTransferBuffer(device, tb); return false; }
-	SDL_memcpy(ptr, matrices, raw);
-	SDL_UnmapGPUTransferBuffer(device, tb);
-
-	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device);
-	SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-
-	SDL_GPUTransferBufferLocation src = { .transfer_buffer = tb, .offset = 0 };
-	SDL_GPUBufferRegion dst = { .buffer = mb->buf, .offset = 0, .size = raw };
-	SDL_UploadToGPUBuffer(cp, &src, &dst, true);
-
-	SDL_EndGPUCopyPass(cp);
-	SDL_SubmitGPUCommandBuffer(cmd);
-
-	SDL_ReleaseGPUTransferBuffer(device, tb);
-	return true;
-}
-
-void matrix_buffer_bind_vertex(gpu_ssbo_t* mb, SDL_GPURenderPass* pass, Uint32 slot)
-{
-	SDL_BindGPUVertexStorageBuffers(pass, slot, &mb->buf, 1);
-}
-
-void matrix_buffer_destroy(gpu_ssbo_t* mb) {
-	if (mb && mb->buf) {
-		SDL_WaitForGPUIdle(mb->device);
-		SDL_ReleaseGPUBuffer(mb->device, mb->buf);
-		mb->buf = NULL;
-	}
-}
 // ========================================================================
 // 纹理管理
 // ========================================================================
@@ -906,7 +861,8 @@ static sdl3gpu_texture* new_texture(sdl3gpu_texture* tex, ovg_device_t* dev, SDL
 
 	tex->device = dev->gpuDevice;
 	tex->texture = SDL_CreateGPUTexture(dev->gpuDevice, &info);
-	assert(tex->texture && "Failed to create texture");
+	if (!tex->texture)
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create texture: %s", SDL_GetError());
 
 	return tex;
 }
@@ -930,7 +886,8 @@ static sdl3gpu_texture* new_msaa_texture(sdl3gpu_texture* tex, ovg_device_t* dev
 
 	tex->device = dev->gpuDevice;
 	tex->texture = SDL_CreateGPUTexture(dev->gpuDevice, &info);
-	assert(tex->texture && "Failed to create MSAA texture");
+	if (!tex->texture)
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create MSAA texture: %s", SDL_GetError());
 
 	return tex;
 }
@@ -954,7 +911,8 @@ static sdl3gpu_texture* new_depth_stencil_texture(sdl3gpu_texture* tex, ovg_devi
 	info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
 	tex->device = dev->gpuDevice;
 	tex->texture = SDL_CreateGPUTexture(dev->gpuDevice, &info);
-	assert(tex->texture && "Failed to create depth/stencil texture");
+	if (!tex->texture)
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create depth/stencil texture: %s", SDL_GetError());
 
 	return tex;
 }
@@ -1537,102 +1495,6 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 
 		ctx->pipeStencilClear = create_graphics_pipeline(dev, &inputs, ctx);
 	}
-	{
-		vg_pipeline_inputs inputs = {};
-		inputs.vertShader = vgVert;      // fullscreen tri
-		inputs.fragShader = vgFrag;      // empty FS
-		inputs.colorFormat = ctx->colorFormat;
-		inputs.depthFormat = ctx->depthFormat;
-		inputs.samples = ctx->samples;
-		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-		inputs.depthTestEnable = false;
-		inputs.depthWriteEnable = false;
-		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::none;
-		inputs.vertexStride = sizeof(ovgVertex);
-		inputs.numAttributes = 3;
-		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
-		inputs.enable_color_write_mask = true;
-		inputs.color_write_mask = 0;
-
-		// ★ push：EQUAL + INCR
-		inputs.ds.compare_mask = 0xFF;
-		inputs.ds.write_mask = 0xFF;
-
-		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_EQUAL;
-		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_INCREMENT_AND_CLAMP;
-		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
-
-		inputs.stencilBack = inputs.stencilFront;
-
-		ctx->pipeClipInc = create_graphics_pipeline(dev, &inputs, ctx);
-	}
-	{
-		vg_pipeline_inputs inputs = {};
-		inputs.vertShader = vgVert;
-		inputs.fragShader = vgFrag;
-		inputs.colorFormat = ctx->colorFormat;
-		inputs.depthFormat = ctx->depthFormat;
-		inputs.samples = ctx->samples;
-		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-		inputs.depthTestEnable = false;
-		inputs.depthWriteEnable = false;
-		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::none;
-		inputs.vertexStride = sizeof(ovgVertex);
-		inputs.numAttributes = 3;
-		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
-		inputs.enable_color_write_mask = true;
-		inputs.color_write_mask = 0;
-
-		// ★ pop：EQUAL + DECR
-		inputs.ds.compare_mask = 0xFF;
-		inputs.ds.write_mask = 0xFF;
-
-		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_EQUAL;
-		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_DECREMENT_AND_CLAMP;
-		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
-
-		inputs.stencilBack = inputs.stencilFront;
-
-		ctx->pipeClipDec = create_graphics_pipeline(dev, &inputs, ctx);
-	}
-	{
-		vg_pipeline_inputs inputs = {};
-		inputs.vertShader = vgVert;
-		inputs.fragShader = vgFrag;
-		inputs.colorFormat = ctx->colorFormat;
-		inputs.depthFormat = ctx->depthFormat;
-		inputs.samples = ctx->samples;
-		inputs.topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-		inputs.depthTestEnable = false;
-		inputs.depthWriteEnable = false;
-		inputs.stencilTestEnable = true;
-		inputs.blendMode = blendMode_e::normal_prem; // 或你需要的混合
-		inputs.vertexStride = sizeof(ovgVertex);
-		inputs.numAttributes = 3;
-		memcpy(inputs.attributes, vgAttrs, sizeof(vgAttrs));
-		inputs.enable_color_write_mask = true;
-		inputs.color_write_mask = SDL_GPU_COLORCOMPONENT_R |
-			SDL_GPU_COLORCOMPONENT_G |
-			SDL_GPU_COLORCOMPONENT_B |
-			SDL_GPU_COLORCOMPONENT_A;
-
-		// ★ 只在 CLIP 区内画
-		inputs.ds.compare_mask = STENCIL_CLIP_BIT;
-		inputs.ds.write_mask = 0;
-
-		inputs.stencilFront.compare_op = SDL_GPU_COMPAREOP_EQUAL;
-		inputs.stencilFront.pass_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
-		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
-
-		inputs.stencilBack = inputs.stencilFront;
-
-		ctx->pipeStencilDraw = create_graphics_pipeline(dev, &inputs, ctx);
-	}
 	// ═══════════════════════════════════════════════════════════════
 	// ⑥ 特效管线：掩码离屏渲染 + 特效层叠加
 	// ═══════════════════════════════════════════════════════════════
@@ -2104,31 +1966,6 @@ void reset_vgfbo_sdl3(vg_fbo_t* fbo, int width, int height) {
 		fbo->upsize = true;
 	}
 }
-// ========================================================================
-// MSAA 解析
-// ========================================================================
-void ovg_resolve_msaa_sdl3(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, vg_fbo_t* fbo) {
-	if (!ctx || !cmdBuf || !fbo) return;
-	if (!fbo->colorTexMS || !fbo->colorTex) return;
-	return;
-	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmdBuf);
-	if (!copyPass) return;
-
-	SDL_GPUTextureRegion srcRegion = {};
-	srcRegion.texture = ((sdl3gpu_texture*)fbo->colorTexMS)->texture;
-	srcRegion.w = fbo->width;
-	srcRegion.h = fbo->height;
-	srcRegion.d = 1;
-
-	SDL_GPUTextureRegion dstRegion = {};
-	dstRegion.texture = ((sdl3gpu_texture*)fbo->colorTex)->texture;
-	dstRegion.w = fbo->width;
-	dstRegion.h = fbo->height;
-	dstRegion.d = 1;
-
-	//SDL_ResolveGPUTexture(copyPass, &srcRegion, &dstRegion);
-	SDL_EndGPUCopyPass(copyPass);
-}
 
 void set_viewport2d(SDL_GPURenderPass* pass, const glm::ivec2& size) {
 	SDL_GPUViewport view = { 0,0,0,0,0,1 };
@@ -2159,6 +1996,7 @@ bool ovg_begin_pass(ovg_ctx_t* ctx, vg_fbo_t* fbo, bool clearAll) {
 		ctx->pass = nullptr;
 	}
 	ctx->bind_dirty = true;   // 新 render pass，绑定状态失效
+	ctx->gradDirty = true;    // fragment slot0 需重新推送
 	sdl3gpu_texture* colorTex = (sdl3gpu_texture*)fbo->colorTex;
 	sdl3gpu_texture* colorTexMS = (sdl3gpu_texture*)fbo->colorTexMS;
 	sdl3gpu_texture* depthStencil = (sdl3gpu_texture*)fbo->depthStencilTex;
@@ -2278,23 +2116,6 @@ void ovg_draw_arrays(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPURender
 // 数据上传
 // ========================================================================
 
-// ========================================================================
-// 几何缓冲区绑定
-// ========================================================================
-void ovg_bind_geom_buffers(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmdBuf, SDL_GPURenderPass* pass,
-	uint32_t vboOffset, uint32_t iboOffset) {
-	if (!ctx || !pass) return;
-
-	//SDL_GPUBufferBinding vboBinding = {};
-	//vboBinding.buffer = ctx->vboGeom.buffer;
-	//vboBinding.offset = vboOffset;
-	//SDL_BindGPUVertexBuffers(pass, 0, &vboBinding, 1);
-
-	//SDL_GPUBufferBinding iboBinding = {};
-	//iboBinding.buffer = ctx->iboGeom.buffer;
-	//iboBinding.offset = iboOffset;
-	//SDL_BindGPUIndexBuffer(pass, &iboBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-}
 
 // ========================================================================
 // 视口与裁剪
@@ -2385,20 +2206,21 @@ SDL_Rect set_scissor_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, glm::vec4* sci
 		r = { 0,0,(int)fbo->width,(int)fbo->height };
 		if (scissor)
 		{
-			r.x = scissor->x; r.y = scissor->y;
-			r.w = scissor->z;
-			if (scissor->x < 0)
+			r.x = (int)scissor->x; r.y = (int)scissor->y;
+			r.w = (int)scissor->z;
+			if (r.x < 0)
 			{
-				r.w += scissor->x;
+				r.w += r.x;
 				r.x = 0;
 			}
-			r.h = scissor->w;
-			if (scissor->y < 0)
+			r.h = (int)scissor->w;
+			if (r.y < 0)
 			{
-				r.h += scissor->y;
+				r.h += r.y;
 				r.y = 0;
 			}
-			r.w = (uint32_t)glm::max(scissor->z, 1.0f); r.h = (uint32_t)std::max(scissor->w, 1.0f);
+			if (r.w < 1) r.w = 1;
+			if (r.h < 1) r.h = 1;
 		}
 		SDL_SetGPUScissor(pass, &r);
 	}
@@ -2423,63 +2245,12 @@ void cmd_draw_full_screen_quad_sdl3(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcm
 	pc.fsq_patternType |= FULLSCREEN_BIT;
 	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	SDL_DrawGPUPrimitives(pass, 3, 1, firstVertIdx, 0);
-	pc.fsq_patternType &= ~FULLSCREEN_BIT;
-	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
+	// 不必恢复 pc：本函数返回后调用方不会再用 pc 画别的，下条命令会重推自己的 uniform
 	if (scissor)
 		SDL_SetGPUScissor(pass, clip && clip->w > 0 && clip->h > 0 ? clip : &bounds);
 #if defined(_DEBUG) 
 	SDL_PopGPUDebugGroup(fbo->cmd);
 #endif
-}
-void vgClipReset(ovg_ctx_t* ctx) {
-	SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeStencilClear);
-	SDL_SetGPUStencilReference(ctx->pass, 0);
-	SDL_DrawGPUPrimitives(ctx->pass, 3, 1, 0, 0);
-
-	ctx->clipDepth = 0;
-}
-void vgClipPush(ovg_ctx_t* ctx) {
-	if (ctx->clipDepth >= 255) return; // 防溢出
-
-	ctx->clipDepth++;
-
-	// ① 非零填充
-	SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeStencilFill);
-	SDL_SetGPUStencilReference(ctx->pass, 0);
-	//_vgDrawCurrentShape(ctx); // 你自己的“画当前形状”函数
-
-	// ② 非零 → 当前深度
-	SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeClipInc);
-	SDL_SetGPUStencilReference(ctx->pass, ctx->clipDepth - 1);
-	SDL_DrawGPUPrimitives(ctx->pass, 3, 1, 0, 0);
-}
-void vgClipPop(ovg_ctx_t* ctx) {
-	if (ctx->clipDepth <= 0) return;
-
-	SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeClipDec);
-	SDL_SetGPUStencilReference(ctx->pass, ctx->clipDepth);
-	SDL_DrawGPUPrimitives(ctx->pass, 3, 1, 0, 0);
-
-	ctx->clipDepth--;
-}
-bool vgClipIsActive(const ovg_ctx_t* ctx) {
-	return ctx->clipDepth > 0;
-}
-
-int vgClipGetDepth(const ovg_ctx_t* ctx) {
-	return ctx->clipDepth;
-}
-void vgDrawRect(ovg_ctx_t* ctx, float x, float y, float w, float h) {
-	if (vgClipIsActive(ctx)) {
-		SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeStencilDraw);
-		SDL_SetGPUStencilReference(ctx->pass, ctx->clipDepth);
-	}
-	else {
-		// 无裁剪时，用普通 pipeline（stencil test 关闭）
-		SDL_BindGPUGraphicsPipeline(ctx->pass, ctx->pipeOVER);
-	}
-
-	//_vgDrawRectCmd(ctx, x, y, w, h);
 }
 
 void draw_ct(SDL_GPURenderPass* pass, vgcmd_t* c)
@@ -2541,6 +2312,7 @@ static void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass, const fx_re
 	pu.rect[0] = fx->rect.x; pu.rect[1] = fx->rect.y;
 	pu.rect[2] = fx->rect.z; pu.rect[3] = fx->rect.w;
 	SDL_PushGPUFragmentUniformData(ctx->currentCmdBuf, 0, &pu, sizeof(pu));
+	ctx->gradDirty = true;   // slot0 已被特效参数占用
 	SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
 
 	SDL_Rect full = { 0, 0, (int)fbo->width, (int)fbo->height };
@@ -2594,18 +2366,32 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* c, SDL_Rect* cucli
 			}
 		}
 		if (t->pattern && t->pattern->data) {
-			auto gr = *((vg_gradient_t*)t->pattern->data);
-			glm::mat3 patmat = glm::mat3(1.0);
-			if (t->pattern->hasMatrix)
-			{
-				patmat = t->pattern->matrix;
+			auto src = (vg_gradient_t*)t->pattern->data;
+			grad_cache_key_t key;
+			key.src = src;
+			key.frame = (uint32_t)fbo->ctx->fxFrame;
+			key.type = (int)t->pattern->type;
+			key.hasMatrix = t->pattern->hasMatrix;
+			key.patmat = t->pattern->hasMatrix ? t->pattern->matrix : glm::mat3x2(1.0f);
+			key.vmat = pc.mat;
+			if (fbo->ctx->gradDirty || !(fbo->ctx->gradKey == key)) {
+				vg_gradient_t gr = *src;
+				ovg_mul_pat(&gr, key.type, pc.mat, key.patmat, key.hasMatrix);
+				fbo->ctx->gradKey = key;
+				fbo->ctx->gradDirty = false;
+				SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 			}
-			ovg_mul_pat(&gr, t->pattern->type, pc.mat, patmat, t->pattern->hasMatrix);
-			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
 		}
 		else {
-			vg_gradient_t gr = {};
-			SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
+			// 纯色：零渐变与变换无关，键保持默认（除帧号外全零），同一帧内只推一次
+			grad_cache_key_t key;
+			key.frame = (uint32_t)fbo->ctx->fxFrame;
+			if (fbo->ctx->gradDirty || !(fbo->ctx->gradKey == key)) {
+				static const vg_gradient_t gr = {};
+				fbo->ctx->gradKey = key;
+				fbo->ctx->gradDirty = false;
+				SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gr, sizeof(vg_gradient_t));
+			}
 		}
 		SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	}
@@ -2679,11 +2465,11 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 	SDL_GPUTextureSamplerBinding binding = { .texture = fbo->ctx->device->emptyTexture->texture,	.sampler = fbo->ctx->device->emptyTexture->sampler, };
 	if (c->texture) {
 		auto texid = (vg_image_t*)c->texture;
-		auto tex = fbo->ctx->textures[texid->id];
-		if (tex)
+		auto it = fbo->ctx->textures.find(texid->id);
+		if (it != fbo->ctx->textures.end() && it->second)
 		{
-			binding.texture = tex->texture;
-			binding.sampler = tex->sampler;
+			binding.texture = it->second->texture;
+			binding.sampler = it->second->sampler;
 		}
 	}
 	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
@@ -2696,6 +2482,7 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* c, const glm:
 		}
 		SDL_BindGPUFragmentSamplers(pass, 1, &binding, 1);
 		SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &c->mask_time, sizeof(float) * 2);
+		fbo->ctx->gradDirty = true;   // slot0 已被掩码参数占用
 	}
 	struct PushConsts
 	{
@@ -2751,42 +2538,6 @@ int ovg_get_window_swapchain(ovg_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait
 	}
 	ctx->currentCmdBuf = cmd;
 	return n;
-}
-void upload_pixels(ovg_ctx_t* r, sdl3gpu_texture* tex, vg_image_desc_t* desc)
-{
-	uint32_t bpp = (desc->format == VG_FORMAT_RGBA8) ? 4 : desc->stride;
-	uint32_t pitch = desc->width * bpp;
-	uint32_t size = pitch * desc->height;
-	if (size == 0) return;
-
-	SDL_GPUTransferBufferCreateInfo ti = {
-		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-		.size = size,
-	};
-	auto dev = r->device->gpuDevice;
-	SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(dev, &ti);
-	if (!tb) return;
-
-	void* ptr = SDL_MapGPUTransferBuffer(dev, tb, false);
-	if (ptr) {
-		SDL_memcpy(ptr, desc->pixels, size);
-		SDL_UnmapGPUTransferBuffer(dev, tb);
-	}
-
-	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
-	SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-
-	SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb, .offset = 0 };
-	SDL_GPUTextureRegion dst = {
-		.texture = tex->texture, .x = desc->x, .y = desc->y, .z = 0,
-		.w = desc->w, .h = desc->h, .d = 1,
-	};
-	SDL_UploadToGPUTexture(cp, &src, &dst, false);
-
-	SDL_EndGPUCopyPass(cp);
-	SDL_SubmitGPUCommandBuffer(cmd);
-
-	SDL_ReleaseGPUTransferBuffer(dev, tb);
 }
 
 
@@ -3372,73 +3123,6 @@ static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 		(e.type == VG_EFFECT_INNER_GLOW) ? 1 : 2;
 }
 
-#if 0
-void ovg_render_frame(ovg_ctx_t* ctx, vg_fbo_t* fbo, ovg_draw_data_t* data, size_t count)
-{
-	if (!ctx || !fbo || !(fbo->window || fbo->colorTex) || !data || !count)return;
-	if (!fbo->cmd)return;
-	auto cmd = fbo->cmd;
-	int smax = std::max(fbo->width, fbo->height);
-	ctx->currentCmdBuf = fbo->cmd;
-	size_t total_vbo = 0;
-	size_t total_ibo = 0;
-	size_t total_ssbo = 0;
-	int errornum = 0;
-	for (size_t i = 0; i < count; i++) {
-		auto kd = &data[i];
-		total_vbo += data[i].v_count * sizeof(ovgVertex);
-		total_vbo += data[i].v1_count * sizeof(geomVertex1);
-		total_vbo += data[i].v2_count * sizeof(geomVertex2);
-
-		total_ibo += data[i].i_count * sizeof(uint32_t);
-		total_ibo += data[i].ig_count * sizeof(uint32_t);
-		total_ssbo += data[i].instance_count * sizeof(glm::mat4);
-		errornum += build_devres(ctx, cmd, kd);
-	}
-
-	assert(errornum == 0);
-
-	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
-
-	for (size_t i = 0; i < count; i++) {
-		auto kd = &data[i];
-		kd->vg_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
-		kd->vg_offset.y = ctx->gpubuf->add_ibo(kd->vg_indices, kd->i_count * sizeof(uint32_t));
-		kd->geom_offset.x = ctx->gpubuf->add_vbo(kd->vertex1, kd->v1_count * sizeof(geomVertex1));
-		kd->geom_offset.y = ctx->gpubuf->add_vbo(kd->vertex2, kd->v2_count * sizeof(geomVertex2));
-		kd->geom_offset.z = ctx->gpubuf->add_ibo(kd->geom_indices, kd->ig_count * sizeof(uint32_t));
-		ctx->gpubuf->add_ssbo(kd->instance_data, kd->instance_count * sizeof(glm::mat4));
-	}
-	ctx->gpubuf->end(cmd);
-	auto cmd0 = ovg_begin_frame(ctx, fbo, true);
-	auto pass = ctx->pass;
-	SDL_Rect cuClip = {};
-	for (size_t d = 0; d < count; d++)
-	{
-		auto kd = data + d;
-		for (size_t i = 0; i < kd->count; i++)
-		{
-			auto& it = kd->d[i];
-			switch ((cmd_type_e)it.g.stype) {
-			case cmd_type_e::DRAW_VG:
-			{
-				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset);
-			}
-			break;
-			case cmd_type_e::DRAW_GEOM:
-			{
-				draw_geom(fbo, pass, &it.g, kd->geom_offset);
-			}
-			break;
-			}
-		}
-	}
-	ovg_end_frame(ctx, fbo);
-	SDL_SubmitGPUCommandBuffer(cmd);
-
-	deferred_free_advance(ctx);
-}
-#endif
 void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 {
 	if (!ctx /*|| !fbo */ || !data || !count)return;
@@ -3482,10 +3166,19 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 		ctx->currentCmdBuf = nullptr;
 		return;
 	}
-	assert(errornum == 0);
+	if (errornum)
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "ovg_render_frame: %d device resource(s) failed to build", errornum);
 	ctx->currentCmdBuf = cmd;
 	ctx->gpubuf->begin(total_vbo, total_ibo, total_ssbo);
-	std::stable_sort(tfb.begin(), tfb.end(), [](const render_item_t& a, const render_item_t& b) { return a.data.fbo < b.data.fbo; });
+	// 按 fbo 首次出现顺序聚组，减少 render pass 切换（不依赖指针值大小）
+	{
+		std::unordered_map<vg_fbo_t*, size_t> fbo_order;
+		for (auto& it : tfb)
+			fbo_order.emplace(it.data.fbo, fbo_order.size());
+		std::stable_sort(tfb.begin(), tfb.end(), [&fbo_order](const render_item_t& a, const render_item_t& b) {
+			return fbo_order[a.data.fbo] < fbo_order[b.data.fbo];
+		});
+	}
 	for (size_t i = 0; i < tfb.size(); i++) {
 		auto kd = &tfb[i].data;
 		kd->vg_offset.x = ctx->gpubuf->add_vbo(kd->vg_vertex, kd->v_count * sizeof(ovgVertex));
@@ -3696,6 +3389,7 @@ bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 	SDL_Init(SDL_INIT_VIDEO);
 
 	SDL_PropertiesID props = SDL_CreateProperties();
+#if OVG_HAS_VULKAN_HEADERS
 	if (is_vulkan)
 	{
 		SDL_GPUVulkanOptions vo = {};
@@ -3740,6 +3434,7 @@ bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan) {
 		SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
 		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
 	}
+#endif // OVG_HAS_VULKAN_HEADERS
 	bool debugmode = false;
 #ifdef _DEBUG
 	debugmode = true;
