@@ -1227,21 +1227,26 @@ float ovg_arc_length_general(float xc, float yc, float radius, float a1, float a
 		isnan(a1) || isinf(a1) || isnan(a2) || isinf(a2))
 		return 0.f;
 
+	// 2π 必须用 float 常量比较：delta 是 float，float(2π)=6.28318548 比
+	// double 的 2.f*M_PI=6.28318531 大 1.7e-7，恰为整 2π 的跨度会被误判
+	// "超期"而归一化成 ~0，maxcount 退化为 1、步长下限变成整跨度，
+	// 整圆弧只落 1 个点后被 o_finish_path 丢弃（2026-10-25 ovg_tools_test
+	// 三项 ring/clip 失败的根因）。
+	const float k2pi = (float)M_PI * 2.f;
 	float delta;
 	if (clockwise) {
 		// 顺时针（负方向）
 		delta = a1 - a2;
-		while (delta < 0.f) delta += 2.f * M_PI;
-		while (delta > 2.f * M_PI) delta -= 2.f * M_PI;
+		while (delta < 0.f) delta += k2pi;
+		while (delta > k2pi) delta -= k2pi;
 	}
 	else {
 		// 逆时针（正方向）
 		delta = a2 - a1;
-		while (delta < 0.f) delta += 2.f * M_PI;
-		while (delta > 2.f * M_PI) delta -= 2.f * M_PI;
+		while (delta < 0.f) delta += k2pi;
+		while (delta > k2pi) delta -= k2pi;
 	}
 	auto ret = std::max(radius * delta, 1.0f);
-	assert(ret < 4096.0f);
 	return ret;
 }
 void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float a2)
@@ -1256,7 +1261,6 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 	if (a2 - a1 > 2.f * M_PI) // limit arc to 2PI
 		a2 = a1 + 2.f * M_PI;
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
-	auto v0 = v;
 	float step = _get_arc_step(path, radius);
 	// 垃圾半径/矩阵缩放会把 step 压成 denormal，while 循环将添加几十亿个重复点占满内存；
 	int maxcount = ovg_arc_length_general(xc, yc, radius, a1, a2, false);
@@ -1276,8 +1280,10 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 		path->simpleConvex = false;
 	}
 	a += step;
-	if (EQUF(a2, a1))
+	if (EQUF(a2, a1)) { // 零跨度：保留起点（cairo 语义），补齐段闭合标记
+		_set_curve_end(path);
 		return;
+	}
 	while (a < a2) {
 		v.x = cosf(a) * radius + xc;
 		v.y = sinf(a) * radius + yc;
@@ -1308,11 +1314,10 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 
 	while (a2 > a1)
 		a2 -= 2.f * M_PI;
-	if (a1 - a2 > a1 + 2.f * M_PI) // limit arc to 2PI
+	if (a1 - a2 > 2.f * M_PI) // limit arc to 2PI
 		a2 = a1 - 2.f * M_PI;
 
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
-	auto v0 = v;
 	float step = _get_arc_step(ctx, radius);
 	int maxcount = ovg_arc_length_general(xc, yc, radius, a1, a2, true);
 	step = fmaxf(step, (a1 - a2) / maxcount);
@@ -1334,8 +1339,10 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 
 	a -= step;
 
-	if (EQUF(a2, a1))
+	if (EQUF(a2, a1)) { // 零跨度：保留起点（cairo 语义），补齐段闭合标记
+		_set_curve_end(ctx);
 		return;
+	}
 
 	while (a > a2) {
 		v.x = cosf(a) * radius + xc;
