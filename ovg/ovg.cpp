@@ -1220,9 +1220,36 @@ void ovg_rel_line_to(ovg_path_t* path, float dx, float dy)
 	auto cp = _get_current_position(path);
 	_line_to(path, cp.x + dx, cp.y + dy);
 }
+float ovg_arc_length_general(float xc, float yc, float radius, float a1, float a2, bool clockwise)
+{
+	// 参数校验
+	if (isnan(radius) || isinf(radius) || radius < 0.f ||
+		isnan(a1) || isinf(a1) || isnan(a2) || isinf(a2))
+		return 0.f;
+
+	float delta;
+	if (clockwise) {
+		// 顺时针（负方向）
+		delta = a1 - a2;
+		while (delta < 0.f) delta += 2.f * M_PI;
+		while (delta > 2.f * M_PI) delta -= 2.f * M_PI;
+	}
+	else {
+		// 逆时针（正方向）
+		delta = a2 - a1;
+		while (delta < 0.f) delta += 2.f * M_PI;
+		while (delta > 2.f * M_PI) delta -= 2.f * M_PI;
+	}
+	auto ret = std::max(radius * delta, 1.0f);
+	assert(ret < 4096.0f);
+	return ret;
+}
 void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float a2)
 {
 	if (!path)
+		return;
+	// 上游状态损坏（垃圾半径/角度）会让下面两个 while 无限加点或无法归一化
+	if (isnan(radius) || isinf(radius) || radius < 0.f || isnan(a1) || isinf(a1) || isnan(a2) || isinf(a2))
 		return;
 	while (a2 < a1) // positive arc must have a1<a2
 		a2 += 2.f * M_PI;
@@ -1231,6 +1258,9 @@ void ovg_arc(ovg_path_t* path, float xc, float yc, float radius, float a1, float
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
 	auto v0 = v;
 	float step = _get_arc_step(path, radius);
+	// 垃圾半径/矩阵缩放会把 step 压成 denormal，while 循环将添加几十亿个重复点占满内存；
+	int maxcount = ovg_arc_length_general(xc, yc, radius, a1, a2, false);
+	step = fmaxf(step, (a2 - a1) / maxcount);
 	float a = a1;
 	if (_current_path_is_empty(path)) {
 		_set_curve_start(path);
@@ -1272,6 +1302,9 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 	if (!path)
 		return;
 	auto ctx = path;
+	// 同 ovg_arc：状态损坏防护 + 细分点数上限
+	if (isnan(radius) || isinf(radius) || radius < 0.f || isnan(a1) || isinf(a1) || isnan(a2) || isinf(a2))
+		return;
 
 	while (a2 > a1)
 		a2 -= 2.f * M_PI;
@@ -1281,6 +1314,8 @@ void ovg_arc_negative(ovg_path_t* path, float xc, float yc, float radius, float 
 	glm::vec2 v = { cosf(a1) * radius + xc, sinf(a1) * radius + yc };
 	auto v0 = v;
 	float step = _get_arc_step(ctx, radius);
+	int maxcount = ovg_arc_length_general(xc, yc, radius, a1, a2, true);
+	step = fmaxf(step, (a1 - a2) / maxcount);
 	float a = a1;
 
 	if (_current_path_is_empty(ctx)) {
@@ -2741,16 +2776,16 @@ void rvg_cx::fill_non_zero_tess2(ovg_path_t* ctx)
 		v.pos = { (float)verts[i * 2], (float)verts[i * 2 + 1] };
 		_vertex.push_back(v);
 	}
-		for (int i = 0; i < nelems; ++i) {
-			TESSindex a = elems[i * 3 + 0];
-			TESSindex b = elems[i * 3 + 1];
-			TESSindex c = elems[i * 3 + 2];
-			if (a == TESS_UNDEF || b == TESS_UNDEF || c == TESS_UNDEF) continue;
-			_indices.push_back(base + a);
-			_indices.push_back(base + b);
-			_indices.push_back(base + c);
-		}
+	for (int i = 0; i < nelems; ++i) {
+		TESSindex a = elems[i * 3 + 0];
+		TESSindex b = elems[i * 3 + 1];
+		TESSindex c = elems[i * 3 + 2];
+		if (a == TESS_UNDEF || b == TESS_UNDEF || c == TESS_UNDEF) continue;
+		_indices.push_back(base + a);
+		_indices.push_back(base + b);
+		_indices.push_back(base + c);
 	}
+}
 #endif
 
 inline float ecp_zcross(rvg_cx::ear_clip_point* p0, rvg_cx::ear_clip_point* p1, rvg_cx::ear_clip_point* p2) {
@@ -2924,9 +2959,9 @@ void rvg_cx::fill_non_zero(ovg_path_t* p)
 			while (totPts < pathPointCount)
 				totPts += (p->pathes[ptrPath++] & PATH_ELT_MASK);
 		}
-			else
-				ptrPath++;
-		}
+		else
+			ptrPath++;
+	}
 #ifdef VG_FILL_NZ_GLUTESS2
 	if (ear_clip_failed) {
 		_vertex.resize(vtx_mark);
@@ -4307,31 +4342,31 @@ void mesh2d_x::add_texture0(void* img, const glm::ivec2& texsize, const glm::ive
 	const float sn = std::sin(rad);
 
 	auto xform = [&](glm::vec2 p) -> glm::vec2
-	{
-		if (flip_x) p.x = dst_cx * 2.0f - p.x;
-		if (flip_y) p.y = dst_cy * 2.0f - p.y;
-		if (rotate)
 		{
-			const float dx = p.x - rot_cx;
-			const float dy = p.y - rot_cy;
-			p.x = rot_cx + cs * dx - sn * dy;
-			p.y = rot_cy + sn * dx + cs * dy;
-		}
-		if (matrix)
-		{
-			const glm::vec2 q = (*matrix) * glm::vec3(p.x, p.y, 1.0f);
-			p = q;
-		}
-		return p;
-	};
+			if (flip_x) p.x = dst_cx * 2.0f - p.x;
+			if (flip_y) p.y = dst_cy * 2.0f - p.y;
+			if (rotate)
+			{
+				const float dx = p.x - rot_cx;
+				const float dy = p.y - rot_cy;
+				p.x = rot_cx + cs * dx - sn * dy;
+				p.y = rot_cy + sn * dx + cs * dy;
+			}
+			if (matrix)
+			{
+				const glm::vec2 q = (*matrix) * glm::vec3(p.x, p.y, 1.0f);
+				p = q;
+			}
+			return p;
+		};
 
 	if (sliced.x <= 0)
 	{
 		vertex_t vertex[] = {
-			{ { x, y }, { uv.x, uv.y }, color },
-			{ { x + width, y }, { uv.z, uv.y }, color },
-			{ { x + width, y + height }, { uv.z, uv.w }, color },
-			{ { x, y + height }, { uv.x, uv.w }, color },
+			{ { x, y },{ uv.x, uv.y }, color },
+			{ { x + width, y },{ uv.z, uv.y }, color },
+			{ { x + width, y + height },{ uv.z, uv.w }, color },
+			{ { x, y + height },{ uv.x, uv.w }, color },
 		};
 		for (auto& v : vertex)
 			v.position = xform(v.position);
@@ -4374,37 +4409,37 @@ void mesh2d_x::add_texture0(void* img, const glm::ivec2& texsize, const glm::ive
 
 	vertex_t vertex[] = {
 		// 0
-		{ { x, y }, { uv.x, uv.y }, color },
+		{ { x, y },{ uv.x, uv.y }, color },
 		// 1
-		{ { x, y + height }, { uv.x, uv.w }, color },
+		{ { x, y + height },{ uv.x, uv.w }, color },
 		// 2
-		{ { x + width, y }, { uv.z, uv.y }, color },
+		{ { x + width, y },{ uv.z, uv.y }, color },
 		// 3
-		{ { x + width, y + height }, { uv.z, uv.w }, color },
+		{ { x + width, y + height },{ uv.z, uv.w }, color },
 		// 4
-		{ { x + left, y + top }, { suv.x, suv.y }, color },
+		{ { x + left, y + top },{ suv.x, suv.y }, color },
 		// 5
-		{ { x + left, y + height - bottom }, { suv.x, suv.w }, color },
+		{ { x + left, y + height - bottom },{ suv.x, suv.w }, color },
 		// 6
-		{ { x + width - right, y + top }, { suv.z, suv.y }, color },
+		{ { x + width - right, y + top },{ suv.z, suv.y }, color },
 		// 7
-		{ { x + width - right, y + height - bottom }, { suv.z, suv.w }, color },
+		{ { x + width - right, y + height - bottom },{ suv.z, suv.w }, color },
 		// 8
-		{ { x, y + top }, { uv.x, suv.y }, color },
+		{ { x, y + top },{ uv.x, suv.y }, color },
 		// 9
-		{ { x, y + height - bottom }, { uv.x, suv.w }, color },
+		{ { x, y + height - bottom },{ uv.x, suv.w }, color },
 		// 10
-		{ { x + width, y + top }, { uv.z, suv.y }, color },
+		{ { x + width, y + top },{ uv.z, suv.y }, color },
 		// 11
-		{ { x + width, y + height - bottom }, { uv.z, suv.w }, color },
+		{ { x + width, y + height - bottom },{ uv.z, suv.w }, color },
 		// 12
-		{ { x + left, y }, { suv.x, uv.y }, color },
+		{ { x + left, y },{ suv.x, uv.y }, color },
 		// 13
-		{ { x + left, y + height }, { suv.x, uv.w }, color },
+		{ { x + left, y + height },{ suv.x, uv.w }, color },
 		// 14
-		{ { x + width - right, y }, { suv.z, uv.y }, color },
+		{ { x + width - right, y },{ suv.z, uv.y }, color },
 		// 15
-		{ { x + width - right, y + height }, { suv.z, uv.w }, color },
+		{ { x + width - right, y + height },{ suv.z, uv.w }, color },
 	};
 	for (auto& v : vertex)
 		v.position = xform(v.position);
@@ -5156,7 +5191,7 @@ struct ovg_recording_t
 // 深拷贝一条 vg_state_save_t（含 dashes 和 pattern），
 // 结果中的裸指针全部存入 owner，供 recording_destroy 释放。
 static vg_state_save_t* rec_clone_state(vg_state_save_t* src,
-                                        std::vector<std::pair<void*, size_t>>& owned)
+	std::vector<std::pair<void*, size_t>>& owned)
 {
 	if (!src) return nullptr;
 	auto ns = (vg_state_save_t*)malloc(sizeof(vg_state_save_t));
@@ -5222,14 +5257,14 @@ ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
 			if (c.vg.vertex.y > 0)
 			{
 				copy_v_from = std::min(copy_v_from, (uint32_t)c.vg.vertex.x);
-				copy_v_to   = std::max(copy_v_to,   (uint32_t)(c.vg.vertex.x + c.vg.vertex.y));
+				copy_v_to = std::max(copy_v_to, (uint32_t)(c.vg.vertex.x + c.vg.vertex.y));
 				// 重写：从绝对偏移 → 相对 recording 内部的偏移
 				c.vg.vertex.x = (int)(c.vg.vertex.x - sv);
 			}
 			if (c.vg.index.y > 0)
 			{
 				copy_i_from = std::min(copy_i_from, (uint32_t)c.vg.index.x);
-				copy_i_to   = std::max(copy_i_to,   (uint32_t)(c.vg.index.x + c.vg.index.y));
+				copy_i_to = std::max(copy_i_to, (uint32_t)(c.vg.index.x + c.vg.index.y));
 				c.vg.index.x = (int)(c.vg.index.x - si);
 			}
 			c.vg.state = rec_clone_state(c.vg.state, rec->owned);
@@ -5317,7 +5352,7 @@ void vctx_replay(rvg_t* ctx0, ovg_recording_t* rec)
 		if (c.vg.stype == 0)
 		{
 			if (c.vg.vertex.y > 0) c.vg.vertex.x += (int)delta_vtx;
-			if (c.vg.index.y > 0)   c.vg.index.x   += (int)delta_idx;
+			if (c.vg.index.y > 0)   c.vg.index.x += (int)delta_idx;
 			c.vg.state = rec_clone_state_into_target(v, c.vg.state);
 		}
 		v->cmdlist.push_back(c);
@@ -5363,7 +5398,7 @@ void vctx_replay_command(rvg_t* ctx0, ovg_recording_t* rec, uint32_t cmdIndex)
 
 	auto c = rc;
 	if (c.vg.vertex.y > 0) c.vg.vertex.x += (int)delta_vtx;
-	if (c.vg.index.y > 0)   c.vg.index.x   += (int)delta_idx;
+	if (c.vg.index.y > 0)   c.vg.index.x += (int)delta_idx;
 	c.vg.state = rec_clone_state_into_target(v, c.vg.state);
 
 	v->cmdlist.push_back(c);
