@@ -2099,6 +2099,10 @@ struct rvg_cx :public rvg_t {
 	// 临时缓冲用
 	vg_vector<ear_clip_point> ecpsd;
 	vg_vector<glm::vec2> _normals;
+	// tess2 常驻资源：细分器与轮廓缓冲跨 fill 复用（惰性创建，析构释放）
+	TESStesselator* _tess = nullptr;
+	vg_vector<float> _tess_contour;
+	vg_vector<glm::vec4> _fill_bbox;	// 子路径 bbox 临时缓冲（tess2 路由判定用）
 
 	vg_map<vg_image_t*, vg_image_desc_t> _images;
 	vg_vector<vg_image_desc_t*> _images_up;
@@ -2140,6 +2144,8 @@ public:
 	void image_destroy(vg_image_t* img);
 public:
 	void fill_non_zero_tess2(ovg_path_t* p);
+	// 保守判定路径是否必须走 tess2 交叉填充（EVEN_ODD / 子路径 bbox 重叠）
+	bool fill_needs_tess2(ovg_path_t* p);
 	void fill_non_zero(ovg_path_t* p);
 
 	bool _build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve);
@@ -2169,6 +2175,8 @@ rvg_cx::rvg_cx(vg_alloc_cx* a)
 	_indices(a),
 	ecpsd(a),
 	_normals(a),
+	_tess_contour(a),
+	_fill_bbox(a),
 	_images(a),
 	_images_up(a),
 	gps(a)
@@ -2178,7 +2186,12 @@ rvg_cx::rvg_cx(vg_alloc_cx* a)
 }
 
 rvg_cx::~rvg_cx()
-{}
+{
+	if (_tess) {
+		tessDeleteTess(_tess);
+		_tess = nullptr;
+	}
+}
 void rvg_cx::clear_all()
 {
 	gps.clear();
@@ -2640,11 +2653,15 @@ static float path_signed_area(const glm::vec2* pts, int n) {
 }
 
 // ---------------------------------------------------------------------------
-// 用 tess2 做 non-zero fill 的主函数
+// 用 tess2 做 non-zero/odd fill 的主函数
 // 替换原来的 fill_non_zero
 // ---------------------------------------------------------------------------
 
 #ifdef VG_FILL_NZ_GLUTESS2
+
+// 注意：tess2 的 TESSalloc 若不提供 memrealloc，优先队列扩容会返回
+// INV_HANDLE（内存不足哨兵）并在 sweep 中崩溃，因此这里必须用自带
+// realloc 的默认分配器；常驻复用后其 bucket 缓存跨 fill 生效。
 
 void rvg_cx::fill_non_zero_tess2(ovg_path_t* ctx)
 {
@@ -2677,27 +2694,31 @@ void rvg_cx::fill_non_zero_tess2(ovg_path_t* ctx)
 		}
 		return;
 	}
-	TESStesselator* tess = tessNewTess(nullptr);
+	// 细分器常驻复用：bucket 缓存跨 fill 生效
+	if (!_tess)
+		_tess = tessNewTess(nullptr);
+	TESStesselator* tess = _tess;
 	if (!tess) return;
 	uint32_t ptrPath = 0;
 	uint32_t firstPtIdx = 0;
 	while (ptrPath < ctx->pathPtr) {
 		uint32_t pathPointCount = ctx->pathes[ptrPath] & PATH_ELT_MASK;
 		if (pathPointCount > 2) {
-			std::vector<TESSreal> dpts(pathPointCount * 2);
+			_tess_contour.clear();
+			_tess_contour.reserve(pathPointCount * 2 + 2);
 			for (uint32_t i = 0; i < pathPointCount; ++i) {
 				const auto& p = ctx->points[firstPtIdx + i];
-				dpts[i * 2 + 0] = p.x;
-				dpts[i * 2 + 1] = p.y;
+				_tess_contour.push_back(p.x);
+				_tess_contour.push_back(p.y);
 			}
 			// 显式闭合（关键）
 			if (pathPointCount < 3 ||
-				(dpts[0] != dpts[(pathPointCount - 1) * 2 + 0] ||
-					dpts[1] != dpts[(pathPointCount - 1) * 2 + 1])) {
-				dpts.push_back(dpts[0]);
-				dpts.push_back(dpts[1]);
+				(_tess_contour[0] != _tess_contour[(pathPointCount - 1) * 2 + 0] ||
+					_tess_contour[1] != _tess_contour[(pathPointCount - 1) * 2 + 1])) {
+				_tess_contour.push_back(_tess_contour[0]);
+				_tess_contour.push_back(_tess_contour[1]);
 			}
-			tessAddContour(tess, 2, dpts.data(), sizeof(TESSreal) * 2, (int)dpts.size() / 2);
+			tessAddContour(tess, 2, _tess_contour.data(), sizeof(TESSreal) * 2, (int)_tess_contour.size() / 2);
 		}
 		firstPtIdx += pathPointCount;
 		if (o_path_has_curves(ctx->pathes.data(), ptrPath)) {
@@ -2720,17 +2741,16 @@ void rvg_cx::fill_non_zero_tess2(ovg_path_t* ctx)
 		v.pos = { (float)verts[i * 2], (float)verts[i * 2 + 1] };
 		_vertex.push_back(v);
 	}
-	for (int i = 0; i < nelems; ++i) {
-		TESSindex a = elems[i * 3 + 0];
-		TESSindex b = elems[i * 3 + 1];
-		TESSindex c = elems[i * 3 + 2];
-		if (a == TESS_UNDEF || b == TESS_UNDEF || c == TESS_UNDEF) continue;
-		_indices.push_back(base + a);
-		_indices.push_back(base + b);
-		_indices.push_back(base + c);
+		for (int i = 0; i < nelems; ++i) {
+			TESSindex a = elems[i * 3 + 0];
+			TESSindex b = elems[i * 3 + 1];
+			TESSindex c = elems[i * 3 + 2];
+			if (a == TESS_UNDEF || b == TESS_UNDEF || c == TESS_UNDEF) continue;
+			_indices.push_back(base + a);
+			_indices.push_back(base + b);
+			_indices.push_back(base + c);
+		}
 	}
-	tessDeleteTess(tess);
-}
 #endif
 
 inline float ecp_zcross(rvg_cx::ear_clip_point* p0, rvg_cx::ear_clip_point* p1, rvg_cx::ear_clip_point* p2) {
@@ -2750,18 +2770,72 @@ bool ptInTriangle(const glm::vec2& p, const glm::vec2& p0, const glm::vec2& p1, 
 	return (s >= 0) && (t >= 0) && (s + t <= D);
 }
 
+// 保守判定路径是否必须走 tess2 交叉填充：
+// - EVEN_ODD 且非"无曲线的单凸子路径"（后者两种规则等价，耳切即可）
+// - 子路径 bbox 两两重叠（嵌套洞/相交轮廓，winding 语义必需）
+// 自交单轮廓无法廉价预判，由 fill_non_zero 的耳切失败回退兜底。
+bool rvg_cx::fill_needs_tess2(ovg_path_t* p)
+{
+	if (!p || !p->pathPtr) return false;
+	const bool single_convex = (p->pathPtr == 1 && (p->pathes[0] & PATH_IS_CONVEX_BIT));
+	if (p->t && p->t->curFillRule != VG_FILL_RULE_NON_ZERO && !single_convex)
+		return true;
+	// 一遍扫描各子路径 bbox（含曲线子路径的展平点）
+	_fill_bbox.clear();
+	uint32_t ptrPath = 0;
+	uint32_t firstPtIdx = 0;
+	while (ptrPath < p->pathPtr) {
+		uint32_t n = p->pathes[ptrPath] & PATH_ELT_MASK;
+		if (n > 2) {
+			glm::vec4 bb(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+			for (uint32_t i = 0; i < n; ++i) {
+				const auto& pt = p->points[firstPtIdx + i];
+				bb.x = std::min(bb.x, pt.x); bb.y = std::min(bb.y, pt.y);
+				bb.z = std::max(bb.z, pt.x); bb.w = std::max(bb.w, pt.y);
+			}
+			_fill_bbox.push_back(bb);
+		}
+		firstPtIdx += n;
+		if (o_path_has_curves(p->pathes.data(), ptrPath)) {
+			ptrPath++;
+			uint32_t totPts = 0;
+			while (totPts < n)
+				totPts += (p->pathes[ptrPath++] & PATH_ELT_MASK);
+		}
+		else
+			ptrPath++;
+	}
+	if (_fill_bbox.size() < 2)
+		return false;
+	// 按 minX 排序后只测 x 区间有交集的对：平铺/网格类路径内层循环
+	// 只覆盖同列元素，整体近似线性；嵌套/交叠路径会命中并提前返回
+	std::sort(_fill_bbox.begin(), _fill_bbox.end(),
+		[](const glm::vec4& a, const glm::vec4& b) { return a.x < b.x; });
+	for (size_t i = 0; i < _fill_bbox.size(); ++i) {
+		const auto& a = _fill_bbox[i];
+		for (size_t j = i + 1; j < _fill_bbox.size() && _fill_bbox[j].x < a.z; ++j) {
+			const auto& b = _fill_bbox[j];
+			if (b.z > a.x && a.w > b.y && b.w > a.y)
+				return true;
+		}
+	}
+	return false;
+}
+
+// 默认填充：单轮廓简单多边形 / 互不相交子路径走耳切快速路径；
+// 交叉填充语义（EVEN_ODD、嵌套/重叠/自交轮廓）自动路由到 tess2。
 void rvg_cx::fill_non_zero(ovg_path_t* p)
 {
 	auto t = p->t;
 	uint32_t color = t->color;
 	p->color = color;
-	if (p->enable_tess2)
-	{
 #ifdef VG_FILL_NZ_GLUTESS2
+	if (p->enable_tess2 || fill_needs_tess2(p))
+	{
 		fill_non_zero_tess2(p);
 		return;
-#endif
 	}
+#endif
 	uint32_t ptrPath = 0;
 	uint32_t firstPtIdx = 0;
 	const glm::vec3 uv = { 0,0,-1 };
@@ -2770,6 +2844,12 @@ void rvg_cx::fill_non_zero(ovg_path_t* p)
 	auto pcolor = p->colors.data();
 	auto pcn = p->colors.size();
 	if (p->colors.empty())pcolor = 0;
+#ifdef VG_FILL_NZ_GLUTESS2
+	// 耳切失败（自交/退化轮廓）时回滚本次几何，整条路径重走 tess2
+	const size_t vtx_mark = _vertex.size();
+	const size_t idx_mark = _indices.size();
+	bool ear_clip_failed = false;
+#endif
 	while (ptrPath < p->pathPtr) {
 		uint32_t pathPointCount = p->pathes[ptrPath] & PATH_ELT_MASK;
 		auto col = pcolor && ptrPath < pcn ? pcolor[ptrPath] : color;
@@ -2796,7 +2876,12 @@ void rvg_cx::fill_non_zero(ovg_path_t* p)
 			ear_clip_point* ecp_current = ecps;
 			uint32_t        tries = 0;
 			while (ecps_count > 3) {
-				if (tries > ecps_count) { break; }
+				if (tries > ecps_count) {
+#ifdef VG_FILL_NZ_GLUTESS2
+					ear_clip_failed = true;
+#endif
+					break;
+				}
 				ear_clip_point* v0 = ecp_current->next, * v1 = ecp_current, * v2 = ecp_current->next->next;
 				if (ecp_zcross(v0, v2, v1) < 0) {
 					ecp_current = ecp_current->next;
@@ -2839,9 +2924,16 @@ void rvg_cx::fill_non_zero(ovg_path_t* p)
 			while (totPts < pathPointCount)
 				totPts += (p->pathes[ptrPath++] & PATH_ELT_MASK);
 		}
-		else
-			ptrPath++;
+			else
+				ptrPath++;
+		}
+#ifdef VG_FILL_NZ_GLUTESS2
+	if (ear_clip_failed) {
+		_vertex.resize(vtx_mark);
+		_indices.resize(idx_mark);
+		fill_non_zero_tess2(p);
 	}
+#endif
 }
 
 

@@ -1,7 +1,10 @@
 // effect_present.slang -- compose and draw an effect layer onto the main framebuffer
 // mode: 0 = outer glow, 1 = inner glow, 2 = shadow
-// The mask/effect textures are stored with the flipped 2D viewport, so the
-// vertical offset is applied in texture space.
+// The mask/effect textures and the main framebuffer both use the same
+// set_viewport2d projection, so uv maps 1:1 to screen pixels (y-down).
+// Sampling at (uv - offset*texel) shifts the layer by +offset on screen:
+// positive x -> right, positive y -> down (vg_effect_t offset is in device
+// pixels, matching the y-down convention used everywhere else in ovg).
 
 struct VSOut {
 	float4 pos : SV_Position;
@@ -44,7 +47,7 @@ float4 fs(VSOut input) : SV_Target
 	float2 texel = 1.0 / pu.rect.zw;
 
 	float m = maskSrc.SampleLevel(uv, 0.0).r;
-	float2 off = float2(-pu.offset.x, pu.offset.y) * texel;
+	float2 off = -pu.offset * texel;
 	float b = blurSrc.SampleLevel(uv + off, 0.0).r;
 
 	float a;

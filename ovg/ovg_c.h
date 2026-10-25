@@ -849,7 +849,7 @@ typedef struct ovg_ctx_cb {
 	rvg_t* (*new_rvg)(mem_resource_t* ac);
 	void (*destroy_rvg)(rvg_t* p);
 	void(*clear)(rvg_t* v);			// 清空画布 
-	void(*set_enable_tess2)(rvg_t* ctx, bool enable);
+	void(*set_enable_tess2)(rvg_t* ctx, bool enable);	// 强制全量 tess2 交叉填充；默认按需自动路由（ODD/嵌套/重叠/自交轮廓）
 	// 路径操作
 	ovg_path_t* (*get_path)(rvg_t* ctx);
 	void (*new_path)(rvg_t* ctx);
@@ -894,7 +894,7 @@ typedef struct ovg_ctx_cb {
 	void(*set_source_surface)(rvg_t* ctx, vg_image_t* surf, float x, float y);
 	void(*set_source)(rvg_t* ctx, vg_pattern_t* pat);
 	void(*set_operator)(rvg_t* ctx, int op);
-	void(*set_fill_rule)(rvg_t* ctx, int fr);
+	void(*set_fill_rule)(rvg_t* ctx, int fr);	// 填充规则：单轮廓简单路径两规则等价；ODD/嵌套/重叠/自交轮廓自动走 tess2 细分（tess2 分支不支持逐段颜色）
 	void(*set_dash)(rvg_t* ctx, const float* dashes, uint32_t num_dashes, float offset);		// 虚线
 	void(*set_dash8)(rvg_t* ctx, uint64_t dashes, uint32_t num_dashes, float offset);								// 虚线,用uint8_t v8[8]表示
 	void(*translate)(rvg_t* ctx, float dx, float dy);
@@ -928,7 +928,7 @@ typedef struct ovg_ctx_cb {
 	void(*fill)(rvg_t* v);
 	void(*fill_preserve)(rvg_t* v);
 	void(*paint)(rvg_t* v);			// 全屏渲染
-	void(*reset_clip)(rvg_t* v, uint8_t ref);	// 重置裁剪，0清空，1全部通过
+	void(*reset_clip)(rvg_t* v, uint8_t ref);	// 重置裁剪，0清空，1全部通过；路径裁剪(clip)前需先 reset_clip(v,0) 清模板才会生效
 	void(*clip)(rvg_t* v);			// 路径裁剪，清空当前路径
 	void(*clip_preserve)(rvg_t* v);	// 路径裁剪
 	void(*clip_rect)(rvg_t* v, int x, int y, int width, int height);	// 矩形裁剪
