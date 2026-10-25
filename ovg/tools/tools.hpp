@@ -17,12 +17,15 @@
 	  UI 编辑器  ：checkerboard/canvas_grid/origin_axes（画布底）、selection_frame/
 	              rotate_handle/marquee（选择变换）、guide_v/h/insertion_marker/
 	              measure（对齐吸附与拖放指示）、hue_bar/sv_box/alpha_bar/
-	              color_wheel/swatch（P05 取色器）。
+	              color_wheel/swatch/sv_cursor/bar_thumb/swatch_alpha
+	              （P05 取色器：渐变原语 + 交互光标 + 透明预览）。
 	  动画编辑器 ：time_ruler/playhead/track_lane/range_bar/keyframe/keyframe_link
 	              （T02 Timeline）、bezier3/bezier2/curve_handles/sample_bezier3
 	              （P09 曲线与缓动编辑，cubic_v_t 可直接对接 gui/anim.h）。
 	  GUI 库通用 ：矩形/圆角/圆/椭圆/药丸/环弧/星形/多边形/折线/勾叉箭头/虚线/
 	              渐变/发光阴影特效。
+	  颜色数学  ：hsva/rgb_to_hsv（HSV 往返）、srgb_to_linear/linear_to_srgb
+	              （P05 颜色空间策略，IEC 61966-2-1 分段传输函数，alpha 直通）。
 */
 
 // ovg_c.h 的 C++ 模式要求先包含 glm（vec2/mat3x2 等直接 using glm 类型）
@@ -84,6 +87,74 @@ inline uint32_t hsva(float h, float s, float v, float a = 1.f)
 	else if (h < 300.f) { r = x; g = 0; b = c; }
 	else                { r = c; g = 0; b = x; }
 	return rgba_f(r + m, g + m, b + m, a);
+}
+// 0xAABBGGRR -> HSV；h 单位度、s/v 0~1（hsva 的逆变换，无彩色时 h=s=0）。
+// 经 8bit 量化的往返存在固有误差（约 ±2 度），光标定位足够。
+inline void rgb_to_hsv(uint32_t c, float& h, float& s, float& v)
+{
+	float r = (float)(c & 0xFF) / 255.f;
+	float g = (float)((c >> 8) & 0xFF) / 255.f;
+	float b = (float)((c >> 16) & 0xFF) / 255.f;
+	float maxc = std::max({ r, g, b });
+	float minc = std::min({ r, g, b });
+	float d = maxc - minc;
+	v = maxc;
+	if (d <= 0.f)
+	{
+		h = 0.f;
+		s = 0.f;
+		return;
+	}
+	s = d / maxc;
+	if (maxc == r)
+		h = 60.f * std::fmod((g - b) / d, 6.f);
+	else if (maxc == g)
+		h = 60.f * ((b - r) / d + 2.f);
+	else
+		h = 60.f * ((r - g) / d + 4.f);
+	if (h < 0.f)
+		h += 360.f;
+}
+// sRGB 传输函数（IEC 61966-2-1 分段式，非纯 2.2 幂）；通道值 0~1，越界裁剪
+inline float srgb_to_linear(float c)
+{
+	c = c < 0.f ? 0.f : (c > 1.f ? 1.f : c);
+	return c <= 0.04045f ? c / 12.92f
+		: std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+inline float linear_to_srgb(float c)
+{
+	c = c < 0.f ? 0.f : (c > 1.f ? 1.f : c);
+	return c <= 0.0031308f ? 12.92f * c
+		: 1.055f * std::pow(c, 1.f / 2.4f) - 0.055f;
+}
+// 8bit 量化版（四舍五入，与 rgba_f 的 c8 同款约定；两端点 0/255 精确映射）
+inline uint8_t srgb_to_linear_u8(uint8_t c)
+{
+	float v = srgb_to_linear((float)c / 255.f) * 255.f + 0.5f;
+	return (uint8_t)(v > 255.f ? 255.f : v);
+}
+inline uint8_t linear_to_srgb_u8(uint8_t c)
+{
+	float v = linear_to_srgb((float)c / 255.f) * 255.f + 0.5f;
+	return (uint8_t)(v > 255.f ? 255.f : v);
+}
+// 整色 0xAABBGGRR 转换，alpha 直通（透明度是覆盖率而非强度，不做 gamma）；
+// 逐字节转换后按原位移回填，与 R/B 字序无关。P05 颜色空间策略：应用在
+// 属性读写边界选择存储空间（sRGB 直存或线性化存储）。
+inline uint32_t srgb_color_to_linear(uint32_t c)
+{
+	return (uint32_t)srgb_to_linear_u8((uint8_t)(c & 0xFF))
+		| (uint32_t)srgb_to_linear_u8((uint8_t)((c >> 8) & 0xFF)) << 8
+		| (uint32_t)srgb_to_linear_u8((uint8_t)((c >> 16) & 0xFF)) << 16
+		| (c & 0xFF000000u);
+}
+inline uint32_t linear_color_to_srgb(uint32_t c)
+{
+	return (uint32_t)linear_to_srgb_u8((uint8_t)(c & 0xFF))
+		| (uint32_t)linear_to_srgb_u8((uint8_t)((c >> 8) & 0xFF)) << 8
+		| (uint32_t)linear_to_srgb_u8((uint8_t)((c >> 16) & 0xFF)) << 16
+		| (c & 0xFF000000u);
 }
 // 颜色字 -> 0~1 浮点（渐变 stop 用）
 inline void color_to_f(uint32_t c, float& r, float& g, float& b, float& a)
@@ -931,6 +1002,36 @@ inline void swatch(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h
 	fill_round_rect(cb, vg, x, y, w, h, r, color);
 	if (selected)
 		stroke_round_rect(cb, vg, x - 1.5f, y - 1.5f, w + 3.f, h + 3.f, r + 1.5f, sel_color, 1.5f);
+}
+// SV 盒光标：白色环 + 半透明深色晕边，任意背景可见
+inline void sv_cursor(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float r = 5.f)
+{
+	if (!cb || !vg || r <= 0) return;
+	stroke_circle(cb, vg, x, y, r + 1.5f, rgba(0, 0, 0, 200), 2.f);
+	stroke_circle(cb, vg, x, y, r, 0xffffffffu, 2.f);
+}
+// 条形滑钮（色相/透明度条）：白底圆 + 深色描边，与 selection_handle 同款约定
+inline void bar_thumb(ovg_ctx_cb* cb, rvg_t* vg, float x, float cy, float r = 6.f)
+{
+	if (!cb || !vg || r <= 0) return;
+	fill_circle(cb, vg, x, cy, r, 0xffffffffu);
+	stroke_circle(cb, vg, x, cy, r, rgba(0, 0, 0, 180), 1.5f);
+}
+// 透明预览色块：棋盘底（裁剪到圆角）+ swatch 叠加，参数对齐 swatch。
+// 路径裁剪按 ovg 约定先 reset_clip(vg,0) 清模板；结束时 reset_clip(vg,1)
+// 恢复全通过——save/restore 不含裁剪状态，调用方自有的路径裁剪不会被还原。
+inline void swatch_alpha(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+	uint32_t color, bool selected = false, float r = 3.f, uint32_t sel_color = 0xffff8414u)
+{
+	if (!cb || !vg || w <= 0 || h <= 0) return;
+	r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
+	cb->reset_clip(vg, 0);
+	if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
+	else cb->rectangle(vg, x, y, w, h);
+	cb->clip(vg);
+	checkerboard(cb, vg, x, y, w, h);
+	cb->reset_clip(vg, 1);
+	swatch(cb, vg, x, y, w, h, color, selected, r, sel_color);
 }
 
 } // namespace ovg_tools
