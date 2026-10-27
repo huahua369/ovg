@@ -4016,8 +4016,32 @@ void draw_mesh2d_x(rvg_cx* ctx, geom_primitive* gp, const glm::vec2& render_scal
 
 void geom_primitive::add_image(ovg_image_r* r)
 {
-	if (!r || !r->img || (r->dst.z * r->dst.w <= 0) || (r->rc.z < 1 || r->rc.w < 1))return;
-	add_image0(r->img, { r->img->width,r->img->height }, {}, r->dst, r->rc, r->sliced, r->color);
+	if (!dc || !r || !r->img || (r->dst.z * r->dst.w <= 0) || (r->rc.z < 1 || r->rc.w < 1))return;
+
+	// 与 add_texture 一致：按当前矩形裁剪生成 mesh，否则 CPU 图片会
+	// 越过滚动面板等父级裁剪区域。
+	glm::ivec4 clip = dc->curClip;
+	if (clip.z <= 0 || clip.w <= 0)
+		clip = {};
+	set_clip(clip);
+	if (nohas_clip(r->dst))
+	{
+		clear_m2d();
+		return;
+	}
+	glm::ivec4 mesh_clip = {};
+	if (clip.z > 0 && clip.w > 0)
+		mesh_clip = { clip.x, clip.y, clip.x + clip.z, clip.y + clip.w };
+
+	add_image0(r->img, { r->img->width,r->img->height }, mesh_clip, r->dst, r->rc, r->sliced, r->color);
+
+	// 空 mesh 不能调用 draw_mesh2d_x：它会把 scissor 改成 viewport，
+	// 且不会执行末尾的 oldclip 恢复。
+	if (vtxs.empty())
+	{
+		clear_m2d();
+		return;
+	}
 	draw_mesh2d_x(dc, this, { 1.0,1.0 });
 }
 
