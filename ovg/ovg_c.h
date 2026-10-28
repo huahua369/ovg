@@ -500,6 +500,13 @@ typedef struct font_familys_t {
 	int count;
 }font_familys_t;
 
+/* Font metrics used by UI layout.  Computed from the primary family at the
+ * requested pixel size; both fields are already fallback-adjusted. */
+typedef struct vg_font_metrics_t {
+	float ascent;
+	float line_height;
+}vg_font_metrics_t;
+
 typedef struct vg_pattern_t {
 	int					status;
 	uint32_t            references;
@@ -1041,6 +1048,12 @@ void free_font_cache(font_cache_cx * p);
 font_familys_t* new_font_family(font_cache_cx * p, const char* familys, const char* style);
 void delete_font_family(font_familys_t * p);
 vec3 get_font_extents(hb_font_t * font, int height, bool vert);
+/* Text measurement shared by the UI layer.  Uses the same coverage-based
+ * fallback selection and nominal advances as the renderer's font setup, but
+ * does not shape the text (no kerning/ligatures/bidi).  Returns the widest
+ * line width; '\n' splits lines. */
+float vg_measure_text_width(const font_familys_t* ffs, int fontsize, const char* text, int len);
+vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size);
 // 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);

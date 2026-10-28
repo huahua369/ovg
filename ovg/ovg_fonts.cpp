@@ -1337,6 +1337,173 @@ glm::vec3 get_font_extents(hb_font_t* font, int height, bool vert)
 	return r;
 }
 
+// ── UI text measurement ──────────────────────────────────────────────────
+// This used to live in gui/vgui.cpp and called HarfBuzz directly.  It keeps
+// the exact same algorithm (per-codepoint nominal advances, coverage-based
+// fallback selection, '\n' splits lines) so moving it does not change layout.
+// Caches are owned by font_cache_cx, which shares the lifetime of the font
+// objects and is reached through the same user-data key as vg_text_run_cx.
+static uint32_t vg_measure_u8_decode(const char* text)
+{
+	if (!text || !*text) return 0;
+	const unsigned char* s = (const unsigned char*)text;
+	if (s[0] < 0x80) return s[0];
+	if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+	if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+	if ((s[0] & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
+		((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
+	return s[0];
+}
+
+static font_cache_cx* vg_measure_cache(const font_familys_t* ffs)
+{
+	if (!ffs || ffs->count < 1 || !ffs->familys || !ffs->familys[0] || !ffs->familys[0]->font)
+		return nullptr;
+	return (font_cache_cx*)hb_font_get_user_data(ffs->familys[0]->font, &g_font_cache_key);
+}
+
+float vg_measure_text_width(const font_familys_t* ffs, int fontsize, const char* text, int len)
+{
+	if (!ffs || ffs->count < 1 || !text || len <= 0) return 0;
+	if (fontsize < 1) fontsize = 16;
+
+	font_cache_cx* cache = vg_measure_cache(ffs);
+
+	// Fast path for complete strings: most labels are measured on every draw
+	// with exactly the same font, size and contents.
+	vg_measure_text_key text_key;
+	bool text_cached = cache != nullptr;
+	if (text_cached)
+	{
+		text_key.font = ffs;
+		text_key.fontsize = fontsize;
+		text_key.text.assign(text, (size_t)len);
+		auto it = cache->text_width_cache.find(text_key);
+		if (it != cache->text_width_cache.end())
+			return it->second;
+	}
+
+	float best = 0, cur = 0;
+	for (int i = 0; i < len;)
+	{
+		unsigned char c = (unsigned char)text[i];
+		if (c == '\n')
+		{
+			best = std::max(best, cur);
+			cur = 0;
+			i++;
+			continue;
+		}
+		uint32_t cp = vg_measure_u8_decode(text + i);
+		int n = 1;
+		if (c >= 0xF0) n = 4;
+		else if (c >= 0xE0) n = 3;
+		else if (c >= 0xC0) n = 2;
+		i += n;
+
+		float advance = 0;
+		bool advance_cached = false;
+		vg_measure_glyph_key glyph_key;
+		if (cache)
+		{
+			glyph_key.font = ffs;
+			glyph_key.fontsize = fontsize;
+			glyph_key.codepoint = cp;
+			auto it = cache->glyph_advance_cache.find(glyph_key);
+			if (it != cache->glyph_advance_cache.end())
+			{
+				advance = it->second;
+				advance_cached = true;
+			}
+		}
+
+		if (!advance_cached)
+		{
+			// Same family selection as ovg rendering: first family whose
+			// coverage has the codepoint, otherwise the primary family.
+			const font_family_t* fam = ffs->familys[0];
+			for (int f = 0; f < ffs->count; f++)
+			{
+				const font_family_t* cand = ffs->familys[f];
+				if (cand && cand->font && cand->coverage && hb_set_has(cand->coverage, cp))
+				{
+					fam = cand;
+					break;
+				}
+			}
+			if (!fam || !fam->font)
+			{
+				advance = fontsize * 0.5f;
+			}
+			else
+			{
+				hb_font_set_scale(fam->font, fontsize, fontsize);
+				hb_codepoint_t gid = 0;
+				hb_font_get_nominal_glyph(fam->font, cp, &gid);
+				advance = (float)hb_font_get_glyph_h_advance(fam->font, gid);
+			}
+			if (cache)
+			{
+				if (cache->glyph_advance_cache.size() >= 8192)
+					cache->glyph_advance_cache.clear();
+				cache->glyph_advance_cache.emplace(glyph_key, advance);
+			}
+		}
+		cur += advance;
+	}
+
+	float width = std::max(best, cur);
+	if (text_cached)
+	{
+		if (cache->text_width_cache.size() >= 4096)
+			cache->text_width_cache.clear();
+		cache->text_width_cache.emplace(std::move(text_key), width);
+	}
+	return width;
+}
+
+vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size)
+{
+	vg_font_metrics_t out = {};
+	int fontsize = (int)(font_size + 0.5f);
+	if (fontsize < 1) fontsize = 1;
+
+	font_cache_cx* cache = vg_measure_cache(ffs);
+	if (cache)
+	{
+		auto key = std::make_pair(ffs, fontsize);
+		auto it = cache->font_metrics_cache.find(key);
+		if (it != cache->font_metrics_cache.end())
+			return it->second;
+	}
+
+	// Mirrors the old font_get_lineheight(first=true) + vgui_text_ascent:
+	// both come from the primary family at the rounded pixel size, with the
+	// same fallbacks when extents are unavailable.
+	int lh = 0;
+	float ascent = 0;
+	if (ffs && ffs->count > 0 && ffs->familys && ffs->familys[0] && ffs->familys[0]->font)
+	{
+		auto ex = get_font_extents(ffs->familys[0]->font, fontsize, false);
+		lh = (int)(ex.x - ex.y + ex.z);
+		ascent = ex.x;
+	}
+	if (lh <= 0)
+		lh = (int)(font_size * 1.35f + 0.5f);
+	if (lh < 1) lh = 1;
+	if (ascent <= 0) ascent = font_size * 0.8f;
+
+	out.ascent = ascent;
+	out.line_height = (float)lh;
+
+	if (cache)
+		cache->font_metrics_cache.emplace(std::make_pair(ffs, fontsize), out);
+	return out;
+}
+
 
 hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
 {

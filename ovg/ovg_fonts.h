@@ -10,6 +10,9 @@
 #include <set>
 #include <map>
 #include <unordered_map>
+#include <string>
+#include <utility>
+#include <functional>
 extern "C" {
 #endif
 	typedef struct hb_raster_image_t hb_raster_image_t;
@@ -115,6 +118,34 @@ struct path_builder {
 	void close();
 };
 
+struct vg_measure_text_key
+{
+	const font_familys_t* font = nullptr;
+	int fontsize = 0;
+	std::string text;
+
+	bool operator<(const vg_measure_text_key& o) const
+	{
+		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
+		if (fontsize != o.fontsize) return fontsize < o.fontsize;
+		return text < o.text;
+	}
+};
+
+struct vg_measure_glyph_key
+{
+	const font_familys_t* font = nullptr;
+	int fontsize = 0;
+	uint32_t codepoint = 0;
+
+	bool operator<(const vg_measure_glyph_key& o) const
+	{
+		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
+		if (fontsize != o.fontsize) return fontsize < o.fontsize;
+		return codepoint < o.codepoint;
+	}
+};
+
 class font_cache_cx
 {
 public:
@@ -144,6 +175,13 @@ public:
 	int max_raster_size = 256;
 	int min_subpixel = 0;
 	int references = 1;
+
+	// Text measurement caches (shared with the UI layer).  Keyed by font set,
+	// pixel size and text/codepoint so they remain valid while the UI font is
+	// unchanged.  Bounded by the same limits the UI used to apply.
+	std::map<vg_measure_text_key, float> text_width_cache;
+	std::map<vg_measure_glyph_key, float> glyph_advance_cache;
+	std::map<std::pair<const font_familys_t*, int>, vg_font_metrics_t> font_metrics_cache;
 public:
 	font_cache_cx();
 	~font_cache_cx();
@@ -329,103 +367,4 @@ private:
 
 vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts, text_box_rt* box);
 void free_text_run(vg_text_run_cx* ptr);
-
-
-
-
 bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h);
-struct glyph_item_t {
-	vg_glyph_info_t* g;
-	float x, y;
-};
-#if 0
-
-struct vg_glyph_info_t {
-	uint32_t  glyph_id;
-	float     x_offset;
-	float     y_offset;
-	float     x_advance;
-	float     y_advance;
-	// 指向缓存条目（位图或矢量）
-	glyph_atlas_entry* cache_entry;
-};
-struct shaped_segment_t {
-	int width_px;								// 像素宽度 
-	int dir;
-	std::vector<vg_glyph_info_t> glyphs;  // 相对 x=0 的局部坐标
-};
-enum class flex_align :uint8_t {
-	ALIGN_AUTO = 0,
-	ALIGN_STRETCH,
-	ALIGN_CENTER,
-	ALIGN_START,
-	ALIGN_END,
-	ALIGN_SPACE_BETWEEN,
-	ALIGN_SPACE_AROUND,
-	ALIGN_SPACE_EVENLY,
-	ALIGN_BASELINE
-};
-
-enum class flex_position :uint8_t {
-	POS_RELATIVE = 0,
-	POS_ABSOLUTE
-};
-// row行，reverse反向，column列
-enum flex_direction :uint8_t {
-	ROW = 0,
-	ROW_REVERSE,
-	COLUMN,
-	COLUMN_REVERSE
-};
-
-enum class flex_wrap :uint8_t {
-	NO_WRAP = 0,
-	WRAP,
-	WRAP_REVERSE
-};
-struct flex_data {
-	float width = 0, height = 0;	// 大小NAN
-	float left = 0, right = 0, top = 0, bottom = 0;	// 偏移
-	float padding_left = 0;		// 本元素内边距
-	float padding_right = 0;
-	float padding_top = 0;
-	float padding_bottom = 0;
-	float margin_left = 0;		// 本元素外边距
-	float margin_right = 0;
-	float margin_top = 0;
-	float margin_bottom = 0;
-	float grow = 0;		// 子元素:自身放大比例，默认为0不放大
-	float shrink = 0;	// 子元素:空间不足时自身缩小比例，默认为1自动缩小，0不缩小
-	int	  order = 0;	// 子元素:自身排列顺序。数值越小，越靠前
-	float basis = -1;	// 子元素:定义最小空间NAN
-	float baseline = 0.0; // 基线位置
-	flex_align justify_content = flex_align::ALIGN_START;	// 父元素:主轴上的元素的排列方式 start\end\center\space-between\space-around\space-evenly
-	flex_align align_content = flex_align::ALIGN_STRETCH;	// 父元素:适用多行的flex容器 start\end\center\space-between\space-around\space-evenly\stretch 
-	flex_align align_items = flex_align::ALIGN_STRETCH;		// 父元素:副轴上的元素的排列方式 start\end\center\stretch\baseline
-	flex_align align_self = flex_align::ALIGN_AUTO;			// 子元素:覆盖父容器align-items的设置
-	flex_position position = flex_position::POS_RELATIVE;	// 子元素:
-	flex_direction direction = flex_direction::ROW;			// 父元素:
-	flex_wrap wrap = flex_wrap::NO_WRAP;					// 父元素:是否换行，超出宽度自动换行
-	bool should_order_children = false;
-};
-
-struct node_dt
-{
-	glm::vec2 size = {};	// in 原大小
-	glm::vec4 offset = {};	// in 偏移位置
-	glm::vec4 frame = {};	// out 输出位置大小
-	size_t index = 0;		// in 样式序号
-	float baseline = 0.0;	// in 基线位置
-	int position = 0;		// in 位置,0=relative，1=absolute
-	node_dt* child = 0;		// in 子元素指针
-	size_t child_count = 0;
-	size_t tidx = 0;		// out 自动计算节点索引
-	size_t parent = 0;		// out 自动计算父节点索引
-	size_t line_count = 0;	// out 行数量
-};
-// 输入样式数据，根节点指针，所有节点数量 ，
-glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);//已经实现
-
-void layout_text_run(flex_run* ctx, std::vector<shaped_segment_t>* segments, float origin_x, float origin_y, std::vector<glyph_item_t>& out_glyphs);
-补全函数layout_text_run
-#endif
