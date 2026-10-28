@@ -2,7 +2,7 @@
 /*
 字体处理管理
 
-
+2026/10/28 测量文本功能
 2026/8/19 创建
 
 */
@@ -203,19 +203,7 @@ private:
 
 	size_t mk_font(std::map<std::string, std::vector<FontStyle*>>* p, const char* family, const char* style, int weight, int slant);
 };
-
-//vgText text_run_new(const font_familys_t* familys, int font_size, const char* text);
-//vgText text_run_new_with_length(const font_familys_t* familys, int font_size, const char* text, uint32_t length);
-//void text_run_destroy(vgText textRun);
-// 设置字体，字号，0则不改
-//void text_run_set_font(vgText textRun, const font_familys_t* familys, int font_size);
-// 重新设置文本
-//void show_text_set(vgText textRun, const char* text, uint32_t length);
-//void show_text_run(vgText textRun);
-//void show_text_run_path(vgText textRun);
-//void text_run_get_extents(vgText textRun, vg_text_extents_t* extents);
-//uint32_t text_run_get_glyph_count(vgText textRun);
-//void text_run_get_glyph_position(vgText textRun, uint32_t index, vg_glyph_info_t* pGlyphInfo);
+ 
 
 struct vg_glyph_info_t {
 	uint32_t  glyph_id;
