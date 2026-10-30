@@ -971,9 +971,8 @@ typedef struct ovg_ctx_cb {
 // 工具函数：渲染两色交替的格子
 void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
 // tiny flex
-flex_run* new_flex_run(mem_resource_t* a);
+flex_run* new_flex_run();
 void free_flex_run(flex_run* p);
-mem_resource_t* flex_run_ac(flex_run* p);
 vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
 
 

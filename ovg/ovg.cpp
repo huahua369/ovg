@@ -6369,8 +6369,8 @@ struct flex_run {
 	usp_ac_cx* ac = 0;
 	explicit flex_run(vg_alloc_cx* a) : items(a), ac((usp_ac_cx*)a) {}
 };
-flex_run* new_flex_run(mem_resource_t* a) {
-	usp_ac_cx* ac = a ? (usp_ac_cx*)a : vg_default_ac();
+flex_run* new_flex_run() {
+	usp_ac_cx* ac = vg_default_ac();
 	auto p = ac->new_obj<flex_run>(ac);
 	if (p)
 		p->ac = ac;
@@ -6380,9 +6380,7 @@ void free_flex_run(flex_run* p) {
 	if (p && p->ac)
 		p->ac->free_obj(p);
 }
-mem_resource_t* flex_run_ac(flex_run* p) {
-	return (mem_resource_t*)(p ? p->ac : nullptr);
-}
+
 // 输入样式数据，根节点指针，所有节点数量 
 glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count) {
 	glm::vec4 rect = {};
