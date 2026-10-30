@@ -974,6 +974,13 @@ void draw_grid_fill(rvg_t* vg, vec2 size, ivec2 cols, int width);
 flex_run* new_flex_run();
 void free_flex_run(flex_run* p);
 vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p, size_t node_count);
+#ifdef __cplusplus
+// 指定分配器创建（传 nullptr 等同 new_flex_run）
+flex_run* new_flex_run_ac(vg_alloc_cx* ac);
+// 预留布局节点容量，只增不减；用于首帧前一次性分配。
+void flex_run_reserve(flex_run* p, size_t node_cap);
+vg_alloc_cx* flex_run_ac(flex_run* p);
+#endif
 
 
 /* ---- 生命周期 ---- */

@@ -5869,6 +5869,10 @@ void layout_init(flex_item* item, float width, float height, struct flex_layout*
 				indices[j] = prev;
 			}
 		}
+		layout->ordered_count = item->children.size();
+	}
+	else {
+		layout->ordered_count = 0;
 	}
 
 	layout->flex_dim = 0;
@@ -5908,6 +5912,7 @@ void layout_cleanup(struct flex_layout* layout)
 	if (layout)
 	{
 		layout->ordered_indices = 0;
+		layout->ordered_count = 0;
 		layout->lines = 0;
 	}
 }
@@ -6365,20 +6370,37 @@ void flex_item::layout()
 }
 struct flex_run {
 	vg_vector<flex_item> items;
-	std::stack<node_dt*> q;
-	usp_ac_cx* ac = 0;
-	explicit flex_run(vg_alloc_cx* a) : items(a), ac((usp_ac_cx*)a) {}
+	vg_vector<node_dt*> stack;	// DFS 栈，跨调用保留容量
+	vg_alloc_cx* ac = nullptr;
+	explicit flex_run(vg_alloc_cx* a) : items(a), stack(a), ac(a) {}
 };
+flex_run* new_flex_run_ac(vg_alloc_cx* a) {
+	vg_alloc_cx* ac = a ? a : vg_get_default_allocator();
+	void* mem = ac->alloc(sizeof(flex_run), alignof(flex_run));
+	if (!mem)
+		return nullptr;
+	return new (mem) flex_run(ac);
+}
 flex_run* new_flex_run() {
-	usp_ac_cx* ac = vg_default_ac();
-	auto p = ac->new_obj<flex_run>(ac);
-	if (p)
-		p->ac = ac;
-	return p;
+	return new_flex_run_ac(nullptr);
+}
+vg_alloc_cx* flex_run_ac(flex_run* p) {
+	return p ? p->ac : nullptr;
+}
+void flex_run_reserve(flex_run* p, size_t node_cap) {
+	if (!p)
+		return;
+	if (node_cap > p->items.capacity())
+		p->items.reserve(node_cap);
+	if (node_cap > p->stack.capacity())
+		p->stack.reserve(node_cap);
 }
 void free_flex_run(flex_run* p) {
-	if (p && p->ac)
-		p->ac->free_obj(p);
+	if (!p)
+		return;
+	vg_alloc_cx* ac = p->ac ? p->ac : vg_get_default_allocator();
+	p->~flex_run();
+	ac->dealloc(p, sizeof(flex_run));
 }
 
 // 输入样式数据，根节点指针，所有节点数量 
@@ -6396,20 +6418,20 @@ glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p
 	for (size_t i = 0; i < node_count; i++) {
 		fitem[i].init();
 	}
-	size_t idx = 0;
-	auto q = ctx->q;  // 队列存储待处理坐标 
-	while (q.size()) {
-		q.pop();
-	}
-	q.push(p);
-	p->tidx = idx;
-	while (q.size()) {
-		auto it = q.top(); q.pop();
+	size_t idx = 1;	// 已分配槽位数；入队时分配，出栈不再自增
+	auto& q = ctx->stack;  // DFS 栈，复用容量
+	q.clear();
+	if (q.capacity() < node_count)
+		q.reserve(node_count);
+	q.push_back(p);
+	p->tidx = 0;
+	bool overflow = false;
+	while (!q.empty() && !overflow) {
+		auto it = q.back(); q.pop_back();
 		if (it && it->tidx < node_count)
 		{
 			auto& k = fitem[it->tidx];
 			auto pidx = it->tidx;
-			idx++;
 			if (it->index < count)
 			{
 				k.setdata(fd + it->index);
@@ -6423,17 +6445,27 @@ glm::vec4 flex_run_layout(flex_run* ctx, flex_data* fd, size_t count, node_dt* p
 			k.width = it->size.x; k.height = it->size.y;
 			k.left = it->offset.x; k.top = it->offset.y;
 			k.right = it->offset.z; k.bottom = it->offset.w;
+			if (k.children.capacity() < it->child_count)
+				k.children.reserve(it->child_count);
 			for (size_t i = 0; i < it->child_count; i++) {
+				if (idx >= node_count) {
+					overflow = true;
+					break;
+				}
 				it->child[i].parent = pidx;
 				it->child[i].tidx = idx;
-				q.push(it->child + i);
+				q.push_back(it->child + i);
 				k.item_add(fitem + idx);
 				idx++;
 			}
 		}
 	}
+	if (overflow) {
+		assert(0 && "flex_run_layout: node_count smaller than reachable nodes");
+		return rect;
+	}
 	fitem->layout();
-	for (size_t i = 0; i < node_count; i++)
+	for (size_t i = 0; i < idx; i++)
 	{
 		auto& it = fitem[i];
 		auto pt = (node_dt*)it.managed_ptr;
