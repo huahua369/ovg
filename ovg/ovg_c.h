@@ -958,9 +958,9 @@ typedef struct ovg_ctx_cb {
 	void (*add_geometry)(rvg_t* dc, vg_image_t* texture, const float* xy, int xy_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 添加3D几何数据到缓冲区，xyz顶点坐标，color顶点颜色（双面则要双倍），uv顶点纹理坐标，indices索引数据
 	void (*add_geometry3d)(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
-	// todo 录制
+	// 录制
 	void (*start_recording)(rvg_t* ctx);
-	ovg_recording_t* (*stop_recording)(rvg_t* ctx);
+	ovg_recording_t* (*stop_recording)(rvg_t* ctx, ovg_recording_t* p);
 	void (*replay)(rvg_t* ctx, ovg_recording_t* rec);
 	void (*replay_command)(rvg_t* ctx, ovg_recording_t* rec, uint32_t cmdIndex);
 	uint32_t(*recording_get_count)(ovg_recording_t* rec);
@@ -1070,8 +1070,8 @@ vec3 get_font_extents(hb_font_t * font, int height, bool vert);
  * fallback selection and nominal advances as the renderer's font setup, but
  * does not shape the text (no kerning/ligatures/bidi).  Returns the widest
  * line width; '\n' splits lines. */
-float vg_measure_text_width(const font_familys_t* ffs, int fontsize, const char* text, int len);
-vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size);
+float vg_measure_text_width(const font_familys_t * ffs, int fontsize, const char* text, int len);
+vg_font_metrics_t vg_get_font_metrics(const font_familys_t * ffs, float font_size);
 // 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);

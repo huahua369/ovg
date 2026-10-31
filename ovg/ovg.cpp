@@ -5211,10 +5211,9 @@ void vctx_add_geometry3d(rvg_t* dc,
 // ============================================================
 struct ovg_recording_t
 {
-	usp_ac_cx* ac = nullptr;
-	vg_vector<gcmd_t> cmds;              // 命令（偏移已指向 recording 内部）
-	vg_vector<rvg_cx::Vertex> vertices;  // 2D 矢量顶点快照
-	vg_vector<uint32_t> indices;          // 2D 矢量索引快照
+	std::vector<gcmd_t> cmds;              // 命令（偏移已指向 recording 内部）
+	std::vector<rvg_cx::Vertex> vertices;  // 2D 矢量顶点快照
+	std::vector<uint32_t> indices;          // 2D 矢量索引快照
 	// 需要手动释放的深拷贝资源（state dashes / pattern）
 	std::vector<std::pair<void*, size_t>> owned;
 };
@@ -5255,14 +5254,13 @@ void vctx_start_recording(rvg_t* ctx0)
 	v->_rec_start_idx = (uint32_t)v->_indices.size();
 }
 
-ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
+ovg_recording_t* vctx_stop_recording(rvg_t* ctx0, ovg_recording_t* pr)
 {
 	auto v = (rvg_cx*)ctx0;
 	if (!v || !v->_recording) return nullptr;
 	v->_recording = false;
 
-	auto rec = new ovg_recording_t();
-	rec->ac = v->ac;
+	auto rec = pr ? pr : new ovg_recording_t();
 
 	uint32_t sc = v->_rec_start_cmd;
 	uint32_t sv = v->_rec_start_vtx;
@@ -5270,7 +5268,6 @@ ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
 
 	// 1) 拷贝命令
 	uint32_t cmd_count = (uint32_t)v->cmdlist.size() - sc;
-	rec->cmds = vg_vector<gcmd_t>(v->ac);
 	rec->cmds.resize(cmd_count);
 	memcpy(rec->cmds.data(), &v->cmdlist[sc], sizeof(gcmd_t) * cmd_count);
 
@@ -5310,7 +5307,6 @@ ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
 	if (copy_v_from != UINT_MAX && copy_v_to > sv)
 	{
 		uint32_t vcount = copy_v_to - sv;
-		rec->vertices = vg_vector<rvg_cx::Vertex>(v->ac);
 		rec->vertices.resize(vcount);
 		memcpy(rec->vertices.data(), &v->_vertex[sv], sizeof(rvg_cx::Vertex) * vcount);
 	}
@@ -5319,7 +5315,6 @@ ovg_recording_t* vctx_stop_recording(rvg_t* ctx0)
 	if (copy_i_from != UINT_MAX && copy_i_to > si)
 	{
 		uint32_t icount = copy_i_to - si;
-		rec->indices = vg_vector<uint32_t>(v->ac);
 		rec->indices.resize(icount);
 		memcpy(rec->indices.data(), &v->_indices[si], sizeof(uint32_t) * icount);
 	}
