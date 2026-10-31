@@ -5261,6 +5261,14 @@ ovg_recording_t* vctx_stop_recording(rvg_t* ctx0, ovg_recording_t* pr)
 	v->_recording = false;
 
 	auto rec = pr ? pr : new ovg_recording_t();
+	if (pr)
+	{
+		// 复用：先释放上一轮的深拷贝资源（state/pattern），
+		// owned 从头累积，rec_clone_state 即可无泄漏地重新填充。
+		for (auto& o : rec->owned)
+			free(o.first);
+		rec->owned.clear();
+	}
 
 	uint32_t sc = v->_rec_start_cmd;
 	uint32_t sv = v->_rec_start_vtx;
