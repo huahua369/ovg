@@ -960,6 +960,7 @@ typedef struct ovg_ctx_cb {
 	void (*add_geometry3d)(rvg_t* dc, vg_image_t* texture, const float* xyz, int xyz_stride, const void* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices, int color_type);
 	// 录制
 	void (*start_recording)(rvg_t* ctx);
+	// 可复用ovg_recording_t*
 	ovg_recording_t* (*stop_recording)(rvg_t* ctx, ovg_recording_t* p);
 	void (*replay)(rvg_t* ctx, ovg_recording_t* rec);
 	void (*replay_command)(rvg_t* ctx, ovg_recording_t* rec, uint32_t cmdIndex);
