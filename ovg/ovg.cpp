@@ -7049,6 +7049,35 @@ void delete_font_family(font_familys_t* p) {
 	}
 }
 
+// 字体注册 C 接口（ovg_c.h）。详见该头文件中的注释。
+bool load_font_from_path(font_cache_cx* p, const char* path, const char* name) {
+#ifdef OVG_FONT_H
+	if (!p || !path)return false;
+	return p->load_font_from_path(path, name);
+#endif
+	return false;
+}
+bool add_font_dir(font_cache_cx* p, const char* dir) {
+#ifdef OVG_FONT_H
+	if (!p || !dir)return false;
+	return p->add_font_dir(dir);
+#endif
+	return false;
+}
+bool load_font_from_memory(font_cache_cx* p, unsigned char* fontBuffer,
+	long fontBufferByteSize, const char* name) {
+#ifdef OVG_FONT_H
+	if (!p || !fontBuffer || fontBufferByteSize <= 0)return false;
+	return p->load_font_from_memory(fontBuffer, fontBufferByteSize, name);
+#endif
+	return false;
+}
+void get_sys_family(font_cache_cx* p) {
+#ifdef OVG_FONT_H
+	if (p)p->get_sys_family();
+#endif
+}
+
 #ifdef OVG_FONT_H
 // 位图字形按 atlas 合批。缓存只清长度、保留 capacity，
 // 因此连续帧/同一文本的多次提交（阴影、描边、主文本）不会反复分配顶点缓冲。

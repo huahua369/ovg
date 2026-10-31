@@ -716,9 +716,21 @@ bool font_cache_cx::load_font_from_path(const char* path, const char* name)
 {
 	if (!path || !*path)return false;
 	bool hr = FcConfigAppFontAddFile(cfg, (FcChar8*)path);
-	if (hr)
+	if (hr && name && *name)
 	{
-
+		// fc 只按文件内部族名登记；给出 name 时额外读入文件并按 name 登记，
+		// 这样 new_font_family 无需 get_sys_family() 刷新即可找到。
+		hb_blob_t* blob = hb_blob_create_from_file(path);
+		if (blob)
+		{
+			unsigned len = hb_blob_get_length(blob);
+			if (len > 0)
+			{
+				unsigned char* data = (unsigned char*)hb_blob_get_data(blob, nullptr);
+				register_font_memory(data, (long)len, name);
+			}
+			hb_blob_destroy(blob);
+		}
 	}
 	return hr;
 }
@@ -731,12 +743,65 @@ bool font_cache_cx::add_font_dir(const char* dir)
 
 bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name)
 {
-	return false;
+	return register_font_memory(fontBuffer, fontBufferByteSize, name);
 }
 
 static hb_user_data_key_t fontStyleKey = {};
 static hb_user_data_key_t g_font_cache_key = {};
 
+bool font_cache_cx::register_font_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name)
+{
+	if (!fontBuffer || fontBufferByteSize <= 0)
+		return false;
+
+	// DUPLICATE: harfbuzz 立即拷贝内容，调用方随后可释放原缓冲。
+	hb_blob_t* blob = hb_blob_create((const char*)fontBuffer,
+		(int)fontBufferByteSize, HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
+	if (!blob || hb_blob_get_length(blob) == 0)
+	{
+		if (blob)hb_blob_destroy(blob);
+		return false;
+	}
+	hb_face_t* face = hb_face_create(blob, 0);
+	hb_blob_destroy(blob);
+	if (!face || !hb_face_get_glyph_count(face))
+	{
+		if (face)hb_face_destroy(face);
+		return false;
+	}
+	hb_font_t* font = hb_font_create(face);
+
+	// 注册名：显式 name 优先，否则用字体文件内部族名。
+	char internal[256] = {};
+	unsigned int internal_len = sizeof(internal);
+	hb_ot_name_get_utf8(face, HB_OT_NAME_ID_FONT_FAMILY,
+		hb_language_get_default(), &internal_len, internal);
+	hb_face_destroy(face);
+
+	const char* key = (name && *name) ? name : internal;
+	if (!key || !*key)
+	{
+		if (font)hb_font_destroy(font);
+		return false;
+	}
+
+	FontStyle* it = new FontStyle();
+	if (!it)
+	{
+		hb_font_destroy(font);
+		return false;
+	}
+	it->family = key;
+	if (internal[0] && it->family != internal)it->alias.insert(internal);
+	it->index = 0;
+	it->id = next_font_id++;
+	it->font.font = font;
+	hb_font_set_user_data(font, (hb_user_data_key_t*)&fontStyleKey, (void*)(uintptr_t)it, nullptr, true);
+	hb_font_set_user_data(font, (hb_user_data_key_t*)&g_font_cache_key, (void*)(uintptr_t)this, nullptr, true);
+	hb_res_init(&it->font, 0);
+	_familys_name[key].push_back(it);
+	return true;
+}
 size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt, const char* family, const char* style, int weight, int slant)
 {
 	size_t n = 0;

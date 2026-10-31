@@ -192,10 +192,15 @@ public:
 	vg_font* get_font(const char* family, const char* style, int weight, int slant);
 
 	void select_font_face(const char* family, const char* style, int weight, int slant);
-	// name自定义名称，可空
+	// name自定义名称，可空。给出 name 时同时注册到 _familys_name[name]，
+	// new_font_family 无需 get_sys_family() 刷新即可按该名称找到。
 	bool load_font_from_path(const char* path, const char* name);
 	bool add_font_dir(const char* dir);
+	// 从内存注册字体；缓冲内容会被立即拷贝，调用后即可释放。name 为注册的
+	// 字体族键（可空：用字体文件内部族名）。
 	bool load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name);
+	// load_font_from_memory 的实现体：从内存建立 hb_font 并登记到 _familys_name。
+	bool register_font_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name);
 	const char* weight_to_string(int w);
 	const char* slant_to_string(int s);
 	glyph_atlas_entry* get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize);

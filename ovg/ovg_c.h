@@ -1053,6 +1053,18 @@ font_cache_cx* new_font_cache();
 void free_font_cache(font_cache_cx * p);
 font_familys_t* new_font_family(font_cache_cx * p, const char* familys, const char* style);
 void delete_font_family(font_familys_t * p);
+/* 注册一个字体文件。name 可空：为 fontconfig 按文件内部族名登记（需在
+ * get_sys_family() 后可被 new_font_family 找到）；给出 name 时额外按该名称
+ * 立即登记，new_font_family 无需刷新即可找到。 */
+bool load_font_from_path(font_cache_cx * p, const char* path, const char* name);
+/* 注册目录下所有字体文件（同 path：findable 需 get_sys_family() 刷新）。 */
+bool add_font_dir(font_cache_cx * p, const char* dir);
+/* 从内存注册字体；内容立即拷贝，返回后调用方可释放缓冲。name 为注册的字体
+ * 族键（可空：用字体文件内部族名），立即可被 new_font_family 找到。 */
+bool load_font_from_memory(font_cache_cx * p, unsigned char* fontBuffer, long fontBufferByteSize, const char* name);
+/* 重新枚举系统字体到 _familys（load_font_from_path/add_font_dir 的
+ * fontconfig 登记在刷新后才对 new_font_family 可见）。 */
+void get_sys_family(font_cache_cx * p);
 vec3 get_font_extents(hb_font_t * font, int height, bool vert);
 /* Text measurement shared by the UI layer.  Uses the same coverage-based
  * fallback selection and nominal advances as the renderer's font setup, but
