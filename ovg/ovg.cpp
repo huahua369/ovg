@@ -3068,10 +3068,16 @@ bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve
 	float cosHalfAlpha = cosf(halfAlpha);
 	float lh = str->hw / cosHalfAlpha;
 	glm::vec2  bisec_n_perp = vec2_perp(bisec_n);
-	// limit bisectrice length
+	// Limit bisectrice length
 	float rlh = lh; // rlh is for inside pos tweeks
-	if (dot < 0.f)
-		rlh = fminf(rlh, fminf(length_v0, length_v1));
+	// The inside bisector must not reach past the neighbouring vertices, and that
+	// is true for convex corners too, not only reflex ones.  When the stroke is
+	// wider than the segment it sits on -- a border that thickens with zoom
+	// around a corner radius capped in screen pixels, or the dense points of a
+	// small arc -- the inner join vertex lands beyond the previous/next one, the
+	// strip folds back on itself and the same translucent colour blends twice.
+	// That is the dark overlapping triangles seen on a zoomed-in rounded border.
+	rlh = fminf(rlh, fminf(length_v0, length_v1));
 	//---
 
 	glm::vec2 bisec = (bisec_n_perp * rlh);
