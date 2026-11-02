@@ -313,7 +313,7 @@ public:
 		key_t& key = _query;
 		key.text.assign(p->text, len);
 		key.family = ts->family;
-		key.fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+		key.fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 1;
 		key.min_subpixel = ts->min_subpixel;
 		key.word_wrap = box ? (int)box->word_wrap : 0;
 		key.lineheight = ts->lineheight;
@@ -7320,7 +7320,7 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	if (run->glyph_count() == 0) return;
 	auto ts = &run->_st;
 	auto box = &run->_box;
-	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 1;
 	// ── 2. 布局计算 ──
 	const auto& extents = run->extents();
 

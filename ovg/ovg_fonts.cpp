@@ -1433,7 +1433,7 @@ static font_cache_cx* vg_measure_cache(const font_familys_t* ffs)
 float vg_measure_text_width(const font_familys_t* ffs, int fontsize, const char* text, int len)
 {
 	if (!ffs || ffs->count < 1 || !text || len <= 0) return 0;
-	if (fontsize < 1) fontsize = 16;
+	if (fontsize < 1) fontsize = 1;
 
 	font_cache_cx* cache = vg_measure_cache(ffs);
 
@@ -2676,7 +2676,7 @@ void vg_text_run_cx::shape() {
 	// ─── 计算整体 extents ───
 	// 与 populate_draw_list 的排版规则保持一致：按 segment 顺序累计 advance，
 	// 遇到 new_line 换行；宽度取最长行，高度 = 行数 × 行高。
-	int fs = _fontsize > 0 ? _fontsize : 16;
+	int fs = _fontsize > 0 ? _fontsize : 1;
 	hb_font_t* primary = _ffs->familys[0] ? _ffs->familys[0]->font : nullptr;
 	hb_font_extents_t fextents = {};
 	if (primary) {
@@ -2800,7 +2800,7 @@ vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts
 {
 	if (!p || !p->text || !ts || !ts->family) return 0;
 
-	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 16;
+	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 1;
 	// ── 1. shape ──
 	vg_text_run_cx* run = ptr ? ptr : new vg_text_run_cx();
 	if (!run)
