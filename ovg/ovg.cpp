@@ -788,12 +788,21 @@ void _line_to(ovg_path_t* ctx, float x, float y) {
 
 float _get_arc_step(ovg_path_t* ctx, float radius) {
 	float sx = 1.0, sy = 1.0;
-	if (ctx->t)
+	if (ctx && ctx->t)
 		_matrix_get_scale(&ctx->t->pushConsts.mat, &sx, &sy);
 	float r = radius * fabsf(fmaxf(sx, sy));
-	if (r < 30.0f)
-		return fminf(M_PI / 3.f, M_PI / r);
-	return fminf(M_PI / 3.f, M_PI / (r * 0.4f));
+	float step = (r < 30.0f)
+		? fminf(M_PI / 3.f, M_PI / r)
+		: fminf(M_PI / 3.f, M_PI / (r * 0.4f));
+	// 小半径时 π/r 会退化到 30°~60°/段：圆角描边拐角被切成折线（三角形缺口），
+	// 圆弧连接处的 round-join 也会退化成从内角发散的三角形扇。
+	// 按弦高误差（设备像素）收紧步长，与原步长取较小者。
+	const float tol = 0.05f;
+	if (r > tol) {
+		float sag_step = 2.f * acosf(fmaxf(-1.f, 1.f - tol / r));
+		step = fminf(step, sag_step);
+	}
+	return fmaxf(step, 0.001f);
 }
 
 void ovg_move_to(ovg_path_t* path, float x, float y);
