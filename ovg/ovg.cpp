@@ -3108,25 +3108,6 @@ bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve
 		}
 	}
 
-	// 曲线段（圆弧/贝塞尔细分点）的内偏移若超过局部曲率半径，内点会越过
-	// 曲率中心，相邻 band 三角形自交折叠——不透明描边看不出，半透明描边会
-	// 显影成放射状三角扇/深色楔块。按弦长估算曲率半径，把内点钳在半径以内。
-	if (isCurve) {
-		float halfAlphaAbs = fabsf(alpha) * 0.5f;
-		float chord = fminf(length_v0, length_v1);
-		float r_est = (halfAlphaAbs > 1e-4f)
-			? chord / (2.f * sinf(halfAlphaAbs))
-			: std::numeric_limits<float>::max();
-		float maxInside = fmaxf(r_est * 0.999f, 1e-3f);
-		if (rlh > maxInside) {
-			rlh = maxInside;
-			bisec = vec2_mult_s(bisec_n_perp, rlh);
-			rlh_inside_pos = (det < 0)
-				? vec2_add(p0, bisec)
-				: vec2_sub(p0, bisec);
-		}
-	}
-
 	auto join = (vg_line_join_t)ctx->t->lineJoin;
 
 	if (isCurve) {
@@ -3197,14 +3178,20 @@ bool rvg_cx::_build_vb_step(ovg_path_t* ctx, stroke_context_t* str, bool isCurve
 		glm::vec2 vp = vec2_perp(v0n);
 
 		if (det < 0) {
-			v.pos = rlh_inside_pos;
+			if (dot < 0 && rlh < lh)
+				v.pos = rlh_inside_pos;
+			else
+				v.pos = vec2_add(p0, bisec);
 			_vertex.push_back(v);
 			v.pos = vec2_sub(p0, vec2_mult_s(vp, str->hw));
 		}
 		else {
 			v.pos = vec2_add(p0, vec2_mult_s(vp, str->hw));
 			_vertex.push_back(v);
-			v.pos = rlh_inside_pos;
+			if (dot < 0 && rlh < lh)
+				v.pos = rlh_inside_pos;
+			else
+				v.pos = vec2_sub(p0, bisec);
 		}
 		_vertex.push_back(v);
 
