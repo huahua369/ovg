@@ -401,6 +401,8 @@ inline SDL_GPUTextureFormat vg_to_sdl_format(vg_format_t fmt) {
 	case VG_FORMAT_BGRA8_SRGB:   return SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
 	case VG_FORMAT_RGBA16F: return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
 	case VG_FORMAT_RGBA32F: return SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+	case VG_FORMAT_R16F:    return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	case VG_FORMAT_R32F:    return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
 	default:                return SDL_GPU_TEXTUREFORMAT_INVALID;
 	}
 }
@@ -2566,6 +2568,8 @@ uint32_t format_bpp(vg_format_t fmt) {
 	case VG_FORMAT_BGRA8_SRGB:return 4;
 	case VG_FORMAT_RGBA16F: return 8;   /* R16G16B16A16_FLOAT = 8 字节 */
 	case VG_FORMAT_RGBA32F: return 16;  /* R32G32B32A32_FLOAT = 16 字节 */
+	case VG_FORMAT_R16F:    return 2;   /* R16_FLOAT = 2 字节 */
+	case VG_FORMAT_R32F:    return 4;   /* R32_FLOAT = 4 字节 */
 	default: return 4;
 	}
 }

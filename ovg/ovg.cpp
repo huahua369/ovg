@@ -1446,6 +1446,7 @@ void ovg_rounded_rectangle(ovg_path_t* path, float x, float y, float w, float h,
 	o_finish_path(path);
 	if ((radius > w / 2.0f) || (radius > h / 2.0f))
 		radius = fmin(w / 2.0f, h / 2.0f);
+	radius = glm::max(0.0f, round(radius));
 	ovg_move_to(path, x, y + radius);
 	ovg_arc(path, x + radius, y + radius, radius, M_PI, -M_PI_2);
 	ovg_line_to(path, x + w - radius, y);
@@ -1461,6 +1462,8 @@ void ovg_rounded_rectangle2(ovg_path_t* path, float x, float y, float w, float h
 {
 	if (!path)
 		return;
+	rx = glm::max(0.0f, round(rx));
+	ry = glm::max(0.0f, round(ry));
 	ovg_move_to(path, x + rx, y);
 	ovg_line_to(path, x + w - rx, y);
 	ovg_elliptic_arc_to(path, x + w, y + ry, false, true, rx, ry, 0);
