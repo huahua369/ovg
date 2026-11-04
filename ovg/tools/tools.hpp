@@ -196,10 +196,6 @@ namespace ovg_tools {
 		float r, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		x = round(x);
-		y = round(y);
-		w = round(w);
-		h = round(h);
 		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
@@ -210,11 +206,8 @@ namespace ovg_tools {
 		float r, uint32_t color, float line_w = 1.f)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		x = round(x);
-		y = round(y);
-		w = round(w);
-		h = round(h);
 		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
+		r = round(r);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
 		cb->set_line_width(vg, line_w);
@@ -226,10 +219,6 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		x = round(x);
-		y = round(y);
-		w = round(w);
-		h = round(h);
 		rx = round(rx);
 		ry = round(ry);
 		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
@@ -240,10 +229,6 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color, float line_w = 1.f)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		x = round(x);
-		y = round(y);
-		w = round(w);
-		h = round(h);
 		rx = round(rx);
 		ry = round(ry);
 		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
@@ -256,10 +241,6 @@ namespace ovg_tools {
 		const float radii[4])
 	{
 		if (!cb || !vg) return;
-		x = round(x);
-		y = round(y);
-		w = round(w);
-		h = round(h);
 		float tl = std::clamp(radii[0], 0.f, std::min(w, h) * 0.5f);
 		float tr = std::clamp(radii[1], 0.f, std::min(w, h) * 0.5f);
 		float br = std::clamp(radii[2], 0.f, std::min(w, h) * 0.5f);
