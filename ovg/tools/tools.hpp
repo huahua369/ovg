@@ -224,6 +224,28 @@ namespace ovg_tools {
 		cb->set_source_color(vg, color);
 		cb->stroke(vg);
 	}
+	// 与外轮廓同心的描边：矩形按 inset 内缩，圆角半径同步减 inset。
+	// 只内缩矩形、不内缩半径，两段弧半径相同而圆心差 inset，描边在 45° 角部
+	// 与填充错开（bw=1 约 0.4px，bw=3 约 1.2px），MSAA 下解析成一圈暗边/亮边。
+	inline void stroke_round_rect_inset(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+		float r, uint32_t color, float line_w = 1.f, float inset = 0.f)
+	{
+		if (!cb || !vg || w <= 0 || h <= 0) return;
+		if (inset < 0.f) inset = 0.f;
+		const float iw = w - inset * 2.f;
+		const float ih = h - inset * 2.f;
+		if (iw <= 0.f || ih <= 0.f) return;
+		const float ro = round_rect_radius(w, h, r);
+		stroke_round_rect(cb, vg, x + inset, y + inset, iw, ih,
+			round_rect_radius(iw, ih, ro - inset), color, line_w);
+	}
+	// 描边完全落在形状内部：路径内缩半个线宽，外沿与 x/y/w/h 描述的外轮廓重合。
+	// 适用于「填充铺满外轮廓」的常规边框——描边不再向形状外溢出半个线宽。
+	inline void stroke_round_rect_frame(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+		float r, uint32_t color, float line_w = 1.f)
+	{
+		stroke_round_rect_inset(cb, vg, x, y, w, h, r, color, line_w, line_w * 0.5f);
+	}
 	// 椭圆圆角（rx/ry 独立）
 	inline void fill_round_rect2(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
 		float rx, float ry, uint32_t color)
