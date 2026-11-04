@@ -1442,7 +1442,7 @@ void ovg_rectangle(ovg_path_t* path, float x, float y, float w, float h)
 // 胶囊两端圆弧的圆心越过端点、路径自交：填充靠非零环绕仍能成型，描边却会退化成断开的两条竖线。
 static float o_snap_radius(float limit, float radius)
 {
-	radius = round(radius);
+	radius = floor(radius);
 	if (!(radius > 0.0f))
 		return 0.0f;
 	float max_radius = std::floor(limit * 0.5f);
