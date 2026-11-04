@@ -176,6 +176,17 @@ namespace ovg_tools {
 	};
 
 	// ---------- 基础形状 ----------
+	// 圆角半径统一口径：向下取整，再夹到不超过边界的一半。
+	// 半径必须向下取整而不是四舍五入：高/宽为奇数时半高是 x.5，向上取整会让圆角越过边界，
+	// 胶囊两端路径自交（填充看不出来，描边会断开）。ovg_rounded_rectangle 内部同样按此口径归一。
+	inline float round_rect_radius(float w, float h, float r)
+	{
+		return std::clamp(std::floor(r), 0.f, std::floor(std::min(w, h) * 0.5f));
+	}
+	inline float round_rect_radius2(float len, float r)
+	{
+		return std::clamp(std::floor(r), 0.f, std::floor(len * 0.5f));
+	}
 	inline void fill_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
@@ -196,7 +207,7 @@ namespace ovg_tools {
 		float r, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
+		r = round_rect_radius(w, h, r);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
 		cb->set_source_color(vg, color);
@@ -206,8 +217,7 @@ namespace ovg_tools {
 		float r, uint32_t color, float line_w = 1.f)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
-		r = floor(r);
+		r = round_rect_radius(w, h, r);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
 		cb->set_line_width(vg, line_w);
@@ -219,9 +229,7 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		rx = floor(rx);
-		ry = floor(ry);
-		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
+		cb->rounded_rectangle2(vg, x, y, w, h, round_rect_radius2(w, rx), round_rect_radius2(h, ry));
 		cb->set_source_color(vg, color);
 		cb->fill(vg);
 	}
@@ -229,9 +237,7 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color, float line_w = 1.f)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		rx = floor(rx);
-		ry = floor(ry);
-		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
+		cb->rounded_rectangle2(vg, x, y, w, h, round_rect_radius2(w, rx), round_rect_radius2(h, ry));
 		cb->set_line_width(vg, line_w);
 		cb->set_source_color(vg, color);
 		cb->stroke(vg);
@@ -241,10 +247,10 @@ namespace ovg_tools {
 		const float radii[4])
 	{
 		if (!cb || !vg) return;
-		float tl = std::clamp(radii[0], 0.f, std::min(w, h) * 0.5f);
-		float tr = std::clamp(radii[1], 0.f, std::min(w, h) * 0.5f);
-		float br = std::clamp(radii[2], 0.f, std::min(w, h) * 0.5f);
-		float bl = std::clamp(radii[3], 0.f, std::min(w, h) * 0.5f);
+		float tl = std::clamp(radii[0], 0.f, std::floor(std::min(w, h) * 0.5f));
+		float tr = std::clamp(radii[1], 0.f, std::floor(std::min(w, h) * 0.5f));
+		float br = std::clamp(radii[2], 0.f, std::floor(std::min(w, h) * 0.5f));
+		float bl = std::clamp(radii[3], 0.f, std::floor(std::min(w, h) * 0.5f));
 		// 同一条边两端的半径之和不能超过边长，超出则等比压缩
 		float sx = std::min(1.f, w / std::max(tl + tr, 1e-6f));
 		float sx2 = std::min(1.f, w / std::max(bl + br, 1e-6f));
@@ -622,7 +628,7 @@ namespace ovg_tools {
 			? linear_pattern(cb, vg, x, y, x + w, y, st, 2)
 			: linear_pattern(cb, vg, x, y, x, y + h, st, 2);
 		if (!p) return;
-		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
+		r = round_rect_radius(w, h, r);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
 		cb->set_source(vg, p);
@@ -1034,7 +1040,7 @@ namespace ovg_tools {
 		uint32_t color, bool selected = false, float r = 3.f, uint32_t sel_color = 0xffff8414u)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
+		r = round_rect_radius(w, h, r);
 		cb->reset_clip(vg, 0);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);

@@ -1437,6 +1437,20 @@ void ovg_rectangle(ovg_path_t* path, float x, float y, float w, float h)
 	path->pathes[path->pathPtr] |= (PATH_CLOSED_BIT | PATH_IS_CONVEX_BIT);
 	ovg_close_path(path);
 }
+// 圆角半径归一化：先四舍五入到整数，再夹到不超过边界的一半。
+// 顺序不能反。限值（宽或高的一半）可能是 x.5，若先夹再取整，round 会把半径顶出边界半像素，
+// 胶囊两端圆弧的圆心越过端点、路径自交：填充靠非零环绕仍能成型，描边却会退化成断开的两条竖线。
+static float o_snap_radius(float limit, float radius)
+{
+	radius = round(radius);
+	if (!(radius > 0.0f))
+		return 0.0f;
+	float max_radius = std::floor(limit * 0.5f);
+	if (!(max_radius > 0.0f))
+		return 0.0f;
+	return std::min(radius, max_radius);
+}
+
 void ovg_rounded_rectangle(ovg_path_t* path, float x, float y, float w, float h, float radius)
 {
 	if (!path)
@@ -1444,9 +1458,7 @@ void ovg_rounded_rectangle(ovg_path_t* path, float x, float y, float w, float h,
 	if (w <= 0 || h <= 0)
 		return;
 	o_finish_path(path);
-	if ((radius > w / 2.0f) || (radius > h / 2.0f))
-		radius = fmin(w / 2.0f, h / 2.0f);
-	radius = glm::max(0.0f, round(radius));
+	radius = o_snap_radius(std::min(w, h), radius);
 	ovg_move_to(path, x, y + radius);
 	ovg_arc(path, x + radius, y + radius, radius, M_PI, -M_PI_2);
 	ovg_line_to(path, x + w - radius, y);
@@ -1462,8 +1474,11 @@ void ovg_rounded_rectangle2(ovg_path_t* path, float x, float y, float w, float h
 {
 	if (!path)
 		return;
-	rx = glm::max(0.0f, round(rx));
-	ry = glm::max(0.0f, round(ry));
+	if (w <= 0 || h <= 0)
+		return;
+	o_finish_path(path);
+	rx = o_snap_radius(w, rx);
+	ry = o_snap_radius(h, ry);
 	ovg_move_to(path, x + rx, y);
 	ovg_line_to(path, x + w - rx, y);
 	ovg_elliptic_arc_to(path, x + w, y + ry, false, true, rx, ry, 0);
