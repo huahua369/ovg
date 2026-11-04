@@ -207,7 +207,7 @@ namespace ovg_tools {
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
 		r = std::clamp(r, 0.f, std::min(w, h) * 0.5f);
-		r = round(r);
+		r = floor(r);
 		if (r > 0) cb->rounded_rectangle(vg, x, y, w, h, r);
 		else cb->rectangle(vg, x, y, w, h);
 		cb->set_line_width(vg, line_w);
@@ -219,8 +219,8 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		rx = round(rx);
-		ry = round(ry);
+		rx = floor(rx);
+		ry = floor(ry);
 		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
 		cb->set_source_color(vg, color);
 		cb->fill(vg);
@@ -229,8 +229,8 @@ namespace ovg_tools {
 		float rx, float ry, uint32_t color, float line_w = 1.f)
 	{
 		if (!cb || !vg || w <= 0 || h <= 0) return;
-		rx = round(rx);
-		ry = round(ry);
+		rx = floor(rx);
+		ry = floor(ry);
 		cb->rounded_rectangle2(vg, x, y, w, h, std::clamp(rx, 0.f, w * 0.5f), std::clamp(ry, 0.f, h * 0.5f));
 		cb->set_line_width(vg, line_w);
 		cb->set_source_color(vg, color);
@@ -253,10 +253,10 @@ namespace ovg_tools {
 		tl *= std::min(sx, sy); tr *= std::min(sx, sy2);
 		br *= std::min(sx2, sy2); bl *= std::min(sx2, sy);
 
-		tl = round(tl);
-		tr = round(tr);
-		br = round(br);
-		bl = round(bl);
+		tl = floor(tl);
+		tr = floor(tr);
+		br = floor(br);
+		bl = floor(bl);
 		cb->new_path(vg);
 		cb->move_to(vg, x + tl, y);
 		cb->line_to(vg, x + w - tr, y);
