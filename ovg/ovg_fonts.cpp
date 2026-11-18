@@ -14,6 +14,9 @@
 #include <unordered_map>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <new>
 #include <vector>
 
 #include <locale.h>
@@ -2829,6 +2832,134 @@ vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts
 
 	return run;
 }
+// Composite premultiplied RGBA over premultiplied RGBA, with integer rounding.
+static void rgba8_over(uint8_t* d, unsigned r, unsigned g, unsigned b, unsigned a)
+{
+    unsigned inv = 255 - a;
+    d[0] = (uint8_t)std::min(255u, r + (d[0] * inv + 127) / 255);
+    d[1] = (uint8_t)std::min(255u, g + (d[1] * inv + 127) / 255);
+    d[2] = (uint8_t)std::min(255u, b + (d[2] * inv + 127) / 255);
+    d[3] = (uint8_t)std::min(255u, a + (d[3] * inv + 127) / 255);
+}
+
+bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
+    const text_box_rt* box, uint8_t* pixels, int width, int height,
+    size_t stride, const ivec4* clip)
+{
+    if (!text || !text->text || !style || !style->family ||
+        style->family->count <= 0 || !style->family->familys ||
+        !style->family->familys[0] || !style->family->familys[0]->font ||
+        !pixels || width <= 0 || height <= 0 ||
+        !std::isfinite(style->fontsize) || style->fontsize > 4096 ||
+        !std::isfinite(style->lineheight) || style->lineheight < 0 ||
+        stride < (size_t)width * 4 ||
+        (size_t)(height - 1) > (SIZE_MAX - (size_t)width * 4) / stride ||
+        !std::isfinite(text->pos.x) || !std::isfinite(text->pos.y) ||
+        (box && (!std::isfinite(box->text_align.x) || !std::isfinite(box->text_align.y))))
+        return false;
+    auto* cache = (font_cache_cx*)hb_font_get_user_data(style->family->familys[0]->font, &g_font_cache_key);
+    if (!cache) return false;
+    int64_t left = 0, top = 0, right = width, bottom = height;
+    if (clip) {
+        left = std::max<int64_t>(left, clip->x);
+        top = std::max<int64_t>(top, clip->y);
+        right = std::min<int64_t>(right, (int64_t)clip->x + std::max(0, clip->z));
+        bottom = std::min<int64_t>(bottom, (int64_t)clip->y + std::max(0, clip->w));
+    }
+    if (left >= right || top >= bottom) return true;
+    try {
+        // LCD atlas data is unsuitable for a transparent RGBA destination.
+        text_style_t st = *style;
+        st.min_subpixel = 0;
+        text_st_t input = *text;
+        vg_text_run_cx run;
+        if (!new_text_run(&run, &input, &st, const_cast<text_box_rt*>(box))) return false;
+        const auto& ex = run.extents();
+        const auto& bx = run._box;
+        float bw = bx.rc.z > 0 ? (float)bx.rc.z : ex.width;
+        float bh = bx.rc.w > 0 ? (float)bx.rc.w : ex.height;
+        double ox = (double)text->pos.x + (bw - ex.width) * bx.text_align.x;
+        double oy = (double)text->pos.y + (bh - ex.height) * bx.text_align.y;
+        // add_text truncates the aligned origin to int before adding baseline.
+        if (!std::isfinite(ox) || !std::isfinite(oy) ||
+            ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX)
+            return false;
+        text_draw_list list = {};
+        run.populate_draw_list(list, (float)(int)ox, (float)((double)(int)oy + bx.baseline),
+            st.color, vg_text_run_cx::RASTER_FIRST);
+        std::unordered_map<const glyph_atlas_entry*, uint32_t> vector_ids;
+        for (const auto& cmd : list.cmds) {
+            if (cmd.type == glyph_draw_cmd::VECTOR) {
+                for (const auto& item : cache->glyph_cache) {
+                    font_cache_cx::glyph_key key; key.v = item.first;
+                    if (key.s.k.y == 0) vector_ids.emplace(&item.second, key.s.glyph_index);
+                }
+                break;
+            }
+        }
+        for (const auto& cmd : list.cmds) {
+            const auto* e = cmd.entry;
+            const uint8_t* src = nullptr;
+            int sw = 0, sh = 0, pitch = 0, sx = 0, sy = 0;
+            int bearing_x = 0, bearing_y = 0;
+            bool color = e->has_color, bgra = true, a8 = false;
+            if (cmd.type == glyph_draw_cmd::RASTER) {
+                const auto* atlas = (const ovg_image_data*)e->atlas_img;
+                if (!atlas || !atlas->data) return false;
+                src = (const uint8_t*)atlas->data;
+                pitch = atlas->stride; sx = e->uv_rect.x; sy = e->uv_rect.y;
+                sw = e->uv_rect.z; sh = e->uv_rect.w;
+                bearing_x = e->offset.x; bearing_y = e->offset.y;
+                bgra = atlas->format == 1;
+            } else {
+                // Vector cache entries do not carry glyph IDs; recover the key
+                // from this cache without changing the shared cache's policy.
+                const auto found = vector_ids.find(e);
+                uint32_t gid = found == vector_ids.end() ? 0 : found->second;
+                auto* fs = (FontStyle*)hb_font_get_user_data(e->font, &fontStyleKey);
+                if (!gid || !fs) return false;
+                glm::ivec4 rc = {};
+                hb_raster_image_t* image = build_glyph_image_hb(&fs->font, gid, cmd.fontsize, &rc, {1, 1});
+                if (!image) return false;
+                hb_raster_extents_t ext = {};
+                hb_raster_image_get_extents(image, &ext);
+                auto fmt = hb_raster_image_get_format(image);
+                if (fmt != HB_RASTER_FORMAT_A8 && fmt != HB_RASTER_FORMAT_BGRA32) return false;
+                src = (const uint8_t*)hb_raster_image_get_buffer(image);
+                pitch = ext.stride; sw = std::min((int)ext.width, rc.z);
+                sh = std::min((int)ext.height, rc.w);
+                bearing_x = rc.x; bearing_y = rc.y;
+                a8 = fmt == HB_RASTER_FORMAT_A8; color = !a8;
+            }
+            if (!src || pitch <= 0 || sw < 0 || sh < 0) return false;
+            double dx = std::floor((double)cmd.pos.x + bearing_x + 0.5);
+            double dy = std::floor((double)cmd.pos.y - bearing_y + 0.5);
+            if (!std::isfinite(dx) || !std::isfinite(dy)) return false;
+            if (dx >= right || dy >= bottom || dx + sw <= left || dy + sh <= top) continue;
+            int64_t x0 = (int64_t)dx, y0 = (int64_t)dy;
+            for (int64_t y = std::max(top, y0); y < std::min(bottom, y0 + sh); ++y) {
+                const uint8_t* row = src + (size_t)(sy + y - y0) * pitch;
+                uint8_t* dst = pixels + (size_t)y * stride;
+                for (int64_t x = std::max(left, x0); x < std::min(right, x0 + sw); ++x) {
+                    const uint8_t* p = row + (size_t)(sx + x - x0) * (a8 ? 1 : 4);
+                    unsigned r, g, b, a;
+                    if (color) {
+                        a = p[3]; r = p[bgra ? 2 : 0]; g = p[1]; b = p[bgra ? 0 : 2];
+                    } else {
+                        unsigned coverage = a8 ? p[0] : p[3];
+                        a = (coverage * ((st.color >> 24) & 255) + 127) / 255;
+                        r = ((st.color & 255) * a + 127) / 255;
+                        g = (((st.color >> 8) & 255) * a + 127) / 255;
+                        b = (((st.color >> 16) & 255) * a + 127) / 255;
+                    }
+                    rgba8_over(dst + (size_t)x * 4, r, g, b, a);
+                }
+            }
+        }
+        return true;
+    } catch (const std::bad_alloc&) { return false; }
+}
+
 void free_text_run(vg_text_run_cx* ptr)
 {
 	if (ptr)

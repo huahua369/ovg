@@ -6,6 +6,7 @@
 #define OVG_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct vg_fbo_t vg_fbo_t;
 
@@ -501,10 +502,24 @@ typedef struct font_familys_t {
 }font_familys_t;
 
 /* Font metrics used by UI layout.  Computed from the primary family at the
- * requested pixel size; both fields are already fallback-adjusted. */
+ * requested pixel size; ascent/line_height are already fallback-adjusted.
+ *
+ * Decoration metrics are appended (source-compatible): coordinates are y-down
+ * and relative to the baseline.
+ * - underline_offset / strikeout_offset: distance from the baseline to the
+ *   decoration's TOP edge (draw the line at y = baseline + offset);
+ * - underline/strikeout thickness are > 0 and already scaled to font_size;
+ * - x_height / cap_height are > 0 (OpenType values when available). */
 typedef struct vg_font_metrics_t {
 	float ascent;
 	float line_height;
+
+	float underline_offset;
+	float underline_thickness;
+	float strikeout_offset;
+	float strikeout_thickness;
+	float x_height;
+	float cap_height;
 }vg_font_metrics_t;
 
 typedef struct vg_pattern_t {
@@ -1075,6 +1090,29 @@ vec3 get_font_extents(hb_font_t * font, int height, bool vert);
  * line width; '\n' splits lines. */
 float vg_measure_text_width(const font_familys_t * ffs, int fontsize, const char* text, int len);
 vg_font_metrics_t vg_get_font_metrics(const font_familys_t * ffs, float font_size);
+
+/* Render the shaped main text into caller-owned, top-down RGBA8 pixels.
+ * Pixels use premultiplied alpha, including the existing destination; source
+ * is composited over destination without clearing it. stride is in bytes.
+ * text->pos and box alignment/baseline follow add_text, in device pixels;
+ * clip is an optional {x,y,width,height} pixel rectangle intersected with the
+ * buffer (text->clip is not used). No transforms or fractional filtering.
+ * Color is OVG 0xAABBGGRR. Color glyphs retain their own colors, as add_text.
+ * This draws only the main text: shadow, stroke, glow and LCD subpixel AA are
+ * not supported. Large vector-path glyphs are rasterized separately. The
+ * result is caller-owned and may be cached; font family/cache must remain alive
+ * during the call. Like the font cache this API is not thread-safe.
+ * Returns false for invalid arguments, unsupported glyph raster format or
+ * allocation/rasterization failure. On failure pixels may be partially changed.
+ * width/height must be positive, fontsize at most 4096 (non-positive values
+ * select 1 pixel, as in add_text), and stride >= width*4.
+ */
+#ifdef __cplusplus
+extern "C"
+#endif
+bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
+    const text_box_rt* box, uint8_t* pixels, int width, int height,
+    size_t stride, const ivec4* clip);
 // 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);

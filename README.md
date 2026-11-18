@@ -351,6 +351,29 @@ cb->add_text(vg, &t, &ts, &box);
 
 `text_style_t` 关键字段：`fontsize`、`lineheight`、`align`（0~1）、`shadow_pos`、`stroke`（正负含义不同）、`color`/`color_stroke`/`color_shadow`、`min_subpixel`。
 
+#### 缓存到 RGBA 内存
+
+`vg_render_text_rgba8` 不需要 GPU，将整形后的正文以 source-over 合成到调用方的 RGBA8 缓冲，结果可由外部保存或上传纹理。像素按从上到下排列，颜色为**预乘 alpha**；缓冲的已有内容也须为预乘 alpha。首次使用可先清零。`text.pos`、`box.baseline` 和对齐规则与 `add_text` 相同，`clip` 可单独指定像素裁剪矩形，详细限制见头文件。
+
+```cpp
+std::vector<uint8_t> pixels(width * height * 4, 0);
+text_st_t text = {};
+text.text = "Hello OVG";
+text.text_len = -1; // 以 NUL 结尾
+text_style_t style = {};
+style.family = ff;
+style.fontsize = 24;
+style.color = 0xffffffff;
+text_box_rt box = {};
+box.baseline = 24;
+box.word_wrap = -1;
+bool ok = vg_render_text_rgba8(&text, &style, &box, pixels.data(),
+                               width, height, width * 4, nullptr);
+// ok 时自行缓存 pixels；font cache 和 family 在调用期间必须存活。
+```
+
+该接口只绘制正文，不包含阴影、描边、发光或 LCD 子像素抗锯齿；不提供变换，且受字体缓存的单线程约束。
+
 ### 几何（2D / 3D 三角形）
 
 ```c
