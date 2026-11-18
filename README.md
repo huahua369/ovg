@@ -431,28 +431,36 @@ cb->add_geometry(vg,
 | `void set_clip_rect / get_clip_rect(rvg_t*, int[4])` | 设置/获取矩形裁剪 |
 
 ### 录制与回放
-todo:
+
+`ovg_ctx_cb` 可以缓存一段绘制命令，供后续帧回放。录制范围是同一个 `rvg_t` 上 `start_recording()` 和 `stop_recording()` 之间追加的命令，不必录制整帧。
+
 ```c
-/* 录制一帧 */
-cb->start_recording(vg);
-// ... 录制所有绘图命令 ...
-ovg_recording_t* rec = cb->stop_recording(vg);
+/* cache 指向宿主保存的句柄，初始值为 NULL。每帧只调用一次。 */
+void draw_panel(ovg_ctx_cb* cb, rvg_t* vg,
+                ovg_recording_t** cache, bool changed, float width)
+{
+    if (*cache && !changed) {
+        cb->replay(vg, *cache);
+        return;
+    }
 
-/* 回放整个录制 */
-cb->replay(vg, rec);
+    cb->start_recording(vg);
+    cb->new_path(vg);
+    cb->set_source_color(vg, 0xff505050u);
+    cb->rectangle(vg, 12.0f, 12.0f, width, 48.0f);
+    cb->fill(vg);
 
-/* 回放单条命令 */
-cb->replay_command(vg, rec, cmdIndex);
-
-/* 查询 */
-uint32_t count = cb->recording_get_count(rec);
-void* data     = cb->recording_get_data(rec);
-
-/* 销毁 */
-cb->recording_destroy(rec);
+    /* 首次录制传 NULL；重新录制时传已有句柄以复用它。 */
+    ovg_recording_t* rec = cb->stop_recording(vg, *cache);
+    if (rec) *cache = rec;
+    /* 上面的绘制命令已经进入本帧，不要在同一帧再回放一遍。 */
+}
 ```
 
-> 录制的命令可跨帧复用，适合静态 UI、图标、背景等不常变化的内容做缓存。
+- **帧边界**：在录制前清理上一帧的命令。不要嵌套录制，也不要在录制中调用 `clear()`；`clear()` 会取消未结束的录制。`stop_recording()` 在没有活跃录制时返回 `NULL`。
+- **回放与查询**：`replay(vg, rec)` 按录制顺序追加命令。`recording_get_count(rec)` 返回底层命令数；`replay_command(vg, rec, index)` 只用于单条 2D 矢量命令，索引从 0 开始。依赖前序命令（如裁剪）的内容应回放整段。
+- **生命周期**：`recording_get_data(rec)` 返回借用的内部命令数组，仅供查看；不要修改、释放或作为可序列化的数据保存。重新录制或销毁后不要继续使用该指针。不再使用句柄时，调用 `cb->recording_destroy(rec)`。
+- **适用范围**：2D 矢量顶点、索引和绘制状态会被复制，适合缓存静态路径、图标和背景。几何命令引用的缓冲及外部纹理不会一起复制；不要将录制视为能独立保存这些资源的快照。
 
 ---
 
