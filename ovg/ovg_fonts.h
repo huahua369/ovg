@@ -176,6 +176,7 @@ public:
 	int max_raster_size = 256;
 	int min_subpixel = 0;
 	int references = 1;
+	uint64_t glyph_generation = 0; // increment before invalidating borrowed glyph/atlas entries
 
 	// Text measurement caches (shared with the UI layer).  Keyed by font set,
 	// pixel size and text/codepoint so they remain valid while the UI font is

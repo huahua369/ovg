@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -603,6 +604,7 @@ void font_cache_cx::forget_family(const font_familys_t* family)
 
 void font_cache_cx::clear_glyphs_and_measurements()
 {
+	++glyph_generation;
 	// Explicit resets invalidate cached draw data; existing managed lists remain
 	// safe to delete or derive from, but have no resolved faces until recreated.
 	for (auto list : live_families) {
@@ -2925,62 +2927,97 @@ static void rgba8_over(uint8_t* d, unsigned r, unsigned g, unsigned b, unsigned 
     d[3] = (uint8_t)std::min(255u, a + (d[3] * inv + 127) / 255);
 }
 
-bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
-    const text_box_rt* box, uint8_t* pixels, int width, int height,
-    size_t stride, const ivec4* clip)
+struct vg_text_rgba_layout {
+    font_cache_cx* cache = nullptr;
+    uint64_t generation = 0;
+    text_draw_list draw{};
+    std::unordered_map<const glyph_atlas_entry*, uint32_t> vector_ids;
+    ~vg_text_rgba_layout() { free_font_cache(cache); }
+};
+
+static font_cache_cx* rgba8_text_cache(const text_st_t* text, const text_style_t* style,
+    const text_box_rt* box)
 {
-    if (!text || !text->text || !style || !style->family ||
-        style->family->count <= 0 || !style->family->familys ||
-        !style->family->familys[0] || !style->family->familys[0]->font ||
-        !pixels || width <= 0 || height <= 0 ||
+    if (!text || !text->text || !style ||
         !std::isfinite(style->fontsize) || style->fontsize > 4096 ||
         !std::isfinite(style->lineheight) || style->lineheight < 0 ||
-        stride < (size_t)width * 4 ||
-        (size_t)(height - 1) > (SIZE_MAX - (size_t)width * 4) / stride ||
+        (double)style->lineheight > INT32_MAX ||
         !std::isfinite(text->pos.x) || !std::isfinite(text->pos.y) ||
         (box && (!std::isfinite(box->text_align.x) || !std::isfinite(box->text_align.y))))
+        return nullptr;
+    return vg_measure_cache(style->family);
+}
+
+struct rgba8_clip {
+    int64_t left = 0, top = 0, right = 0, bottom = 0;
+    bool empty() const { return left >= right || top >= bottom; }
+};
+
+static bool rgba8_destination(uint8_t* pixels, int width, int height, size_t stride,
+    const ivec4* clip, rgba8_clip& bounds)
+{
+    if (!pixels || width <= 0 || height <= 0 || (size_t)width > SIZE_MAX / 4 ||
+        stride < (size_t)width * 4 ||
+        (size_t)(height - 1) > (SIZE_MAX - (size_t)width * 4) / stride)
         return false;
-    auto* cache = (font_cache_cx*)hb_font_get_user_data(style->family->familys[0]->font, &g_font_cache_key);
-    if (!cache) return false;
-    int64_t left = 0, top = 0, right = width, bottom = height;
+    bounds = {0, 0, width, height};
     if (clip) {
-        left = std::max<int64_t>(left, clip->x);
-        top = std::max<int64_t>(top, clip->y);
-        right = std::min<int64_t>(right, (int64_t)clip->x + std::max(0, clip->z));
-        bottom = std::min<int64_t>(bottom, (int64_t)clip->y + std::max(0, clip->w));
+        bounds.left = std::max<int64_t>(0, clip->x);
+        bounds.top = std::max<int64_t>(0, clip->y);
+        bounds.right = std::min<int64_t>(width, (int64_t)clip->x + std::max(0, clip->z));
+        bounds.bottom = std::min<int64_t>(height, (int64_t)clip->y + std::max(0, clip->w));
     }
-    if (left >= right || top >= bottom) return true;
-    try {
-        // LCD atlas data is unsuitable for a transparent RGBA destination.
-        text_style_t st = *style;
-        st.min_subpixel = 0;
-        text_st_t input = *text;
-        vg_text_run_cx run;
-        if (!new_text_run(&run, &input, &st, const_cast<text_box_rt*>(box))) return false;
-        const auto& ex = run.extents();
-        const auto& bx = run._box;
-        float bw = bx.rc.z > 0 ? (float)bx.rc.z : ex.width;
-        float bh = bx.rc.w > 0 ? (float)bx.rc.w : ex.height;
-        double ox = (double)text->pos.x + (bw - ex.width) * bx.text_align.x;
-        double oy = (double)text->pos.y + (bh - ex.height) * bx.text_align.y;
-        // add_text truncates the aligned origin to int before adding baseline.
-        if (!std::isfinite(ox) || !std::isfinite(oy) ||
-            ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX)
-            return false;
-        text_draw_list list = {};
-        run.populate_draw_list(list, (float)(int)ox, (float)((double)(int)oy + bx.baseline),
-            st.color, vg_text_run_cx::RASTER_FIRST);
-        std::unordered_map<const glyph_atlas_entry*, uint32_t> vector_ids;
-        for (const auto& cmd : list.cmds) {
-            if (cmd.type == glyph_draw_cmd::VECTOR) {
-                for (const auto& item : cache->glyph_cache) {
-                    font_cache_cx::glyph_key key; key.v = item.first;
-                    if (key.s.k.y == 0) vector_ids.emplace(&item.second, key.s.glyph_index);
-                }
-                break;
-            }
+    return true;
+}
+
+static bool prepare_rgba8_layout(vg_text_rgba_layout& layout, font_cache_cx* cache,
+    const text_st_t& text, const text_style_t& style, const text_box_rt* box)
+{
+    // LCD atlas data is unsuitable for a transparent RGBA destination.
+    text_style_t st = style;
+    st.min_subpixel = 0;
+    text_st_t input = text;
+    text_box_rt box_copy = box ? *box : text_box_rt{};
+    vg_text_run_cx run;
+    if (!new_text_run(&run, &input, &st, box ? &box_copy : nullptr)) return false;
+    const auto& ex = run.extents();
+    const auto& bx = run._box;
+    const float bw = bx.rc.z > 0 ? (float)bx.rc.z : ex.width;
+    const float bh = bx.rc.w > 0 ? (float)bx.rc.w : ex.height;
+    const double ox = (double)text.pos.x + (bw - ex.width) * bx.text_align.x;
+    const double oy = (double)text.pos.y + (bh - ex.height) * bx.text_align.y;
+    // add_text truncates the aligned origin to int before adding baseline.
+    if (!std::isfinite(ox) || !std::isfinite(oy) ||
+        ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX)
+        return false;
+    run.populate_draw_list(layout.draw, (float)(int)ox,
+        (float)((double)(int)oy + bx.baseline), 0, vg_text_run_cx::RASTER_FIRST);
+    for (const auto& cmd : layout.draw.cmds)
+        if (cmd.type == glyph_draw_cmd::VECTOR) layout.vector_ids.try_emplace(cmd.entry, 0);
+    if (!layout.vector_ids.empty()) {
+        // Vector entries do not carry glyph IDs. Resolve only the entries used
+        // by this layout once, not on every replay.
+        for (const auto& item : cache->glyph_cache) {
+            const auto it = layout.vector_ids.find(&item.second);
+            if (it == layout.vector_ids.end()) continue;
+            font_cache_cx::glyph_key key; key.v = item.first;
+            if (key.s.k.y == 0) it->second = key.s.glyph_index;
         }
-        for (const auto& cmd : list.cmds) {
+        for (const auto& item : layout.vector_ids)
+            if (item.second == 0) return false;
+    }
+    ++cache->references;
+    layout.cache = cache;
+    layout.generation = cache->glyph_generation;
+    return true;
+}
+
+static bool blend_rgba8_layout(const vg_text_rgba_layout& layout, int tx, int ty,
+    uint32_t tint, uint8_t* pixels, size_t stride, const rgba8_clip& bounds)
+{
+    const auto [left, top, right, bottom] = bounds;
+    try {
+        for (const auto& cmd : layout.draw.cmds) {
             const auto* e = cmd.entry;
             const uint8_t* src = nullptr;
             int sw = 0, sh = 0, pitch = 0, sx = 0, sy = 0;
@@ -2995,10 +3032,9 @@ bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
                 bearing_x = e->offset.x; bearing_y = e->offset.y;
                 bgra = atlas->format == 1;
             } else {
-                // Vector cache entries do not carry glyph IDs; recover the key
-                // from this cache without changing the shared cache's policy.
-                const auto found = vector_ids.find(e);
-                uint32_t gid = found == vector_ids.end() ? 0 : found->second;
+                const auto found = layout.vector_ids.find(e);
+                if (found == layout.vector_ids.end()) return false;
+                const uint32_t gid = found->second;
                 auto* fs = (FontStyle*)hb_font_get_user_data(e->font, &fontStyleKey);
                 if (!gid || !fs) return false;
                 glm::ivec4 rc = {};
@@ -3015,8 +3051,8 @@ bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
                 a8 = fmt == HB_RASTER_FORMAT_A8; color = !a8;
             }
             if (!src || pitch <= 0 || sw < 0 || sh < 0) return false;
-            double dx = std::floor((double)cmd.pos.x + bearing_x + 0.5);
-            double dy = std::floor((double)cmd.pos.y - bearing_y + 0.5);
+            double dx = std::floor((double)cmd.pos.x + bearing_x + 0.5) + tx;
+            double dy = std::floor((double)cmd.pos.y - bearing_y + 0.5) + ty;
             if (!std::isfinite(dx) || !std::isfinite(dy)) return false;
             if (dx >= right || dy >= bottom || dx + sw <= left || dy + sh <= top) continue;
             int64_t x0 = (int64_t)dx, y0 = (int64_t)dy;
@@ -3030,10 +3066,10 @@ bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
                         a = p[3]; r = p[bgra ? 2 : 0]; g = p[1]; b = p[bgra ? 0 : 2];
                     } else {
                         unsigned coverage = a8 ? p[0] : p[3];
-                        a = (coverage * ((st.color >> 24) & 255) + 127) / 255;
-                        r = ((st.color & 255) * a + 127) / 255;
-                        g = (((st.color >> 8) & 255) * a + 127) / 255;
-                        b = (((st.color >> 16) & 255) * a + 127) / 255;
+                        a = (coverage * ((tint >> 24) & 255) + 127) / 255;
+                        r = ((tint & 255) * a + 127) / 255;
+                        g = (((tint >> 8) & 255) * a + 127) / 255;
+                        b = (((tint >> 16) & 255) * a + 127) / 255;
                     }
                     rgba8_over(dst + (size_t)x * 4, r, g, b, a);
                 }
@@ -3041,6 +3077,48 @@ bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
         }
         return true;
     } catch (const std::bad_alloc&) { return false; }
+}
+
+bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
+    const text_box_rt* box, uint8_t* pixels, int width, int height,
+    size_t stride, const ivec4* clip)
+{
+    auto* cache = rgba8_text_cache(text, style, box);
+    rgba8_clip bounds;
+    if (!cache || !rgba8_destination(pixels, width, height, stride, clip, bounds)) return false;
+    if (bounds.empty()) return true;
+    try {
+        vg_text_rgba_layout layout;
+        return prepare_rgba8_layout(layout, cache, *text, *style, box) &&
+            blend_rgba8_layout(layout, 0, 0, style->color, pixels, stride, bounds);
+    } catch (const std::bad_alloc&) { return false; }
+}
+
+vg_text_rgba_layout* vg_create_text_rgba_layout(const text_st_t* text,
+    const text_style_t* style, const text_box_rt* box)
+{
+    auto* cache = rgba8_text_cache(text, style, box);
+    if (!cache) return nullptr;
+    try {
+        auto layout = std::make_unique<vg_text_rgba_layout>();
+        if (!prepare_rgba8_layout(*layout, cache, *text, *style, box)) return nullptr;
+        return layout.release();
+    } catch (const std::bad_alloc&) { return nullptr; }
+}
+
+void vg_free_text_rgba_layout(vg_text_rgba_layout* layout)
+{
+    delete layout;
+}
+
+bool vg_render_text_layout_rgba8(const vg_text_rgba_layout* layout,
+    int dx, int dy, uint32_t color, uint8_t* pixels, int width, int height,
+    size_t stride, const ivec4* clip)
+{
+    rgba8_clip bounds;
+    if (!layout || layout->generation != layout->cache->glyph_generation ||
+        !rgba8_destination(pixels, width, height, stride, clip, bounds)) return false;
+    return bounds.empty() || blend_rgba8_layout(*layout, dx, dy, color, pixels, stride, bounds);
 }
 
 void free_text_run(vg_text_run_cx* ptr)

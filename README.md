@@ -374,6 +374,21 @@ bool ok = vg_render_text_rgba8(&text, &style, &box, pixels.data(),
 
 该接口只绘制正文，不包含阴影、描边、发光或 LCD 子像素抗锯齿；不提供变换，且受字体缓存的单线程约束。
 
+同一段已排版正文需要改变位置、颜色或目标缓冲时，可缓存布局而不是缓存整张像素图：
+
+```cpp
+vg_text_rgba_layout* layout = vg_create_text_rgba_layout(&text, &style, &box);
+if (layout) {
+    // 在准备位置的基础上向右 10px、向下 5px，以绿色合成到目标缓冲。
+    bool ok = vg_render_text_layout_rgba8(layout, 10, 5, 0xff00ff00,
+        pixels.data(), width, height, size_t(width) * 4, nullptr);
+    // 布局可继续用于其他目标、颜色和裁剪矩形；不再进行文本整形。
+    vg_free_text_rgba_layout(layout);
+}
+```
+
+布局持有字形缓存引用，创建成功后不再借用输入文本、样式、文本框或 family 句柄。显式清理字体缓存会让旧布局失效，此时绘制返回 `false` 且不写入目标缓冲，需要重新创建。位图字形直接复用缓存；大号矢量字形仍在绘制时光栅化。
+
 ### 几何（2D / 3D 三角形）
 
 ```c

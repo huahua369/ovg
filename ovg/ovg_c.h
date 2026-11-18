@@ -1188,6 +1188,29 @@ extern "C"
 bool vg_render_text_rgba8(const text_st_t* text, const text_style_t* style,
     const text_box_rt* box, uint8_t* pixels, int width, int height,
     size_t stride, const ivec4* clip);
+
+/* Prepare the same shaped and aligned main text as vg_render_text_rgba8.
+ * The layout owns its positions and retains the font cache; text, box, style
+ * and the font family list may be released after creation. Returns NULL on
+ * invalid input or allocation failure. Resetting the font cache invalidates
+ * the layout; destroy it and create a new one. Not thread-safe. */
+typedef struct vg_text_rgba_layout vg_text_rgba_layout;
+#ifdef __cplusplus
+extern "C" {
+#endif
+vg_text_rgba_layout* vg_create_text_rgba_layout(const text_st_t* text,
+    const text_style_t* style, const text_box_rt* box);
+void vg_free_text_rgba_layout(vg_text_rgba_layout* layout);
+/* Draw without reshaping. dx/dy translate the prepared position by whole
+ * pixels; color is the draw-time 0xAABBGGRR tint for monochrome glyphs only.
+ * Pixel format, clipping and error semantics match vg_render_text_rgba8.
+ * A NULL or invalidated layout returns false without changing pixels. */
+bool vg_render_text_layout_rgba8(const vg_text_rgba_layout* layout,
+    int dx, int dy, uint32_t color, uint8_t* pixels, int width, int height,
+    size_t stride, const ivec4* clip);
+#ifdef __cplusplus
+}
+#endif
 // 创建接口实例
 ovg_ctx_cb* new_ctx_cb();
 void free_ctx_cb(ovg_ctx_cb*);
