@@ -543,11 +543,16 @@ typedef enum vg_effect_type_t {
 	VG_EFFECT_SHADOW = 3,
 } vg_effect_type_t;
 
+typedef enum vg_effect_blend_t {
+	VG_EFFECT_BLEND_OVER = 0,
+	VG_EFFECT_BLEND_ADD = 1,
+} vg_effect_blend_t;
+
 typedef struct vg_effect_t {
 	uint8_t		type;		// vg_effect_type_t
-	uint8_t		blend;		// 0=over, 1=add（预留）
+	uint8_t		blend;		// vg_effect_blend_t
 	uint16_t	reserved;
-	uint32_t	color;		// 0xAARRGGBB
+	uint32_t	color;		// OVG 0xAABBGGRR, same as text_style_t::color
 	float		sigma;		// 高斯模糊半径（设备像素）
 	float		spread;		// -1~1，正数向外扩张
 	float		opacity;	// 特效强度 0~1
@@ -803,6 +808,10 @@ typedef struct text_st_t {
 }text_st_t;
 
 // 文本样式
+typedef enum vg_text_glow_mode_t {
+	VG_TEXT_GLOW_OUTER = 0,
+	VG_TEXT_GLOW_INNER = 1,
+} vg_text_glow_mode_t;
 typedef struct text_style_t
 {
 	font_familys_t* family;
@@ -814,6 +823,12 @@ typedef struct text_style_t
 	uint32_t color_stroke;// = 0xff000000;	// 描边颜色
 	uint32_t color_shadow;			// 阴影颜色	0xcc121212;
 	int min_subpixel;
+	uint32_t color_glow;		// OVG 0xAABBGGRR, like color; alpha=0 disables glow
+	float glow_sigma;			// device pixels; <=0 uses the unblurred mask
+	float glow_spread;			// vg_effect_t::spread, clamped to [-1, 1]
+	float glow_opacity;			// extra strength; <=0 means 1, positive values capped at 1
+	uint8_t glow_mode;			// vg_text_glow_mode_t
+	uint8_t glow_blend;			// vg_effect_blend_t
 }text_style_t;
 // 文本区域
 typedef struct text_box_rt {
@@ -824,6 +839,13 @@ typedef struct text_box_rt {
 	int8_t word_wrap;	// = 2;	// 0字符换行，1单词换行，2换行点，3句子断开，4标题大小写断点
 	int8_t ellipsis;	// 省略号
 }text_box_rt;
+
+/* Batch independently positioned runs with a single identical glow effect. */
+typedef struct vg_text_glow_run_t {
+	text_st_t text;
+	text_style_t style;
+	text_box_rt box;
+} vg_text_glow_run_t;
 
 // Stencil 位平面
 #ifndef STENCIL_CLIP_BIT
@@ -984,6 +1006,12 @@ typedef struct ovg_ctx_cb {
 	uint32_t(*recording_get_count)(ovg_recording_t* rec);
 	void* (*recording_get_data)(ovg_recording_t* rec);
 	void  (*recording_destroy)(ovg_recording_t* rec);
+	/* Submit glow only, with one shared effect. rects are optional {x,y,w,h}
+	 * mask geometry in the same coordinate space. At least one run supplies
+	 * effect parameters; a run with null text may supply only parameters.
+	 * Returns false if nothing was recorded (including exhausted effect slots). */
+	bool (*add_text_glow_batch)(rvg_t* ctx, const vg_text_glow_run_t* runs, size_t count,
+		const vec4* rects, size_t rect_count);
 
 }ovg_ctx_cb;
 // 工具函数：渲染两色交替的格子
@@ -1069,7 +1097,40 @@ typedef void* font_cache_cx;
 #endif
 font_cache_cx* new_font_cache();
 void free_font_cache(font_cache_cx * p);
+typedef enum vg_font_weight_t {
+	VG_FONT_WEIGHT_DEFAULT = 0,
+	VG_FONT_WEIGHT_THIN = 100,
+	VG_FONT_WEIGHT_EXTRA_LIGHT = 200,
+	VG_FONT_WEIGHT_LIGHT = 300,
+	VG_FONT_WEIGHT_SEMI_LIGHT = 350,
+	VG_FONT_WEIGHT_REGULAR = 400,
+	VG_FONT_WEIGHT_MEDIUM = 500,
+	VG_FONT_WEIGHT_SEMI_BOLD = 600,
+	VG_FONT_WEIGHT_BOLD = 700,
+	VG_FONT_WEIGHT_EXTRA_BOLD = 800,
+	VG_FONT_WEIGHT_BLACK = 900
+} vg_font_weight_t;
+
+typedef enum vg_font_slant_t {
+	VG_FONT_SLANT_DEFAULT = 0,
+	VG_FONT_SLANT_NORMAL = 1,
+	VG_FONT_SLANT_ITALIC = 2,
+	VG_FONT_SLANT_OBLIQUE = 3
+} vg_font_slant_t;
+
 font_familys_t* new_font_family(font_cache_cx * p, const char* familys, const char* style);
+/* Resolve each fallback family independently. Exact styles take precedence.
+ * weight is 0 (unspecified) or a CSS weight from 100 to 900; slant is a
+ * vg_font_slant_t. Both zero select the legacy path. Delete the result with
+ * delete_font_family(); the font cache owns the resolved faces. */
+font_familys_t* new_font_family_ex(font_cache_cx* p, const char* familys,
+	const char* styles, int weight, int slant);
+/* Repeat an OVG-created family's original family/style request in the same
+ * cache at a new weight/slant. Returns NULL on failure. */
+font_familys_t* font_familys_derive(const font_familys_t* base, int weight, int slant);
+/* Query the effective style (0 if unknown); a list reports its first face. */
+void font_family_get_style(const font_family_t* face, int* weight, int* slant);
+void font_familys_get_style(const font_familys_t* ffs, int* weight, int* slant);
 void delete_font_family(font_familys_t * p);
 /* 注册一个字体文件。name 可空：为 fontconfig 按文件内部族名登记（需在
  * get_sys_family() 后可被 new_font_family 找到）；给出 name 时额外按该名称
@@ -1090,6 +1151,20 @@ vec3 get_font_extents(hb_font_t * font, int height, bool vert);
  * line width; '\n' splits lines. */
 float vg_measure_text_width(const font_familys_t * ffs, int fontsize, const char* text, int len);
 vg_font_metrics_t vg_get_font_metrics(const font_familys_t * ffs, float font_size);
+
+/* Visit shaped glyph ink bounds as {x,y,w,h} relative to an explicitly
+ * positioned first baseline. Coordinates are device pixels and y-down.
+ * This uses OpenType glyph extents (conservative bounds, not contour tests). */
+typedef void (*vg_text_ink_fn)(void* user, float x, float y, float w, float h);
+void vg_visit_text_ink(const text_st_t* text, const text_style_t* style,
+	float baseline_x, float baseline_y, vg_text_ink_fn emit, void* user);
+
+/* CPU slot-limit drops since the draw context was last cleared. Backend
+ * texture-budget rejections are separate and do not affect this counter. */
+#ifdef __cplusplus
+extern "C"
+#endif
+size_t ovg_text_glow_budget_drops(const rvg_t* ctx);
 
 /* Render the shaped main text into caller-owned, top-down RGBA8 pixels.
  * Pixels use premultiplied alpha, including the existing destination; source

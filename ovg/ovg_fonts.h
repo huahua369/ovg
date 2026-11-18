@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <functional>
+#include <tuple>
 extern "C" {
 #endif
 	typedef struct hb_raster_image_t hb_raster_image_t;
@@ -159,8 +160,8 @@ public:
 	std::map<std::string, std::vector<FontStyle*>> _familys;
 	// 自定义加载的字体
 	std::map<std::string, std::vector<FontStyle*>> _familys_name;
-	std::vector<FontStyle*> _emojis;
-	std::vector<FontStyle*> _temp;
+	// Live public lists are invalidated on an explicit, destructive cache reset.
+	std::set<font_familys_t*> live_families;
 	// key=[uint16字体id，uint16字号，uint32字形id]
 	std::unordered_map<uint64_t, glyph_atlas_entry> glyph_cache;
 	std::unordered_map<uint64_t, glyph_atlas_entry> _sub_glyph_cache;
@@ -189,9 +190,8 @@ public:
 	void get_sys_family();
 	void clear_sys();
 	void clear_load();
-	vg_font* get_font(const char* family, const char* style, int weight, int slant);
-
-	void select_font_face(const char* family, const char* style, int weight, int slant);
+	font_family_t* get_font(const char* family, const char* style, int weight, int slant);
+	void forget_family(const font_familys_t* family);
 	// name自定义名称，可空。给出 name 时同时注册到 _familys_name[name]，
 	// new_font_family 无需 get_sys_family() 刷新即可按该名称找到。
 	bool load_font_from_path(const char* path, const char* name);
@@ -205,8 +205,14 @@ public:
 	const char* slant_to_string(int s);
 	glyph_atlas_entry* get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize);
 private:
-
-	size_t mk_font(std::map<std::string, std::vector<FontStyle*>>* p, const char* family, const char* style, int weight, int slant);
+	std::map<std::pair<std::string, int>, FontStyle*> system_faces;
+	// Key by monotonic face ID rather than the address of a face.
+	std::map<std::tuple<uint32_t, int, int>, FontStyle*> variants;
+	bool load_face(FontStyle* face);
+	FontStyle* resolve_face(const char* family, const char* style, int weight, int slant);
+	FontStyle* materialize(FontStyle* base, int weight, int slant);
+	void clear_variants();
+	void clear_glyphs_and_measurements();
 };
  
 
@@ -321,6 +327,7 @@ public:
 	void clear_glyphs();
 
 	void populate_draw_list(text_draw_list& list, float origin_x, float origin_y, uint32_t color, render_mode m);
+	void visit_ink(float baseline_x, float baseline_y, vg_text_ink_fn emit, void* user) const;
 	// 访问结果
 	const vg_text_extents_t& extents() const { return _extents; }
 	//const std::vector<vg_glyph_info_t>& glyphs() const { return _glyphs; }

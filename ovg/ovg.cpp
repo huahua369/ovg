@@ -275,6 +275,10 @@ private:
 };
 
 #ifdef OVG_FONT_H
+// A released font list's address can be reused for a different variant.
+// Do not let per-renderer shape caches match the new list by address alone.
+static uint64_t font_list_revision = 0;
+
 // Shaped-run cache.  The text run previously lived directly in the callback
 // object and was cleared/reshaped by every vg_add_text call, so static labels
 // paid for ICU bidi/break iteration and HarfBuzz shaping on every frame.  Keep
@@ -305,7 +309,11 @@ public:
 
 	vg_text_run_cx* get(text_st_t* p, text_style_t* ts, text_box_rt* box)
 	{
-		if (!p || !p->text || !ts || !ts->family) return nullptr;
+		if (!p || !p->text || !ts || !ts->family || ts->family->count <= 0) return nullptr;
+		if (_font_revision != font_list_revision) {
+			_runs.clear();
+			_font_revision = font_list_revision;
+		}
 		const size_t len = p->text_len < 0 ? strlen(p->text) : (size_t)p->text_len;
 		if (len == 0) return nullptr;
 
@@ -346,6 +354,7 @@ public:
 
 private:
 	static constexpr size_t max_runs = 512;
+	uint64_t _font_revision = 0;
 	std::map<key_t, std::unique_ptr<vg_text_run_cx>> _runs;
 	key_t _query;	// 查询键缓存，复用 text 的 capacity
 };
@@ -393,10 +402,8 @@ ovg_canvas_cb* new_canvas_cb()
 	return p;
 }
 void free_canvas_cb(ovg_canvas_cb* p) {
-	if (p) {
-		if (p->ac)delete p->ac;
-		delete p;
-	}
+	// Match new_canvas_cb(): the concrete destructor owns ac and the caches.
+	delete static_cast<ovg_canvas_cx*>(p);
 }
 
 
@@ -2182,7 +2189,9 @@ struct rvg_cx :public rvg_t {
 	size_t gCount = 0;	// ubo数量
 	size_t _curVertOffset = 0;
 	uint32_t curColor = 0;
-	uint32_t fxCount = 0;	// 本draw list的特效槽位计数
+	static constexpr uint32_t effect_slot_limit = 127;
+	uint32_t fxCount = 0;
+	size_t text_glow_budget_drops = 0;
 	glm::ivec4 curClip = {};
 	std::stack<vg_state_save_t*> _cst;	// 保存栈 
 
@@ -2198,7 +2207,7 @@ public:
 	void clear_all();
 	void set_path(ovg_path_t* path, vg_state_save_t* st);
 	void stroke_preserve();
-	void fill_preserve();
+	bool fill_preserve(bool effect_only = false);
 	void clip_preserve();
 	void fill();
 	void paint();
@@ -2268,6 +2277,7 @@ void rvg_cx::clear_all()
 	_curVertOffset = 0;
 	gCount = 0;
 	fxCount = 0;
+	text_glow_budget_drops = 0;
 	mac.release();
 	_vertex.clear();
 	_indices.clear();
@@ -2481,38 +2491,46 @@ void rvg_cx::apply_effect_bounds(vgcmd_t* c, bool isStroke)
 	float blur = ceilf(fx.sigma * 3.0f);
 	float pad_x = blur + fabsf(fx.offset.x) + 2.0f;
 	float pad_y = blur + fabsf(fx.offset.y) + 2.0f;
-	if (fxCount >= 127) {
-		c->ref = -1;
+	if (fxCount >= effect_slot_limit)
 		return;
-	}
 	c->ref = (int8_t)fxCount++;
 	c->bounds = glm::vec4(minx - pad_x, miny - pad_y,
 		(maxx - minx) + pad_x * 2.0f, (maxy - miny) + pad_y * 2.0f);
 }
 
-void rvg_cx::fill_preserve()
+bool rvg_cx::fill_preserve(bool effect_only)
 {
 	o_finish_path(path);
 	if (!path || !path->pathPtr || !st)
-		return;
+		return false;
 	auto p = path;
 	p->t = st;
-	if (p->t->pattern)
-		gCount++;
-	auto t = p->t;
-	uint32_t color = t->color;
-	p->color = color;
+	p->color = st->color;
 	vgcmd_t c = { .full_screen_quad = -1 };
 	c.vertex.x = _vertex.size();
 	c.index.x = _indices.size();
 	c.type = 0;
-	cp_cmdt(&c, st);
 	apply_effect_bounds(&c, false);
+	if (effect_only && c.ref < 0)
+		return false;
 	p->curVertOffset = c.vertex.x;
 	fill_non_zero(p);
 	c.vertex.y = _vertex.size() - c.vertex.x;
 	c.index.y = _indices.size() - c.index.x;
-	cmdlist.push_back({ .vg = c });
+	if (!effect_only || (c.vertex.y > 0 && c.index.y > 0)) {
+		cp_cmdt(&c, st);
+		if (!effect_only || c.state) {
+			if (st->pattern) ++gCount;
+			cmdlist.push_back({ .vg = c });
+			return true;
+		}
+	}
+	// An effect-only fill has nothing else to render. Keep the slot and
+	// buffers untouched when the mask was degenerate or could not be stored.
+	--fxCount;
+	_vertex.resize(c.vertex.x);
+	_indices.resize(c.index.x);
+	return false;
 }
 
 void rvg_cx::clip_preserve()
@@ -5162,7 +5180,16 @@ void vctx_get_clip_rect(rvg_t* v, void* rc) {
 	if (v && rc) ovg_get_clip_rect(v, rc);
 }
 
+// Per draw list; reset by clear. This is CPU slot pressure, not GPU allocation failure.
+extern "C" size_t ovg_text_glow_budget_drops(const rvg_t* rvg)
+{
+	return rvg ? static_cast<const rvg_cx*>(rvg)->text_glow_budget_drops : 0;
+}
+
 /* ================= 高层绘制命令 ================= */
+
+static bool vctx_add_text_glow_batch(rvg_t* rvg, const vg_text_glow_run_t* runs, size_t count,
+	const vec4* rects, size_t rect_count);
 
 // 添加文本，风格，渲染区可选
 void vctx_add_text(rvg_t* v0, text_st_t* p, text_style_t* ts, text_box_rt* box) {
@@ -5587,6 +5614,7 @@ void init_ovg_ctx_cb(ovg_ctx_cb* cb)
 	cb->recording_get_count = vctx_recording_get_count;
 	cb->recording_get_data = vctx_recording_get_data;
 	cb->recording_destroy = vctx_recording_destroy;
+	cb->add_text_glow_batch = vctx_add_text_glow_batch;
 
 }
 #endif // 1
@@ -6981,11 +7009,31 @@ void grid_layout(
 
 #endif // !NO_FLEX_IMP 
 
-struct font_familys_cx :public font_familys_t {
+struct font_familys_cx : public font_familys_t {
+	static constexpr uint32_t tag = 0x4F564746; // OVGF
+	uint32_t magic = tag;
 	vg_vector<font_family_t*> v;
-	usp_ac_cx* ac = 0;
-	explicit font_familys_cx(vg_alloc_cx* a) : v(a), ac((usp_ac_cx*)a) {}
+	font_cache_cx* cache;
+	std::string family_request;
+	std::string style_request;
+	explicit font_familys_cx(font_cache_cx* ctx)
+		: font_familys_t{}, v(ctx->ac), cache(ctx) {}
 };
+
+// Check ownership before accessing the tag: callers can pass a standalone
+// public font_familys_t with no storage for any of the private fields.
+static std::set<const font_familys_t*>& owned_font_lists()
+{
+	static std::set<const font_familys_t*> lists;
+	return lists;
+}
+
+static const font_familys_cx* owned_font_list(const font_familys_t* list)
+{
+	if (owned_font_lists().find(list) == owned_font_lists().end()) return nullptr;
+	auto owned = static_cast<const font_familys_cx*>(list);
+	return owned->magic == font_familys_cx::tag ? owned : nullptr;
+}
 void vg_split(std::string str, const std::string& pattern, std::vector<std::string>& result)
 {
 	std::string::size_type pos;
@@ -7031,58 +7079,84 @@ void free_font_cache(font_cache_cx* p)
 	if (p) {
 		p->references--;
 		if (p->references > 0) return;
-		if (p->ac)delete p->ac;
-		delete p;
+		auto ac = p->ac;
+		delete p; // Release cached outlines through ac before destroying it.
+		delete ac;
 	}
 #endif
 }
 font_familys_t* new_font_family(font_cache_cx* ctx, const char* familys, const char* styles) {
-	if (!ctx || !familys || !*familys)return nullptr;
-	font_familys_cx* p = 0;
-#ifdef OVG_FONT_H
-	auto ac = (usp_ac_cx*)ctx->ac;
-	do {
-		std::vector<std::string> v, st;
-		vg_split(familys, ",", v);
-		if (styles && *styles)
-			vg_split(styles, ",", st);
-		if (v.empty() || !ctx || !ac)
-		{
-			break;
-		}
-		const char* style = st.size() ? st[0].c_str() : nullptr;
-		size_t ix = 1;
-		p = (font_familys_cx*)ac->new_obj<font_familys_cx>(ac);
-		if (!p) {
-			return 0;
-		}
-		p->count = 0;
-		for (auto& it : v)
-		{
-			auto font = ctx->get_font(it.c_str(), style, 0, 0);
-			if (ix < st.size())
-			{
-				style = st.size() ? st[ix].c_str() : nullptr;
-			}
-			ix++;
-			if (font)
-			{
-				auto ff = (font_family_t*)font;
-				p->v.push_back(ff);
-			}
-		}
-		p->familys = p->v.data();
-		p->count = p->v.size();
-		p->ac = ac;
-	} while (0);
-#endif
-	return p;
+	return new_font_family_ex(ctx, familys, styles, 0, 0);
 }
-void delete_font_family(font_familys_t* p) {
-	auto p1 = (font_familys_cx*)p;
-	if (p && p1->ac) {
-		p1->ac->free_obj(p1);
+
+font_familys_t* new_font_family_ex(font_cache_cx* ctx, const char* familys,
+	const char* styles, int weight, int slant)
+{
+#ifdef OVG_FONT_H
+	if (!ctx || !ctx->ac || !familys || !*familys) return nullptr;
+	weight = weight > 0 ? std::clamp(weight, 100, 900) : 0;
+	if (slant < VG_FONT_SLANT_NORMAL || slant > VG_FONT_SLANT_OBLIQUE) slant = 0;
+	const bool legacy = !weight && !slant;
+	std::vector<std::string> names, subfamilies;
+	vg_split(familys, ",", names);
+	if (styles && *styles) vg_split(styles, ",", subfamilies);
+
+	auto ac = static_cast<usp_ac_cx*>(ctx->ac);
+	auto release = [ac](font_familys_cx* p) { ac->free_obj(p); };
+	std::unique_ptr<font_familys_cx, decltype(release)> p(ac->new_obj<font_familys_cx>(ctx), release);
+	if (!p) return nullptr;
+	p->family_request = familys;
+	if (styles) p->style_request = styles;
+	const char* style = nullptr;
+	for (size_t i = 0; i < names.size(); ++i) {
+		if (i < subfamilies.size()) style = subfamilies[i].c_str();
+		else if (!legacy) style = nullptr; // Legacy repeats the last supplied style.
+		if (auto face = ctx->get_font(names[i].c_str(), style, weight, slant))
+			p->v.push_back(face);
 	}
+	if (!legacy && p->v.empty()) return nullptr;
+	p->familys = p->v.data();
+	p->count = static_cast<int>(p->v.size());
+	ctx->live_families.insert(p.get());
+	try {
+		owned_font_lists().insert(p.get());
+	} catch (...) {
+		ctx->live_families.erase(p.get());
+		throw;
+	}
+	++ctx->references;
+	return p.release();
+#else
+	return nullptr;
+#endif
+}
+
+font_familys_t* font_familys_derive(const font_familys_t* base, int weight, int slant)
+{
+	const auto* p = owned_font_list(base);
+	if (!p) return nullptr;
+	auto* ffs = new_font_family_ex(p->cache, p->family_request.c_str(),
+		p->style_request.c_str(), weight, slant);
+	if (ffs && !ffs->count) {
+		delete_font_family(ffs);
+		return nullptr;
+	}
+	return ffs;
+}
+
+void delete_font_family(font_familys_t* p) {
+#ifdef OVG_FONT_H
+	auto owned = const_cast<font_familys_cx*>(owned_font_list(p));
+	if (!owned) return;
+	auto cache = owned->cache;
+	owned_font_lists().erase(p);
+	++font_list_revision;
+	cache->live_families.erase(p);
+	cache->forget_family(p);
+	owned->magic = 0;
+	static_cast<usp_ac_cx*>(cache->ac)->free_obj(owned);
+	free_font_cache(cache);
+#endif
 }
 
 // 字体注册 C 接口（ovg_c.h）。详见该头文件中的注释。
@@ -7295,6 +7369,225 @@ void submit_vector_cmds_ctx(ovg_ctx_cb* cb, rvg_t* rvg, const text_draw_list* li
 		cb->restore(rvg);
 }
 
+static bool text_glow_origin(const vg_text_run_cx& run, glm::vec2& origin)
+{
+	const auto& ext = run.extents();
+	const auto& box = run._box;
+	const float w = box.rc.z > 0 ? (float)box.rc.z : ext.width;
+	const float h = box.rc.w > 0 ? (float)box.rc.w : ext.height;
+	const float x = run._tt.pos.x + (w - ext.width) * box.text_align.x;
+	const float y = run._tt.pos.y + (h - ext.height) * box.text_align.y;
+	if (!(x >= INT_MIN && (double)x <= INT_MAX && y >= INT_MIN && (double)y <= INT_MAX))
+		return false;
+	// Snap the origin before adding the custom baseline, as in legacy text.
+	origin = { (float)(int)x, (float)((double)(int)y + box.baseline) };
+	return true;
+}
+
+static vg_effect_t text_glow_effect(const text_style_t& ts)
+{
+	vg_effect_t effect = {};
+	effect.type = ts.glow_mode == VG_TEXT_GLOW_INNER ? VG_EFFECT_INNER_GLOW : VG_EFFECT_OUTER_GLOW;
+	effect.blend = ts.glow_blend == VG_EFFECT_BLEND_ADD ? VG_EFFECT_BLEND_ADD : VG_EFFECT_BLEND_OVER;
+	effect.color = ts.color_glow;
+	effect.sigma = std::isfinite(ts.glow_sigma) ? std::max(0.0f, ts.glow_sigma) : 0.0f;
+	effect.spread = std::isnan(ts.glow_spread) ? 0.0f : std::clamp(ts.glow_spread, -1.0f, 1.0f);
+	effect.opacity = ts.glow_opacity > 0.0f ? std::min(ts.glow_opacity, 1.0f) : 1.0f;
+	return effect;
+}
+
+static bool same_text_glow(const vg_effect_t& a, const vg_effect_t& b)
+{
+	return a.type == b.type && a.blend == b.blend && a.color == b.color &&
+		a.sigma == b.sigma && a.spread == b.spread && a.opacity == b.opacity;
+}
+
+static bool can_submit_text_glow(rvg_cx* dc)
+{
+	if (dc->fxCount < rvg_cx::effect_slot_limit) return true;
+	++dc->text_glow_budget_drops;
+	return false;
+}
+
+// TrueType and CFF outlines may have opposite winding. Match the winding
+// of ovg_rectangle so that overlapping filled shapes don't cancel in a
+// nonzero mask. Reverse all contours together to preserve glyph counters.
+static void normalize_glyph_winding(ovg_path_t* path, uint32_t subpath, size_t point)
+{
+	const auto each_contour = [&](auto&& fn) {
+		size_t offset = point;
+		for (uint32_t i = subpath; i < path->pathPtr;) {
+			const uint32_t n = path->pathes[i] & PATH_ELT_MASK;
+			fn(path->points.data() + offset, n);
+			offset += n;
+			if (o_path_has_curves(path->pathes.data(), i++)) {
+				uint32_t total = 0;
+				while (total < n) total += path->pathes[i++] & PATH_ELT_MASK;
+			}
+		}
+	};
+	double outer_area = 0;
+	each_contour([&](const glm::vec2* p, uint32_t n) {
+		double area = 0;
+		for (uint32_t i = 1; i + 1 < n; ++i) {
+			const glm::dvec2 a = glm::dvec2(p[i]) - glm::dvec2(p[0]);
+			const glm::dvec2 b = glm::dvec2(p[i + 1]) - glm::dvec2(p[0]);
+			area += a.x * b.y - a.y * b.x;
+		}
+		if (std::abs(area) > std::abs(outer_area)) outer_area = area;
+	});
+	if (outer_area < 0)
+		each_contour([](glm::vec2* p, uint32_t n) { std::reverse(p, p + n); });
+}
+
+// Bake glyph placement into the outline, leaving only the base matrix on
+// the path. Decode here rather than using ovg_add_path, which assumes trusted
+// input and reads two coordinates even for a final close command.
+static bool append_baked_glyph_path(ovg_path_t* path, const text_draw_list& list)
+{
+	for (const auto& cmd : list.cmds) {
+		const auto* e = cmd.entry;
+		if (cmd.type != glyph_draw_cmd::VECTOR || !e || e->has_color ||
+			!e->path_data || !e->path_size || e->em_units <= 0)
+			continue;
+
+		const auto subpath = path->pathPtr;
+		const auto point = path->points.size();
+		const float scale = (float)cmd.fontsize / e->em_units;
+		const float* src = e->path_data;
+		for (size_t i = 0; i < e->path_size;) {
+			const float op = src[i++];
+			constexpr float move = (float)path_type_et::e_vmove;
+			constexpr float line = (float)path_type_et::e_vline;
+			constexpr float quad = (float)path_type_et::e_vcurve;
+			constexpr float cubic = (float)path_type_et::e_vcubic;
+			constexpr float close = (float)path_type_et::e_close;
+			size_t n;
+			if (op == move || op == line) n = 2;
+			else if (op == quad) n = 4;
+			else if (op == cubic) n = 6;
+			else if (op == close) { ovg_close_path(path); continue; }
+			else return false;
+			if (n > e->path_size - i) return false;
+
+			float p[6];
+			for (size_t j = 0; j < n; j += 2) {
+				p[j] = src[i + j] * scale + cmd.pos.x;
+				p[j + 1] = src[i + j + 1] * scale + cmd.pos.y;
+				if (!std::isfinite(p[j]) || !std::isfinite(p[j + 1])) return false;
+			}
+			i += n;
+			if (op == move) ovg_move_to(path, p[0], p[1]);
+			else if (op == line) ovg_line_to(path, p[0], p[1]);
+			else if (op == quad) ovg_quadratic_to(path, p[0], p[1], p[2], p[3]);
+			else ovg_curve_to(path, p[0], p[1], p[2], p[3], p[4], p[5]);
+		}
+		o_finish_path(path);
+		normalize_glyph_winding(path, subpath, point);
+	}
+	return true;
+}
+
+class text_glow_mask
+{
+public:
+	text_glow_mask(rvg_cx* dc, bool ctx_mode, const vg_effect_t& effect)
+		: path(dc->ac)
+	{
+		st.curOperator = vg_operator_t::VG_OPERATOR_OVER;
+		st.curFillRule = VG_FILL_RULE_NON_ZERO;
+		st.pushConsts.mat = st.pushConsts.matInv = glm::mat3x2(1.0f);
+		if (ctx_mode && dc->st) {
+			st.pushConsts.mat = dc->st->pushConsts.mat;
+			st.pushConsts.matInv = dc->st->pushConsts.matInv;
+		}
+		st.effect = effect;
+		// The mask uses vertex alpha with forced opacity 1; the normal fill
+		// has opacity zero, including on renderers with no effect support.
+		ovg_set_source_color(&st, 0xFFFFFFFFu);
+		ovg_set_opacity(&st, 0.0f);
+		ovg_clear_path(&path);
+		path.t = &st; // curve tolerance in device pixels, not em units
+	}
+
+	bool append_run(vg_text_run_cx& run, const glm::vec2& origin)
+	{
+		list.clear();
+		run.populate_draw_list(list, origin.x, origin.y, 0, vg_text_run_cx::VECTOR_ONLY);
+		return append_baked_glyph_path(&path, list);
+	}
+
+	bool append_rect(const vec4& rc)
+	{
+		const float right = rc.x + rc.z, bottom = rc.y + rc.w;
+		if (!std::isfinite(rc.x) || !std::isfinite(rc.y) ||
+			!std::isfinite(right) || !std::isfinite(bottom)) return false;
+		if (right > rc.x && bottom > rc.y)
+			ovg_rectangle(&path, rc.x, rc.y, rc.z, rc.w);
+		return true;
+	}
+
+	bool submit(rvg_cx* dc)
+	{
+		// Keep the caller's state, clip and in-progress path unmodified.
+		struct restore_binding {
+			rvg_t* rvg;
+			ovg_path_t* path;
+			vg_state_save_t* st;
+			~restore_binding() { rvg->path = path; rvg->st = st; }
+		} restore{dc, dc->path, dc->st};
+		dc->set_path(&path, &st);
+		return dc->fill_preserve(true);
+	}
+
+private:
+	vg_state_save_t st = {};
+	ovg_path_t path;
+	text_draw_list list = {};
+};
+
+static bool submit_text_glow(rvg_cx* dc, bool ctx_mode, vg_text_run_cx& run,
+	const glm::vec2& origin, const vg_effect_t& effect)
+{
+	if (!can_submit_text_glow(dc)) return false;
+	text_glow_mask mask(dc, ctx_mode, effect);
+	return mask.append_run(run, origin) && mask.submit(dc);
+}
+
+static bool vctx_add_text_glow_batch(rvg_t* rvg, const vg_text_glow_run_t* runs, size_t count,
+	const vec4* rects, size_t rect_count)
+{
+	if (!rvg || !runs || !count || (!rects && rect_count)) return false;
+	auto* dc = static_cast<rvg_cx*>(rvg);
+	auto* cb = static_cast<ovg_ctx_cx*>(dc->ac->ptr);
+	if (!cb) return false;
+
+	// One batch is one mask and one effect at this point in the draw list.
+	// The caller owns clip and layer order. A textless run supplies style
+	// for a decoration-only batch; every run must agree on the effect.
+	const auto effect = text_glow_effect(runs[0].style);
+	if (!(effect.color >> 24)) return false;
+	for (size_t i = 1; i < count; ++i)
+		if (!same_text_glow(effect, text_glow_effect(runs[i].style))) return false;
+	if (!can_submit_text_glow(dc)) return false;
+
+	text_glow_mask mask(dc, true, effect);
+	for (size_t i = 0; i < count; ++i) {
+		auto [text, style, box] = runs[i];
+		if (!text.text || !text.text_len || (text.text_len < 0 && !text.text[0])) continue;
+		auto* run = cb->text_cache.get(&text, &style, &box);
+		if (!run) return false;
+		if (run->glyph_count() == 0) continue;
+		glm::vec2 origin;
+		if (!text_glow_origin(*run, origin) || !mask.append_run(*run, origin)) return false;
+		// Don't retain run pointers: the next cache lookup may replace or
+		// evict this run (including when equal text is drawn twice).
+	}
+	for (size_t i = 0; i < rect_count; ++i)
+		if (!mask.append_rect(rects[i])) return false;
+	return mask.submit(dc);
+}
+
 // ovg_text.cpp 
 void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
 {
@@ -7351,28 +7644,16 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 	auto ctxp = (ovg_ctx_cx*)ctx;
 	auto ocbp = (ovg_canvas_cx*)ocb;
 	if (run->glyph_count() == 0) return;
-	auto ts = &run->_st;
-	auto box = &run->_box;
-	int fontsize = ts->fontsize > 0 ? (int)ts->fontsize : 1;
-	// ── 2. 布局计算 ──
-	const auto& extents = run->extents();
+	const auto* ts = &run->_st;
+	glm::vec2 origin;
+	if (!text_glow_origin(*run, origin)) return;
+	const auto [offset_x, baseline_y] = origin;
 
-	// 对齐偏移
-	float box_w = box && box->rc.z > 0 ? (float)box->rc.z : extents.width;
-	float box_h = box && box->rc.w > 0 ? (float)box->rc.w : extents.height;
-
-	float align_x = box->text_align.x;  // 0=左, 0.5=中, 1=右
-	float align_y = box->text_align.y;
-
-	int offset_x = run->_tt.pos.x + (box_w - extents.width) * align_x;
-	int offset_y = run->_tt.pos.y + (box_h - extents.height) * align_y;
-	// 基线位置 = offset_y + ascender
-	hb_font_extents_t fextents = {};
-	// 用主字体取 ascender
-	hb_font_t* primary = ts->family->familys[0]->font;
-	hb_font_set_scale(primary, fontsize, fontsize);
-	hb_font_get_extents_for_direction(primary, HB_DIRECTION_LTR, &fextents);
-	int baseline_y = offset_y + box->baseline;
+	const bool has_glow = (ts->color_glow >> 24) != 0;
+	const auto effect = has_glow ? text_glow_effect(*ts) : vg_effect_t{};
+	auto* dc = static_cast<rvg_cx*>(rvg);
+	if (has_glow && effect.type == VG_EFFECT_OUTER_GLOW)
+		submit_text_glow(dc, ctxp != nullptr, *run, origin, effect);
 
 	text_draw_list& main_list = run->drawable;
 	main_list.has_color = false;
@@ -7416,15 +7697,19 @@ void vg_add_text_run(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, vg_text_ru
 		}
 	}
 
-	// ── 6. 主文本 ──
-	main_list.clear();
-	main_list.has_color = true;
-	run->populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
-	if (ctxp)
-		submit_draw_list(*ctxp, rvg, &main_list);
-	else if (ocbp)
-		submit_draw_list(*ocbp, rvg, &main_list);
-
+	// Glow-only is independent of whether a mask could be recorded. Do not
+	// emit transparent body geometry when the effect budget is exhausted.
+	if (!has_glow || (ts->color >> 24) != 0) {
+		main_list.clear();
+		main_list.has_color = true;
+		run->populate_draw_list(main_list, offset_x, baseline_y, ts->color, vg_text_run_cx::RASTER_FIRST);
+		if (ctxp)
+			submit_draw_list(*ctxp, rvg, &main_list);
+		else if (ocbp)
+			submit_draw_list(*ocbp, rvg, &main_list);
+	}
+	if (has_glow && effect.type == VG_EFFECT_INNER_GLOW)
+		submit_text_glow(dc, ctxp != nullptr, *run, origin, effect);
 }
 
 void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, text_style_t* ts, text_box_rt* box)
@@ -7445,6 +7730,11 @@ void vg_add_text(ovg_canvas_cb* ocb, ovg_ctx_cb* ctx, rvg_t* rvg, text_st_t* p, 
 	vg_add_text_run(ocb, ctx, rvg, run);
 }
 #else
+
+static bool vctx_add_text_glow_batch(rvg_t*, const vg_text_glow_run_t*, size_t, const vec4*, size_t)
+{
+	return false;
+}
 
 void ovg_canvas_cx::submit_vector_glyphs_stroked(rvg_t* rvg, const text_draw_list* list, float stroke_width)
 {}

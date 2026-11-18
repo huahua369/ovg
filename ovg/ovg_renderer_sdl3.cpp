@@ -126,6 +126,7 @@ struct fx_result_t {
 	float spread = 0.0f;
 	float opacity = 1.0f;
 	int mode = 0;			// 0 outer, 1 inner, 2 shadow
+	SDL_GPUGraphicsPipeline* pipeline = nullptr; // borrowed from the owning context
 };
 
 struct render_item_t {
@@ -290,6 +291,7 @@ struct ovg_ctx_t {
 	SDL_GPUGraphicsPipeline* pipeStencilClear = nullptr; // 清 0
 	SDL_GPUGraphicsPipeline* pipeEffectMask = nullptr;   // 特效掩码写入离屏纹理
 	SDL_GPUGraphicsPipeline* pipeEffectComposite = nullptr; // 特效纹理叠加到主画布
+	SDL_GPUGraphicsPipeline* pipeEffectCompositeAdd = nullptr;
 	std::set<SDL_GPUGraphicsPipeline*> freepipe;
 	// ─── 几何管线缓存 ─────────────────────────────
 	std::map<uint64_t, pipelinestate_p_internal> geomPipelines;
@@ -1315,8 +1317,9 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	SDL_GPUShader* vgFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT, vg_frag, sizeof(vg_frag), fnum, "main");
 	// mask 专用 FS：只输出填充 alpha，无 sampler/UBO
 	glm::ivec4 fmask = { 0,0,0,0 };
-	SDL_GPUShader* effectMaskFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT,
-		a_effect_mask_frag, sizeof(a_effect_mask_frag), fmask, "main");
+	SDL_GPUShader* effectMaskFrag = ctx->fxSupported && ctx->fxSampler
+		? compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT,
+			a_effect_mask_frag, sizeof(a_effect_mask_frag), fmask, "main") : nullptr;
 
 	// 公共顶点属性: pos(2) + uv(2) + color(1) = 20 bytes
 	SDL_GPUVertexAttribute vgAttrs[3] = {
@@ -1500,7 +1503,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 	// ═══════════════════════════════════════════════════════════════
 	// ⑥ 特效管线：掩码离屏渲染 + 特效层叠加
 	// ═══════════════════════════════════════════════════════════════
-	{
+	if (vgVert && effectMaskFrag) {
 		vg_pipeline_inputs inputs = {};
 		inputs.vertShader = vgVert;
 		inputs.fragShader = effectMaskFrag;
@@ -1519,7 +1522,7 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.color_write_mask = SDL_GPU_COLORCOMPONENT_R;
 		ctx->pipeEffectMask = create_graphics_pipeline(dev, &inputs, ctx);
 	}
-	{
+	if (ctx->pipeEffectMask) {
 		SDL_GPUShader* epVert = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_VERTEX,
 			a_effect_present_vert, sizeof(a_effect_present_vert), glm::ivec4(0, 0, 0, 0), "main");
 		SDL_GPUShader* epFrag = compile_shader(dev->gpuDevice, SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -1544,10 +1547,17 @@ static void init_vg_pipelines(ovg_ctx_t* ctx) {
 		inputs.stencilFront.fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilFront.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
 		inputs.stencilBack = inputs.stencilFront;
-		ctx->pipeEffectComposite = create_graphics_pipeline(dev, &inputs, ctx);
+		if (epVert && epFrag) {
+			ctx->pipeEffectComposite = create_graphics_pipeline(dev, &inputs, ctx);
+			// The shader already premultiplies RGB by coverage, color alpha and opacity.
+			// ADD sums RGB and preserves destination alpha. Both PSOs are owned by freepipe.
+			inputs.blendMode = blendMode_e::additive_prem;
+			ctx->pipeEffectCompositeAdd = create_graphics_pipeline(dev, &inputs, ctx);
+		}
 		if (epVert) SDL_ReleaseGPUShader(dev->gpuDevice, epVert);
 		if (epFrag) SDL_ReleaseGPUShader(dev->gpuDevice, epFrag);
 	}
+	ctx->fxSupported = ctx->pipeEffectComposite || ctx->pipeEffectCompositeAdd;
 	// 释放 VG 着色器（管道已持有引用）
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgVert);
 	SDL_ReleaseGPUShader(dev->gpuDevice, vgFrag);
@@ -1865,7 +1875,7 @@ ovg_ctx_t* new_ovgctx_sdl3(ovg_device_t* dev, SDL_GPUTextureFormat colorFormat, 
 		sci.max_anisotropy = 1.0f;
 		ctx->fxSampler = SDL_CreateGPUSampler(dev->gpuDevice, &sci);
 	}
-	ctx->textures[0] = dev->emptyTexture;
+	ctx->textures[0] = dev->emptyTexture; // Borrowed; the device owns this shared fallback.
 	ctx->next_image_id++;
 	init_vg_pipelines(ctx);
 
@@ -1894,6 +1904,7 @@ void free_ovgctx_sdl3(ovg_ctx_t* ctx) {
 	{
 		if (p) SDL_ReleaseGPUGraphicsPipeline(ctx->device->gpuDevice, p);
 	}
+	ctx->textures.erase(0); // Drop the borrowed fallback without releasing it.
 	for (auto& [k, v] : ctx->textures) {
 		if (v) destroy_texture(v);
 	}
@@ -2270,8 +2281,7 @@ static void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass, const fx_re
 {
 	if (!fbo || !pass || !fx || !fx->tex) return;
 	ovg_ctx_t* ctx = fbo->ctx;
-	if (!ctx || !ctx->pipeEffectComposite || !ctx->fxSampler) return;
-	SDL_BindGPUGraphicsPipeline(pass, ctx->pipeEffectComposite);
+	if (!ctx || !ctx->fxSampler) return;
 
 	int x0 = (int)fx->rect.x;
 	int y0 = (int)fx->rect.y;
@@ -2288,6 +2298,7 @@ static void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass, const fx_re
 	if (x1 <= x0 || y1 <= y0) return;
 	SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
 	SDL_SetGPUScissor(pass, &rc);
+	SDL_BindGPUGraphicsPipeline(pass, fx->pipeline);
 
 	SDL_GPUTextureSamplerBinding b[2] = {
 		{ fx->mask->texture, ctx->fxSampler },
@@ -2855,13 +2866,10 @@ static size_t fx_format_bytes(SDL_GPUTextureFormat f)
 	}
 }
 
-static size_t fx_set_bytes(const ovg_ctx_t* ctx, int w, int h, bool need_blur)
+static size_t fx_pixel_bytes(const ovg_ctx_t* ctx, bool need_blur)
 {
-	size_t px = (size_t)w * (size_t)h;
-	size_t bytes = px * fx_format_bytes(ctx->fxMaskFormat);
-	if (need_blur)
-		bytes += px * fx_format_bytes(ctx->fxBlurFormat) * 2;
-	return bytes;
+	return fx_format_bytes(ctx->fxMaskFormat) +
+		(need_blur ? fx_format_bytes(ctx->fxBlurFormat) * 2 : 0);
 }
 
 static sdl3gpu_texture* new_effect_texture(ovg_ctx_t* ctx, int w, int h,
@@ -2927,7 +2935,7 @@ static void trim_fx_pool(ovg_ctx_t* ctx, size_t keep_bytes, size_t keep_sets)
 	}
 }
 
-static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h, bool need_blur)
+static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h, bool need_blur, size_t bytes)
 {
 	fx_texture_set s = {};
 	uint64_t key = fx_pool_key(w, h, need_blur);
@@ -2940,7 +2948,7 @@ static fx_texture_set acquire_fx_set(ovg_ctx_t* ctx, int w, int h, bool need_blu
 		s.width = w;
 		s.height = h;
 		s.need_blur = need_blur;
-		s.bytes = fx_set_bytes(ctx, w, h, need_blur);
+		s.bytes = bytes;
 		s.mask = new_effect_texture(ctx, w, h, ctx->fxMaskFormat,
 			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
 		if (need_blur) {
@@ -2985,19 +2993,19 @@ static void recycle_fx_sets(ovg_ctx_t* ctx)
 	trim_fx_pool(ctx, used_bytes, used_sets);
 }
 
-static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+static bool render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	ovg_draw_data_t* kd, vgcmd_t* c, sdl3gpu_texture* mask,
 	const glm::ivec4& roi)
 {
 	if (!ctx || !cmd || !kd || !c || !c->state || !mask || roi.z <= 0 || roi.w <= 0)
-		return;
+		return false;
 	SDL_GPUColorTargetInfo ct = {};
 	ct.texture = mask->texture;
 	ct.load_op = SDL_GPU_LOADOP_CLEAR;
 	ct.store_op = SDL_GPU_STOREOP_STORE;
 	ct.clear_color = { 0, 0, 0, 0 };
 	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
-	if (!pass) return;
+	if (!pass) return false;
 
 	// mask 纹理本身就是 ROI 大小：viewport 用 ROI 尺寸，几何平移到 ROI 原点
 	set_viewport2d(pass, glm::ivec2(roi.z, roi.w));
@@ -3026,25 +3034,27 @@ static void render_effect_mask(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 
 	SDL_EndGPURenderPass(pass);
 	ctx->bind_dirty = true;
+	return true;
 }
 
-static void dispatch_fx_compute(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+static bool dispatch_fx_compute(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	SDL_GPUComputePipeline* pipe, sdl3gpu_texture* dst,
 	sdl3gpu_texture* src0, sdl3gpu_texture* src1,
 	const void* params, uint32_t params_size, int w, int h)
 {
 	if (!ctx || !cmd || !pipe || !dst || !src0 || w <= 0 || h <= 0)
-		return;
+		return false;
 	compute_pass cp;
 	cp.add_rw_texture(dst->texture, 0, 0, false);
 	cp.begin(cmd);
-	if (!cp.pass) return;
+	if (!cp.pass) return false;
 	cp.bind_pipe(pipe);
 	cp.push_texture(src0->texture, ctx->fxSampler);
 	if (src1) cp.push_texture(src1->texture, ctx->fxSampler);
 	cp.push_uniformdata(0, params, params_size);
 	cp.dispatch(glm::uvec3((uint32_t)((w + 7) / 8), (uint32_t)((h + 7) / 8), 1));
 	cp.end();
+	return true;
 }
 
 static bool fx_roi_from_bounds(const vgcmd_t* c, const vg_fbo_t* fbo, glm::ivec4& roi)
@@ -3076,6 +3086,10 @@ static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	if (!ctx || !ctx->fxSupported || !cmd || !kd || !c || !c->state || !fbo)
 		return;
 	const vg_effect_t& e = c->state->effect;
+	SDL_GPUGraphicsPipeline* pipeline = e.blend == VG_EFFECT_BLEND_ADD
+		? ctx->pipeEffectCompositeAdd : ctx->pipeEffectComposite;
+	if (!pipeline)
+		return;
 	if (c->ref < 0 || e.type == VG_EFFECT_NONE || e.opacity <= 0.0f)
 		return;
 	if (((e.color >> 24) & 0xFF) == 0)
@@ -3091,28 +3105,37 @@ static void prepare_effect(ovg_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	if (w <= 0 || h <= 0) return;
 	const bool need_blur = e.sigma > 0.01f;
 
-	fx_texture_set set = acquire_fx_set(ctx, w, h, need_blur);
-	if (!set.mask || !set.mask->texture) return;
-	if (need_blur && (!set.tmp || !set.tmp->texture || !set.out || !set.out->texture)) return;
-
-	ctx->fxStatEffects++;
-	ctx->fxStatRoiPixels += (size_t)w * (size_t)h;
-	render_effect_mask(ctx, cmd, kd, c, set.mask, roi);
+	// Pending recycling happens at frame start; it cannot protect this frame's
+	// working set. Preflight even on a pool hit, before encoding any GPU passes.
+	if (need_blur && !ctx->device->comp_pipe[0])
+		return;
+	const size_t remaining = ctx->fxPendingBudget - ctx->fxFrameBytes;
+	const size_t pixel_bytes = fx_pixel_bytes(ctx, need_blur);
+	if ((size_t)w > remaining / pixel_bytes / (size_t)h)
+		return;
+	const size_t pixels = (size_t)w * (size_t)h;
+	fx_texture_set set = acquire_fx_set(ctx, w, h, need_blur, pixels * pixel_bytes);
+	if (!set.mask || !render_effect_mask(ctx, cmd, kd, c, set.mask, roi))
+		return;
 
 	if (need_blur) {
 		fx_blur_params_t bp = {};
 		bp.texel = { 1.0f / w, 1.0f / h };
 		bp.sigma = e.sigma;
 		bp.axis = 0;
-		dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.tmp,
-			set.mask, nullptr, &bp, sizeof(bp), w, h);
+		if (!dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.tmp,
+			set.mask, nullptr, &bp, sizeof(bp), w, h))
+			return;
 		bp.axis = 1;
-		dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.out,
-			set.tmp, nullptr, &bp, sizeof(bp), w, h);
+		if (!dispatch_fx_compute(ctx, cmd, ctx->device->comp_pipe[0], set.out,
+			set.tmp, nullptr, &bp, sizeof(bp), w, h))
+			return;
 	}
 
-	sdl3gpu_texture* blurred = need_blur ? set.out : set.mask;
-	out->tex = blurred;
+	ctx->fxStatEffects++;
+	ctx->fxStatRoiPixels += pixels;
+	out->pipeline = pipeline;
+	out->tex = need_blur ? set.out : set.mask;
 	out->mask = set.mask;
 	out->rect = glm::vec4((float)roi.x, (float)roi.y, (float)w, (float)h);
 	out->color = glm::vec4(
@@ -3244,7 +3267,8 @@ void ovg_render_frame(ovg_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 			case cmd_type_e::DRAW_VG:
 			{
 				const fx_result_t* fx = nullptr;
-				if (it.vg.state && it.vg.state->effect.type != VG_EFFECT_NONE &&
+				if ((it.vg.type == 0 || it.vg.type == 1) && it.vg.state &&
+					it.vg.state->effect.type != VG_EFFECT_NONE &&
 					it.vg.ref >= 0 && (size_t)it.vg.ref < item.fx.size())
 					fx = &item.fx[(size_t)it.vg.ref];
 				draw_vg(fbo, pass, &it.vg, &cuClip, kd->vg_offset, fx);

@@ -384,17 +384,23 @@ struct vg_font :public font_family_t {
 	hb_raster_paint_t* pnt;
 };
 
+struct FontAxis {
+	float min = 0, max = 0, value = 0; // value includes named-instance coordinates
+	bool present = false;
+};
+
 struct FontStyle {
-	uint32_t id;
+	uint32_t id = 0;
 	std::string family;
 	std::set<std::string> alias;
-	std::string style;
-	std::string file;
-	vg_font font;
-	int weight;
-	int slant;
-	int index;
-	bool slnt_applied = false;       // 是否已设置变量 slnt
+	std::string style, instance_style, file;
+	vg_font font{};
+	int weight = VG_FONT_WEIGHT_REGULAR;
+	int slant = VG_FONT_SLANT_NORMAL;
+	int index = 0;
+	FontAxis wght, slnt_axis, ital;
+	bool variable = false;
+	bool no_synthetic = false;
 };
 struct raster_image_t {
 	int      x_origin, y_origin;
@@ -431,69 +437,139 @@ namespace ovg {
 		u_strToUTF8(out, cap, NULL, u16 + start, len, &st);
 	}
 }
-//!ovg
-static hb_font_t* load_font(const char* family, const char* style)
+namespace {
+constexpr uint32_t font_id_limit = 0xffff;
+constexpr size_t variant_limit = 256;
+constexpr hb_tag_t wght_tag = HB_TAG('w', 'g', 'h', 't');
+constexpr hb_tag_t slnt_tag = HB_TAG('s', 'l', 'n', 't');
+constexpr hb_tag_t ital_tag = HB_TAG('i', 't', 'a', 'l');
+hb_user_data_key_t fontStyleKey{};
+hb_user_data_key_t g_font_cache_key{};
+
+std::string font_name(hb_face_t* face, hb_ot_name_id_t id)
 {
-	/* Fontconfig：只负责“找文件” */
-	FcConfig* cfg = FcInitLoadConfigAndFonts();
-	FcPattern* pat = FcPatternCreate();
-
-	FcPatternAddString(pat, FC_FAMILY, (FcChar8*)family);
-	if (style)
-		FcPatternAddString(pat, FC_STYLE, (FcChar8*)style);
-
-	FcConfigSubstitute(cfg, pat, FcMatchPattern);
-	FcDefaultSubstitute(pat);
-
-	FcResult result;
-	FcPattern* match = FcFontMatch(cfg, pat, &result);
-	if (!match) {
-		fprintf(stderr, "Fontconfig: no match for %s\n", family);
-		FcPatternDestroy(pat);
-		FcConfigDestroy(cfg);
-		return NULL;
+	auto lang = hb_language_get_default();
+	unsigned len = hb_ot_name_get_utf8(face, id, lang, nullptr, nullptr);
+	if (!len) {
+		lang = HB_LANGUAGE_INVALID; // English when available.
+		len = hb_ot_name_get_utf8(face, id, lang, nullptr, nullptr);
 	}
-
-	FcChar8* file = NULL;
-	int idx = 0;
-	FcPatternGetString(match, FC_FILE, 0, &file);
-	FcPatternGetInteger(match, FC_INDEX, 0, &idx);
-
-	/* HarfBuzz：从文件创建 face */
-	hb_blob_t* blob = hb_blob_create_from_file((const char*)file);
-	if (hb_blob_get_length(blob) == 0) {
-		fprintf(stderr, "HarfBuzz: failed to load %s\n", file);
-		hb_blob_destroy(blob);
-		FcPatternDestroy(match);
-		FcPatternDestroy(pat);
-		FcConfigDestroy(cfg);
-		return NULL;
+	if (!len) {
+		unsigned count = 0;
+		auto names = hb_ot_name_list_names(face, &count);
+		for (unsigned i = 0; i < count && !len; ++i) {
+			if (names[i].name_id != id) continue;
+			lang = names[i].language;
+			len = hb_ot_name_get_utf8(face, id, lang, nullptr, nullptr);
+		}
 	}
-
-	hb_face_t* hb_face = hb_face_create(blob, idx);
-	hb_blob_destroy(blob);   /* face 已引用 blob */
-
-	if (hb_face_get_glyph_count(hb_face) == 0) {
-		fprintf(stderr, "HarfBuzz: invalid face %s\n", file);
-		hb_face_destroy(hb_face);
-		FcPatternDestroy(match);
-		FcPatternDestroy(pat);
-		FcConfigDestroy(cfg);
-		return NULL;
-	}
-
-	/* 创建 font（带 scale） */
-	hb_font_t* hb_font = hb_font_create(hb_face);
-	hb_font_set_scale(hb_font, 16 * 64, 16 * 64); // 16px
-	hb_ot_font_set_funcs(hb_font);                 // ✅ 用 OT 回调
-
-	hb_face_destroy(hb_face);  /* font 已引用 face */
-
-	FcPatternDestroy(match);
-	FcPatternDestroy(pat);
-	FcConfigDestroy(cfg);
-	return hb_font;
+	if (!len) return {};
+	std::string value(len + 1, '\0');
+	unsigned cap = len + 1;
+	hb_ot_name_get_utf8(face, id, lang, &cap, value.data());
+	value.resize(cap);
+	return value;
 }
+
+static bool face_axis(hb_font_t* font, hb_tag_t tag, FontAxis& axis)
+{
+	hb_ot_var_axis_info_t info{};
+	if (!hb_ot_var_find_axis_info(hb_font_get_face(font), tag, &info)) return false;
+	unsigned count = 0;
+	const float* coords = hb_font_get_var_coords_design(font, &count);
+	axis = {info.min_value, info.max_value,
+		info.axis_index < count ? coords[info.axis_index] : info.default_value, true};
+	return true;
+}
+
+int effective_weight(float value)
+{
+	return value > 0 ? static_cast<int>(std::lround(std::clamp(value, 100.0f, 900.0f))) : VG_FONT_WEIGHT_REGULAR;
+}
+
+void init_face(FontStyle* fs, font_cache_cx* cache, hb_font_t* font)
+{
+	hb_font_set_user_data(font, &fontStyleKey, fs, nullptr, true);
+	hb_font_set_user_data(font, &g_font_cache_key, cache, nullptr, true);
+	hb_res_init(&fs->font, font);
+}
+
+void read_capabilities(FontStyle& fs, hb_font_t* font)
+{
+	auto face = hb_font_get_face(font);
+	face_axis(font, wght_tag, fs.wght);
+	face_axis(font, slnt_tag, fs.slnt_axis);
+	face_axis(font, ital_tag, fs.ital);
+	fs.variable = hb_ot_var_has_data(face);
+	fs.no_synthetic |= hb_ot_color_has_paint(face) || hb_ot_color_has_layers(face)
+		|| hb_ot_color_has_svg(face) || hb_ot_color_has_png(face);
+	for (auto tag : {HB_TAG('E','B','D','T'), HB_TAG('C','B','D','T'), HB_TAG('b','d','a','t'), HB_TAG('s','b','i','x')}) {
+		auto table = hb_face_reference_table(face, tag);
+		fs.no_synthetic |= hb_blob_get_length(table) != 0;
+		hb_blob_destroy(table);
+	}
+}
+
+hb_font_t* load_face_from_blob(hb_blob_t* blob, unsigned index)
+{
+	if (hb_blob_get_length(blob) == 0) return nullptr;
+	// Keep FC_INDEX intact: its high bits select a named instance in HB.
+	auto face = hb_face_create(blob, index);
+	auto font = hb_face_get_glyph_count(face) ? hb_font_create(face) : nullptr;
+	hb_face_destroy(face);
+	return font == hb_font_get_empty() ? nullptr : font;
+}
+
+void delete_face(FontStyle* fs)
+{
+	if (fs->font.font) free_hb_res(&fs->font);
+	delete fs;
+}
+
+int slant_rank(int actual, int requested)
+{
+	if (actual == requested) return 0;
+	if (requested == VG_FONT_SLANT_NORMAL) return actual == VG_FONT_SLANT_OBLIQUE ? 1 : 2;
+	return actual == VG_FONT_SLANT_NORMAL ? 2 : 1;
+}
+
+int weight_group(int actual, int requested)
+{
+	if (actual == requested) return 0;
+	if (requested < 400) return actual < requested ? 1 : 2;
+	if (requested > 500) return actual > requested ? 1 : 2;
+	if (actual >= 400 && actual <= 500) return 1;
+	return actual > 500 ? 2 : 3;
+}
+
+struct face_coordinates {
+	float wght, slnt, ital;
+	int weight, slant;
+};
+
+face_coordinates resolve_coordinates(const FontStyle& fs, int weight, int slant)
+{
+	face_coordinates c{fs.wght.value, fs.slnt_axis.value, fs.ital.value, fs.weight, fs.slant};
+	if (weight && fs.wght.present) {
+		c.wght = std::clamp(static_cast<float>(weight), fs.wght.min, fs.wght.max);
+		c.weight = effective_weight(c.wght);
+	}
+	if (slant && (fs.slnt_axis.present || fs.ital.present)) {
+		const bool roman = slant == VG_FONT_SLANT_NORMAL;
+		const float angle = roman ? 0.0f : slant == VG_FONT_SLANT_ITALIC ? -12.0f : -10.0f;
+		if (fs.ital.present) c.ital = std::clamp(roman ? 0.0f : 1.0f, fs.ital.min, fs.ital.max);
+		if (fs.slnt_axis.present) c.slnt = std::clamp(angle, fs.slnt_axis.min, fs.slnt_axis.max);
+		if (fs.ital.present && c.ital >= 0.5f)
+			c.slant = slant == VG_FONT_SLANT_OBLIQUE && c.slnt < -1.0f ? slant : VG_FONT_SLANT_ITALIC;
+		else if (fs.slnt_axis.present && std::abs(c.slnt) > 1.0f)
+			c.slant = !roman && c.slnt < 0.0f ? slant : VG_FONT_SLANT_OBLIQUE;
+		else if (fs.ital.present || fs.slnt_axis.value != 0.0f || fs.slant != VG_FONT_SLANT_ITALIC)
+			c.slant = VG_FONT_SLANT_NORMAL;
+	}
+	return c;
+}
+} // namespace
+
 font_cache_cx::font_cache_cx()
 {
 	get_sys_family();
@@ -501,375 +577,310 @@ font_cache_cx::font_cache_cx()
 
 font_cache_cx::~font_cache_cx()
 {
-	if (funcs)
-		hb_draw_funcs_destroy(funcs); funcs = 0;
 	clear_load();
 	clear_sys();
-	if (cfg)
-		FcConfigDestroy(cfg);
-	cfg = 0;
-	_emojis.clear();
+	if (funcs) hb_draw_funcs_destroy(funcs);
+	if (cfg) FcConfigDestroy(cfg);
 }
 
 void font_cache_cx::set_alloc_ptr(vg_alloc_cx* p)
 {
-	if (p)ac = p;
+	if (p) ac = p;
+}
+
+void font_cache_cx::forget_family(const font_familys_t* family)
+{
+	auto width = text_width_cache.lower_bound({family, (std::numeric_limits<int>::min)(), {}});
+	while (width != text_width_cache.end() && width->first.font == family)
+		width = text_width_cache.erase(width);
+	auto advance = glyph_advance_cache.lower_bound({family, (std::numeric_limits<int>::min)(), 0});
+	while (advance != glyph_advance_cache.end() && advance->first.font == family)
+		advance = glyph_advance_cache.erase(advance);
+	auto metrics = font_metrics_cache.lower_bound({family, (std::numeric_limits<int>::min)()});
+	while (metrics != font_metrics_cache.end() && metrics->first.first == family)
+		metrics = font_metrics_cache.erase(metrics);
+}
+
+void font_cache_cx::clear_glyphs_and_measurements()
+{
+	// Explicit resets invalidate cached draw data; existing managed lists remain
+	// safe to delete or derive from, but have no resolved faces until recreated.
+	for (auto list : live_families) {
+		list->familys = nullptr;
+		list->count = 0;
+	}
+	for (auto& [key, entry] : glyph_cache) {
+		// Raster entries borrow the vector entry's path.
+		if (entry.type == glyph_atlas_entry::VECTOR && entry.path_data)
+			(ac ? ac : vg_get_default_allocator())->dealloc(entry.path_data, entry.path_size * sizeof(float));
+	}
+	glyph_cache.clear();
+	_sub_glyph_cache.clear();
+	image_cache.clear();
+	text_width_cache.clear();
+	glyph_advance_cache.clear();
+	font_metrics_cache.clear();
+}
+
+void font_cache_cx::clear_variants()
+{
+	for (auto& [key, fs] : variants) delete_face(fs);
+	variants.clear();
 }
 
 void font_cache_cx::clear_sys()
 {
-	_temp.clear();
-	for (auto& [k, v] : _familys) {
-		for (auto it : v) {
-			if (it) {
-				if (it->font.font)
-					free_hb_res(&it->font);
-				delete it;
-			}
-		}
-	}
+	clear_glyphs_and_measurements();
+	clear_variants();
 	_familys.clear();
+	for (auto& [key, fs] : system_faces) delete_face(fs);
+	system_faces.clear();
 }
 
 void font_cache_cx::clear_load()
 {
-	_temp.clear();
-	for (auto& [k, v] : _familys_name) {
-		for (auto it : v) {
-			if (it) {
-				if (it->font.font)
-					free_hb_res(&it->font);
-				delete it;
-			}
-		}
-	}
+	clear_glyphs_and_measurements();
+	clear_variants();
+	for (auto& [key, faces] : _familys_name)
+		for (auto fs : faces) delete_face(fs);
 	_familys_name.clear();
 }
 
-hb_font_t* load_font(const char* file, int idx) {
-	hb_font_t* font = 0; hb_face_t* face = 0;
-	hb_blob_t* blob = hb_blob_create_from_file((const char*)file);
-	do {
-		if (hb_blob_get_length(blob) == 0) {
-			break;
-		}
-		face = hb_face_create(blob, idx);
-		if (!face)break;
-		auto gcont = hb_face_get_glyph_count(face);
-		if (!gcont) {
-			break;
-		}
-		font = hb_font_create(face);
-	} while (0);
-	if (face)
-		hb_face_destroy(face);
-	if (blob)
-		hb_blob_destroy(blob);
-	return font;
-}
-std::string get_pat_str(FcPattern* font, const char* o, int n)
-{
-	FcChar8* s = nullptr;
-	std::string r;
-	if (o && ::FcPatternGetString(font, o, n, &s) == FcResultMatch)
-	{
-		if (s)
-		{
-			r = (char*)s;
-		}
-	}
-	return r;
-}
-std::set<std::string> get_pat_strs(FcPattern* font, const char* o)
-{
-	std::set<std::string> rv;
-	FcChar8* s = nullptr;
-	int n = 0;
-	do {
-		if (o && ::FcPatternGetString(font, o, n, &s) == FcResultMatch)
-		{
-			if (s)
-			{
-				rv.insert((char*)s);
-			}
-		}
-		else { break; }
-		n++;
-	} while (1);
-	return rv;
-}
-void get_pat_strs(FcPattern* font, const char* o, std::set<std::string>& rv)
-{
-	FcChar8* s = nullptr;
-	int n = 0;
-	do {
-		if (o && ::FcPatternGetString(font, o, n, &s) == FcResultMatch)
-		{
-			if (s)
-			{
-				rv.insert((char*)s);
-			}
-		}
-		else { break; }
-		n++;
-	} while (1);
-	return;
-}
-
-inline float font_get_slant_angle(hb_font_t* font) {
-	return hb_style_get_value(font, HB_STYLE_TAG_SLANT_ANGLE);
-}
-
-inline float font_get_italic_value(hb_font_t* font) {
-	return hb_style_get_value(font, HB_STYLE_TAG_ITALIC);
-}
-// Fontconfig slant → 期望的 slnt 角度（右倾为负）
-inline float fc_slant_to_slant_angle(int fc_slant) noexcept {
-	switch (fc_slant) {
-	case FC_SLANT_ITALIC:
-		return -12.0f;   // 典型 italic 倾斜
-	case FC_SLANT_OBLIQUE:
-		return -10.0f;   // oblique 通常略小于 italic
-	case FC_SLANT_ROMAN:
-	default:
-		return 0.0f;
-	}
-}
-//SLANT_ANGLE：OpenType slnt 轴值
-//ITALIC：0 = Roman，1 = Italic（COLRv1 / STAT 表）
-//四、关键逻辑：是否设置 slnt（变量字体才设）
-bool font_supports_slnt_axis(hb_font_t* font) {
-	hb_face_t* face = hb_font_get_face(font);
-	unsigned int axis_count = hb_ot_var_get_axis_count(face);
-	auto axc = axis_count;
-	for (unsigned i = 0; i < axis_count; i++) {
-		hb_ot_var_axis_info_t info;
-		hb_ot_var_get_axis_infos(face, i, &axc, &info);
-		if (info.tag == HB_STYLE_TAG_SLANT_ANGLE)
-			return true;
-	}
-	return false;
-}
 void font_cache_cx::get_sys_family()
 {
-	if (!cfg)
-		cfg = FcInitLoadConfigAndFonts();
-	FcPattern* pat = FcPatternCreate();
-	FcObjectSet* os = FcObjectSetBuild(
-		FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE, FC_FULLNAME, FC_INDEX, NULL);
-	FcFontSet* fs = FcFontList(cfg, pat, os);
-
-	for (int i = 0; i < fs->nfont; i++) {
-		FcPattern* p = fs->fonts[i];
-		FcChar8* family = NULL, * style = NULL;
-		int weight = 0, slant = 0;
-		char* file = NULL;
-		int index = 0;
+	if (!cfg) cfg = FcInitLoadConfigAndFonts();
+	if (!cfg) return;
+	auto pat = FcPatternCreate();
+	auto os = FcObjectSetBuild(FC_FAMILY, FC_STYLE, FC_WEIGHT, FC_SLANT, FC_FILE,
+		FC_FULLNAME, FC_INDEX, nullptr);
+	auto fs = pat && os ? FcFontList(cfg, pat, os) : nullptr;
+	for (int i = 0; fs && i < fs->nfont; ++i) {
+		auto p = fs->fonts[i];
+		FcChar8 *family = nullptr, *style = nullptr, *file = nullptr;
+		int w = FC_WEIGHT_REGULAR, slant = FC_SLANT_ROMAN, index = 0;
 		FcPatternGetString(p, FC_FAMILY, 0, &family);
 		FcPatternGetString(p, FC_STYLE, 0, &style);
-		FcPatternGetInteger(p, FC_WEIGHT, 0, &weight);
+		FcPatternGetString(p, FC_FILE, 0, &file);
+		FcPatternGetInteger(p, FC_WEIGHT, 0, &w);
 		FcPatternGetInteger(p, FC_SLANT, 0, &slant);
-		FcPatternGetString(p, FC_FILE, 0, (FcChar8**)&file);
 		FcPatternGetInteger(p, FC_INDEX, 0, &index);
-		if (!style)style = (FcChar8*)"";
-		if (!file || !family || !(*file) || !(*family))continue;
-		hb_font_t* font = 0;
-		auto it = new FontStyle();
-		if (it)
-		{
-			get_pat_strs(p, FC_FAMILY, it->alias);
-			get_pat_strs(p, FC_FULLNAME, it->alias);
-			it->family = (char*)family;
-			std::string fname = it->family;
-			if (fname.find("moji") != std::string::npos)
-			{
-				_emojis.push_back(it);
-			}
-			it->style = (char*)style;
-			it->file = file;
-			it->weight = weight;
-			it->slant = slant;
+		if (!file || !family || !*file || !*family) continue;
+		const auto key = std::make_pair(std::string(reinterpret_cast<const char*>(file)), index);
+		auto pos = system_faces.find(key);
+		FontStyle* it = nullptr;
+		if (pos == system_faces.end()) {
+			if (next_font_id >= font_id_limit) continue;
+			it = new FontStyle();
+			it->id = next_font_id++;
+			it->family = reinterpret_cast<const char*>(family);
+			if (style) it->style = reinterpret_cast<const char*>(style);
+			it->file = key.first;
 			it->index = index;
-
-			_familys[(char*)family].push_back(it);
+			it->weight = effective_weight(static_cast<float>(FcWeightToOpenType(w)));
+			it->slant = slant == FC_SLANT_ITALIC ? VG_FONT_SLANT_ITALIC :
+				slant == FC_SLANT_OBLIQUE ? VG_FONT_SLANT_OBLIQUE : VG_FONT_SLANT_NORMAL;
+			system_faces.emplace(key, it);
+			_familys[it->family].push_back(it);
+		} else {
+			it = pos->second;
+		}
+		for (const char* field : {FC_FAMILY, FC_FULLNAME}) {
+			FcChar8* alias = nullptr;
+			for (int j = 0; FcPatternGetString(p, field, j, &alias) == FcResultMatch; ++j)
+				if (alias && *alias) it->alias.insert(reinterpret_cast<const char*>(alias));
 		}
 	}
-	FcFontSetDestroy(fs);
-	FcObjectSetDestroy(os);
-	FcPatternDestroy(pat);
-
+	if (fs) FcFontSetDestroy(fs);
+	if (os) FcObjectSetDestroy(os);
+	if (pat) FcPatternDestroy(pat);
 }
-vg_font* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
+
+bool font_cache_cx::load_face(FontStyle* fs)
 {
-	bool mb = mk_font(&_familys_name, family, style, weight, slant);
-	if (_temp.size()) {
-		return &_temp[0]->font;
+	if (fs->font.font) return true;
+	auto blob = hb_blob_create_from_file(fs->file.c_str());
+	auto font = load_face_from_blob(blob, static_cast<unsigned>(fs->index));
+	hb_blob_destroy(blob);
+	if (!font) return false;
+	read_capabilities(*fs, font);
+	if (fs->wght.present) fs->weight = effective_weight(fs->wght.value);
+	if (fs->ital.present && fs->ital.value >= 0.5f) fs->slant = VG_FONT_SLANT_ITALIC;
+	else if (fs->slnt_axis.present && std::abs(fs->slnt_axis.value) > 1.0f) fs->slant = VG_FONT_SLANT_OBLIQUE;
+	const unsigned instance = static_cast<unsigned>(fs->index) >> 16;
+	if (instance) {
+		auto face = hb_font_get_face(font);
+		fs->instance_style = font_name(face, hb_ot_var_named_instance_get_subfamily_name_id(face, instance - 1));
 	}
-	bool ab = mk_font(&_familys, family, style, weight, slant);
-	if (_temp.size()) {
-		return &_temp[0]->font;
-	}
-	return nullptr;
+	init_face(fs, this, font);
+	return true;
 }
 
-void font_cache_cx::select_font_face(const char* family, const char* style, int weight, int slant)
-{}
+FontStyle* font_cache_cx::resolve_face(const char* family, const char* style, int weight, int slant)
+{
+	if (!family || !*family) return nullptr;
+	const bool explicit_style = style && *style;
+	if (!weight && !slant) {
+		// Preserve the legacy direct/alias and custom/system lookup order. Custom
+		// faces historically had no subfamily name in this lookup path.
+		for (auto faces : {&_familys_name, &_familys}) {
+			if (explicit_style && faces == &_familys_name) continue;
+			auto matches = [&](FontStyle* fs) { return !explicit_style || fs->style == style; };
+			auto found = faces->find(family);
+			if (found != faces->end())
+				for (auto fs : found->second) if (matches(fs) && load_face(fs)) return fs;
+			for (auto& [key, candidates] : *faces)
+				for (auto fs : candidates)
+					if (fs->alias.count(family) && matches(fs) && load_face(fs)) return fs;
+		}
+		return nullptr;
+	}
+
+	std::vector<FontStyle*> candidates;
+	for (auto faces : {&_familys_name, &_familys}) {
+		auto found = faces->find(family);
+		if (found != faces->end()) candidates.insert(candidates.end(), found->second.begin(), found->second.end());
+		for (auto& [key, list] : *faces) {
+			if (key == family) continue;
+			for (auto fs : list) if (fs->alias.count(family)) candidates.push_back(fs);
+		}
+	}
+
+	const int target_weight = weight ? weight : VG_FONT_WEIGHT_REGULAR;
+	const int target_slant = slant ? slant : VG_FONT_SLANT_NORMAL;
+	FontStyle* best = nullptr;
+	std::tuple<int, int, int, int, int, int, int> best_score{};
+	for (auto fs : candidates) {
+		if (!load_face(fs)) continue;
+		const bool exact_style = explicit_style &&
+			(fs->instance_style.empty() ? fs->style == style : fs->instance_style == style || fs->style == style);
+		const auto c = resolve_coordinates(*fs, weight, slant);
+		const int hits = (weight && c.weight == weight) + (slant && c.slant == slant);
+		const bool static_exact = !fs->variable && hits == (!!weight + !!slant);
+		const auto score = std::make_tuple(int(!exact_style), -hits, int(!static_exact),
+			weight_group(c.weight, target_weight), std::abs(c.weight - target_weight),
+			slant_rank(c.slant, target_slant), -c.weight);
+		if (!best || score < best_score) {
+			best = fs;
+			best_score = score;
+		}
+	}
+	return best;
+}
+
+FontStyle* font_cache_cx::materialize(FontStyle* base, int weight, int slant)
+{
+	const auto key = std::make_tuple(base->id, weight, slant);
+	auto found = variants.find(key);
+	if (found != variants.end()) return found->second;
+	const auto c = resolve_coordinates(*base, weight, slant);
+	const bool synthetic_bold = !base->no_synthetic && !base->wght.present && weight > c.weight;
+	const bool synthetic_slant = !base->no_synthetic && c.slant == VG_FONT_SLANT_NORMAL &&
+		(slant == VG_FONT_SLANT_ITALIC || slant == VG_FONT_SLANT_OBLIQUE);
+	if (c.wght == base->wght.value && c.slnt == base->slnt_axis.value && c.ital == base->ital.value &&
+		!synthetic_bold && !synthetic_slant) return base;
+	// Do not evict live faces: lists, cached draw runs, and atlas entries borrow
+	// them. At capacity use the selected base until the next explicit reset.
+	if (variants.size() >= variant_limit || next_font_id >= font_id_limit) return base;
+	auto font = hb_font_create(hb_font_get_face(base->font.font));
+	if (font == hb_font_get_empty()) return base;
+	if (c.wght != base->wght.value) hb_font_set_variation(font, wght_tag, c.wght);
+	if (c.slnt != base->slnt_axis.value) hb_font_set_variation(font, slnt_tag, c.slnt);
+	if (c.ital != base->ital.value) hb_font_set_variation(font, ital_tag, c.ital);
+	if (synthetic_bold) {
+		const float amount = std::clamp((weight - c.weight) * 0.00009f, 0.001f, 0.05f);
+		hb_font_set_synthetic_bold(font, amount, amount, false);
+	}
+	if (synthetic_slant)
+		hb_font_set_synthetic_slant(font, slant == VG_FONT_SLANT_ITALIC ? 0.21255656f : 0.17632698f);
+
+	auto it = new FontStyle();
+	it->id = next_font_id++;
+	it->weight = synthetic_bold ? weight : c.weight;
+	it->slant = synthetic_slant ? slant : c.slant;
+	init_face(it, this, font);
+	variants.emplace(key, it);
+	return it;
+}
+
+font_family_t* font_cache_cx::get_font(const char* family, const char* style, int weight, int slant)
+{
+	auto base = resolve_face(family, style, weight, slant);
+	if (!base) return nullptr;
+	return &(weight || slant ? materialize(base, weight, slant) : base)->font;
+}
 
 bool font_cache_cx::load_font_from_path(const char* path, const char* name)
 {
-	if (!path || !*path)return false;
-	bool hr = FcConfigAppFontAddFile(cfg, (FcChar8*)path);
-	if (hr && name && *name)
-	{
-		// fc 只按文件内部族名登记；给出 name 时额外读入文件并按 name 登记，
-		// 这样 new_font_family 无需 get_sys_family() 刷新即可找到。
-		hb_blob_t* blob = hb_blob_create_from_file(path);
-		if (blob)
-		{
-			unsigned len = hb_blob_get_length(blob);
-			if (len > 0)
-			{
-				unsigned char* data = (unsigned char*)hb_blob_get_data(blob, nullptr);
-				register_font_memory(data, (long)len, name);
-			}
-			hb_blob_destroy(blob);
-		}
-	}
-	return hr;
+	if (!cfg || !path || !*path || !FcConfigAppFontAddFile(cfg, (const FcChar8*)path)) return false;
+	if (!name || !*name) return true;
+	auto blob = hb_blob_create_from_file(path);
+	unsigned len = 0;
+	auto data = hb_blob_get_data(blob, &len);
+	const bool ok = len <= static_cast<unsigned>((std::numeric_limits<long>::max)()) &&
+		register_font_memory(reinterpret_cast<unsigned char*>(const_cast<char*>(data)), static_cast<long>(len), name);
+	hb_blob_destroy(blob);
+	return ok;
 }
 
 bool font_cache_cx::add_font_dir(const char* dir)
 {
-	if (!dir || !*dir)return false;
-	return FcConfigAppFontAddDir(cfg, (FcChar8*)dir);
+	return cfg && dir && *dir && FcConfigAppFontAddDir(cfg, (const FcChar8*)dir);
 }
 
-bool font_cache_cx::load_font_from_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name)
+bool font_cache_cx::load_font_from_memory(unsigned char* data, long size, const char* name)
 {
-	return register_font_memory(fontBuffer, fontBufferByteSize, name);
+	return register_font_memory(data, size, name);
 }
 
-static hb_user_data_key_t fontStyleKey = {};
-static hb_user_data_key_t g_font_cache_key = {};
-
-bool font_cache_cx::register_font_memory(unsigned char* fontBuffer, long fontBufferByteSize, const char* name)
+bool font_cache_cx::register_font_memory(unsigned char* data, long size, const char* name)
 {
-	if (!fontBuffer || fontBufferByteSize <= 0)
-		return false;
-
-	// DUPLICATE: harfbuzz 立即拷贝内容，调用方随后可释放原缓冲。
-	hb_blob_t* blob = hb_blob_create((const char*)fontBuffer,
-		(int)fontBufferByteSize, HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
-	if (!blob || hb_blob_get_length(blob) == 0)
-	{
-		if (blob)hb_blob_destroy(blob);
-		return false;
-	}
-	hb_face_t* face = hb_face_create(blob, 0);
+	if (!data || size <= 0 || static_cast<unsigned long>(size) > (std::numeric_limits<unsigned>::max)() ||
+		next_font_id >= font_id_limit) return false;
+	// The caller may release or reuse the input buffer immediately.
+	auto blob = hb_blob_create(reinterpret_cast<const char*>(data), static_cast<unsigned>(size),
+		HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
+	auto font = load_face_from_blob(blob, 0);
 	hb_blob_destroy(blob);
-	if (!face || !hb_face_get_glyph_count(face))
-	{
-		if (face)hb_face_destroy(face);
-		return false;
-	}
-	hb_font_t* font = hb_font_create(face);
-
-	// 注册名：显式 name 优先，否则用字体文件内部族名。
-	char internal[256] = {};
-	unsigned int internal_len = sizeof(internal);
-	hb_ot_name_get_utf8(face, HB_OT_NAME_ID_FONT_FAMILY,
-		hb_language_get_default(), &internal_len, internal);
-	hb_face_destroy(face);
-
-	const char* key = (name && *name) ? name : internal;
-	if (!key || !*key)
-	{
-		if (font)hb_font_destroy(font);
-		return false;
-	}
-
-	FontStyle* it = new FontStyle();
-	if (!it)
-	{
+	if (!font) return false;
+	auto face = hb_font_get_face(font);
+	auto internal = font_name(face, HB_OT_NAME_ID_FONT_FAMILY); // Preserve legacy registration key.
+	if (internal.empty()) internal = font_name(face, HB_OT_NAME_ID_TYPOGRAPHIC_FAMILY);
+	const std::string key = name && *name ? name : internal;
+	if (key.empty()) {
 		hb_font_destroy(font);
 		return false;
 	}
-	it->family = key;
-	if (internal[0] && it->family != internal)it->alias.insert(internal);
-	it->index = 0;
+
+	auto it = new FontStyle();
 	it->id = next_font_id++;
-	it->font.font = font;
-	hb_font_set_user_data(font, (hb_user_data_key_t*)&fontStyleKey, (void*)(uintptr_t)it, nullptr, true);
-	hb_font_set_user_data(font, (hb_user_data_key_t*)&g_font_cache_key, (void*)(uintptr_t)this, nullptr, true);
-	hb_res_init(&it->font, 0);
+	it->family = key;
+	if (!internal.empty()) it->alias.insert(internal);
+	it->style = font_name(face, HB_OT_NAME_ID_TYPOGRAPHIC_SUBFAMILY);
+	if (it->style.empty()) it->style = font_name(face, HB_OT_NAME_ID_FONT_SUBFAMILY);
+	if (it->style.empty()) it->style = font_name(face, HB_OT_NAME_ID_WWS_SUBFAMILY);
+	for (auto id : {HB_OT_NAME_ID_TYPOGRAPHIC_FAMILY, HB_OT_NAME_ID_FULL_NAME}) {
+		auto alias = font_name(face, id);
+		if (!alias.empty()) it->alias.insert(std::move(alias));
+	}
+	it->weight = effective_weight(hb_style_get_value(font, HB_STYLE_TAG_WEIGHT));
+	it->slant = hb_style_get_value(font, HB_STYLE_TAG_ITALIC) >= 0.5f ? VG_FONT_SLANT_ITALIC :
+		hb_style_get_value(font, HB_STYLE_TAG_SLANT_ANGLE) < -1.0f ? VG_FONT_SLANT_OBLIQUE : VG_FONT_SLANT_NORMAL;
+	read_capabilities(*it, font);
+	init_face(it, this, font);
 	_familys_name[key].push_back(it);
 	return true;
 }
-size_t font_cache_cx::mk_font(std::map<std::string, std::vector<FontStyle*>>* pt, const char* family, const char* style, int weight, int slant)
-{
-	size_t n = 0;
-	_temp.clear();
-	if (!family || !(*family) || !pt)return n;
-	{
-		auto it = pt->find(family);
-		if (it != pt->end()) {
-			auto& v = it->second;
-			for (auto& vt : v)
-			{
-				bool bst = !style || !(*style);
-				if (!bst) {
-					bst = (style && *style && vt->style == style);
-				}
-				bool bw = vt->weight == weight || weight < 1;
-				bool bsl = vt->slant == slant || slant < 1;
-				if (bst && bw && bsl) {
-					_temp.push_back(vt);
-				}
-			}
-		}
-	}
-	if (_temp.empty()) {
-		for (auto& [k, v] : *pt) {
-			for (auto vt : v) {
-				if (vt) {
-					if (vt->alias.find(family) != vt->alias.end())
-					{
-						bool bst = !style || !(*style);
-						if (!bst) {
-							bst = (style && *style && vt->style == style);
-						}
-						bool bw = vt->weight == weight || weight < 1;
-						bool bsl = vt->slant == slant || slant < 1;
-						if (bst && bw && bsl) {
-							_temp.push_back(vt);
-						}
-					}
-				}
-			}
-		}
-	}
-	for (auto it : _temp) {
-		if (!it->font.font)
-		{
-			it->font.font = load_font(it->file.c_str(), it->index);
 
-		}
-		if (it->font.font)
-		{
-			it->id = next_font_id;
-			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&fontStyleKey, (void*)(uintptr_t)it, nullptr, true);
-			hb_font_set_user_data(it->font.font, (hb_user_data_key_t*)&g_font_cache_key, (void*)(uintptr_t)this, nullptr, true);
-			next_font_id++;
-			hb_res_init(&it->font, 0);
-			if (font_supports_slnt_axis(it->font.font)) {
-				//float desired = fc_slant_to_slant_angle(slant);
-				//hb_font_set_variation(font, HB_OT_TAG_VAR_AXIS_SLANT, desired);
-				it->slnt_applied = true;
-			}
-			n++;
-		}
-	}
-	return n;
+void font_family_get_style(const font_family_t* face, int* weight, int* slant)
+{
+	auto fs = face && face->font ? static_cast<const FontStyle*>(hb_font_get_user_data(face->font, &fontStyleKey)) : nullptr;
+	if (weight) *weight = fs ? fs->weight : 0;
+	if (slant) *slant = fs ? fs->slant : 0;
+}
+
+void font_familys_get_style(const font_familys_t* ffs, int* weight, int* slant)
+{
+	font_family_get_style(ffs && ffs->familys && ffs->count > 0 ? ffs->familys[0] : nullptr, weight, slant);
 }
 
 /* ─────────────────────────────────────────────
@@ -986,27 +997,26 @@ hb_font_t* find_face_for_codepoint(hb_font_t* font, uint32_t cp, uint32_t variat
 
 const char* font_cache_cx::weight_to_string(int w) {
 	switch (w) {
-	case FC_WEIGHT_THIN:		return "Thin";
-	case FC_WEIGHT_EXTRALIGHT:	return "ExtraLight";
-	case FC_WEIGHT_LIGHT:		return "Light";
-	case FC_WEIGHT_DEMILIGHT:	return "DemiLight";
-	case FC_WEIGHT_BOOK:		return "Book";
-	case FC_WEIGHT_REGULAR:		return "Regular";
-	case FC_WEIGHT_MEDIUM:		return "Medium";
-	case FC_WEIGHT_DEMIBOLD:	return "DemiBold";
-	case FC_WEIGHT_BOLD:		return "Bold";
-	case FC_WEIGHT_EXTRABOLD:	return "ExtraBold";
-	case FC_WEIGHT_BLACK:		return "Black";
-	case FC_WEIGHT_EXTRABLACK:	return "ExtraBlack";
+	case VG_FONT_WEIGHT_THIN:        return "Thin";
+	case VG_FONT_WEIGHT_EXTRA_LIGHT: return "ExtraLight";
+	case VG_FONT_WEIGHT_LIGHT:       return "Light";
+	case VG_FONT_WEIGHT_SEMI_LIGHT:  return "SemiLight";
+	case VG_FONT_WEIGHT_REGULAR:     return "Regular";
+	case VG_FONT_WEIGHT_MEDIUM:      return "Medium";
+	case VG_FONT_WEIGHT_SEMI_BOLD:   return "SemiBold";
+	case VG_FONT_WEIGHT_BOLD:        return "Bold";
+	case VG_FONT_WEIGHT_EXTRA_BOLD:  return "ExtraBold";
+	case VG_FONT_WEIGHT_BLACK:       return "Black";
+	default:                        return "Default";
 	}
-	return "Black";
 }
 
 const char* font_cache_cx::slant_to_string(int s) {
 	switch (s) {
-	case FC_SLANT_ITALIC:  return "Italic";
-	case FC_SLANT_OBLIQUE: return "Oblique";
-	default:               return "Roman";
+	case VG_FONT_SLANT_ITALIC:  return "Italic";
+	case VG_FONT_SLANT_OBLIQUE: return "Oblique";
+	case VG_FONT_SLANT_NORMAL:  return "Roman";
+	default:                   return "Default";
 	}
 }
 
@@ -1101,10 +1111,11 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 			hb_font_set_scale(font, em, em);
 			hb_font_draw_glyph(font, glyph_id, funcs, &temp_path);
 
-			// 拷贝到持久内存
+			// Only the vector entry owns this allocation. Whitespace has no path.
 			size_t bytes = temp_path.data.size() * sizeof(float);
-			float* path_copy = (float*)ac->alloc(bytes, 0);
-			memcpy(path_copy, temp_path.data.data(), bytes);
+			auto allocator = ac ? ac : vg_get_default_allocator();
+			float* path_copy = bytes ? static_cast<float*>(allocator->alloc(bytes, 0)) : nullptr;
+			if (path_copy) memcpy(path_copy, temp_path.data.data(), bytes);
 
 			glyph_atlas_entry entry{};
 			entry.type = glyph_atlas_entry::VECTOR;
@@ -1536,8 +1547,7 @@ float vg_measure_text_width(const font_familys_t* ffs, int fontsize, const char*
 vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size)
 {
 	vg_font_metrics_t out = {};
-	int fontsize = (int)(font_size + 0.5f);
-	if (fontsize < 1) fontsize = 1;
+	int fontsize = (int)(std::isfinite(font_size) ? std::clamp(font_size, 1.0f, 32768.0f) + 0.5f : 1.0f);
 
 	font_cache_cx* cache = vg_measure_cache(ffs);
 	if (cache)
@@ -1566,6 +1576,38 @@ vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size
 
 	out.ascent = ascent;
 	out.line_height = (float)lh;
+	const float px = (float)fontsize;
+	out.x_height = px * 0.5f;
+	out.cap_height = px * 0.7f;
+	out.underline_thickness = std::max(1.0f, std::round(px / 14.0f));
+	out.underline_offset = std::max(1.0f, std::round(px * 0.11f));
+	out.strikeout_thickness = out.underline_thickness;
+	out.strikeout_offset = -out.x_height * 0.55f;
+	if (ffs && ffs->count > 0 && ffs->familys && ffs->familys[0] && ffs->familys[0]->font)
+	{
+		auto* font = ffs->familys[0]->font;
+		// Use fractional pixel precision: small positive design thicknesses
+		// would otherwise round to zero at common UI font sizes.
+		hb_font_set_scale(font, fontsize * 64, fontsize * 64);
+		auto metric = [&](hb_ot_metrics_tag_t tag, float fallback, bool with_fallback = false)
+		{
+			hb_position_t value = 0;
+			if (with_fallback)
+				hb_ot_metrics_get_position_with_fallback(font, tag, &value);
+			else if (!hb_ot_metrics_get_position(font, tag, &value))
+				return fallback;
+			return value != 0 ? value / 64.0f : fallback;
+		};
+		out.x_height = metric(HB_OT_METRICS_TAG_X_HEIGHT, out.x_height, true);
+		out.cap_height = metric(HB_OT_METRICS_TAG_CAP_HEIGHT, out.cap_height, true);
+		out.underline_offset = -metric(HB_OT_METRICS_TAG_UNDERLINE_OFFSET, -out.underline_offset);
+		const float ut = metric(HB_OT_METRICS_TAG_UNDERLINE_SIZE, out.underline_thickness);
+		if (ut > 0) out.underline_thickness = std::max(1.0f, ut);
+		out.strikeout_offset = -metric(HB_OT_METRICS_TAG_STRIKEOUT_OFFSET, out.x_height * 0.55f);
+		const float st = metric(HB_OT_METRICS_TAG_STRIKEOUT_SIZE, out.underline_thickness);
+		out.strikeout_thickness = st > 0 ? std::max(1.0f, st) : out.underline_thickness;
+		hb_font_set_scale(font, fontsize, fontsize);
+	}
 
 	if (cache)
 		cache->font_metrics_cache.emplace(std::make_pair(ffs, fontsize), out);
@@ -2832,6 +2874,47 @@ vg_text_run_cx* new_text_run(vg_text_run_cx* ptr, text_st_t* p, text_style_t* ts
 
 	return run;
 }
+void vg_text_run_cx::visit_ink(float origin_x, float origin_y, vg_text_ink_fn emit, void* user) const
+{
+	float x = origin_x, y = origin_y;
+	hb_font_t* font = nullptr;
+	constexpr float unit = 1.0f / 64.0f;
+	for (const auto& seg : _shaped) {
+		for (const auto& glyph : seg.glyphs) {
+			if (glyph.glyph_id && glyph.cache_entry && glyph.cache_entry->font) {
+				auto* next = glyph.cache_entry->font;
+				if (font != next) {
+					if (font) hb_font_set_scale(font, _fontsize, _fontsize);
+					font = next;
+					hb_font_set_scale(font, _fontsize * 64, _fontsize * 64);
+				}
+				hb_glyph_extents_t e{};
+				if (hb_font_get_glyph_extents(font, glyph.glyph_id, &e) && e.width && e.height) {
+					const float w = e.width * unit, h = -e.height * unit;
+					emit(user, x + glyph.x_offset + e.x_bearing * unit + std::min(0.0f, w),
+						y + glyph.y_offset - e.y_bearing * unit + std::min(0.0f, h), std::abs(w), std::abs(h));
+				}
+			}
+			x += glyph.x_advance;
+		}
+		if (seg.new_line) { x = origin_x; y += _st.lineheight; }
+	}
+	if (font) hb_font_set_scale(font, _fontsize, _fontsize);
+}
+
+void vg_visit_text_ink(const text_st_t* text, const text_style_t* style,
+	float baseline_x, float baseline_y, vg_text_ink_fn emit, void* user)
+{
+	if (!text || !text->text || !style || !style->family || style->family->count <= 0 ||
+		!style->family->familys || !style->family->familys[0] || !style->family->familys[0]->font ||
+		!emit || !std::isfinite(style->fontsize) || style->fontsize > 4096 ||
+		!std::isfinite(baseline_x) || !std::isfinite(baseline_y)) return;
+	text_st_t input = *text;
+	text_style_t st = *style;
+	vg_text_run_cx run;
+	if (new_text_run(&run, &input, &st, nullptr)) run.visit_ink(baseline_x, baseline_y, emit, user);
+}
+
 // Composite premultiplied RGBA over premultiplied RGBA, with integer rounding.
 static void rgba8_over(uint8_t* d, unsigned r, unsigned g, unsigned b, unsigned a)
 {

@@ -45,7 +45,8 @@ struct pipelinestate_p {
 };
 // 创建主窗口和gpu设备
 bool vg_sdl3_init(ovg_sdl3_ctx* g, int width, int height, bool is_vulkan);
-// 设备创建与销毁
+// Destroy all FBOs and contexts before freeing the OVG device, then destroy
+// the underlying SDL_GPUDevice. The device's fallback texture is shared by its contexts.
 ovg_device_t* new_sdl3gpu_device(SDL_GPUDevice* gpuDevice);
 void          free_sdl3gpu_device(ovg_device_t* dev);
 // 渲染上下文创建与销毁
@@ -92,5 +93,7 @@ typedef struct ovg_fx_stats_t {
 } ovg_fx_stats_t;
 
 void ovg_fx_get_stats(ovg_ctx_t* ctx, ovg_fx_stats_t* out);
-// 设置池/待回收预算；传 0 表示恢复默认值（下限 1MB）
+// Sets the idle cache and pending recycling budgets. The pending budget is
+// also the per-frame effect texture limit; effects that don't fit are skipped
+// without changing the source draw. 0 restores defaults; minimum is 1 MiB.
 void ovg_fx_set_budget(ovg_ctx_t* ctx, size_t pool_bytes, size_t pending_bytes);
