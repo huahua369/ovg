@@ -1074,7 +1074,21 @@ static void _hb_close_path(hb_draw_funcs_t* funcs, void* draw_data, hb_draw_stat
 	b->close();
 }
 
-hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
+// Return the bitmap to its rasterizer only after the atlas or CPU compositor
+// has finished reading it. HarfBuzz takes ownership on recycle.
+struct glyph_raster_recycler
+{
+	vg_font* font;
+	bool painted = false;
+	void operator()(hb_raster_image_t* image) const
+	{
+		if (painted) hb_raster_paint_recycle_image(font->pnt, image);
+		else hb_raster_draw_recycle_image(font->rdr, image);
+	}
+};
+using glyph_raster = std::unique_ptr<hb_raster_image_t, glyph_raster_recycler>;
+
+static glyph_raster build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale);
 
 glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32_t glyph_id, int fontsize)
 {
@@ -1158,25 +1172,23 @@ glyph_atlas_entry* font_cache_cx::get_cache_lookup_glyph(hb_font_t* font, uint32
 		glm::ivec4 rc = {};
 		glm::ivec2 pos = {};
 		// 装箱进 image_cache_cx
-		auto hp = &font_ptr->font;
+		auto* hp = &font_ptr->font;
+		const auto img = build_glyph_image_hb(hp, glyph_id, fontsize, &rc, fsc);
+		if (!img) return ret;
 		raster_image_t img_ds = {};
-		{
-			hb_raster_image_t* img = build_glyph_image_hb(&font_ptr->font, glyph_id, fontsize, &rc, fsc);
-			if (img) {
-				hb_raster_image_get_extents(img, (hb_raster_extents_t*)&img_ds);
-				img_ds.fmt = hb_raster_image_get_format(img);
-				img_ds.data = (uint8_t*)hb_raster_image_get_buffer(img);
-			}
-			else {
-				return ret;
-			}
-		}
+		hb_raster_image_get_extents(img.get(), (hb_raster_extents_t*)&img_ds);
+		img_ds.fmt = hb_raster_image_get_format(img.get());
+		img_ds.data = (uint8_t*)hb_raster_image_get_buffer(img.get());
+
+		const bool exact_bounds = fsc.x == 1 && !hp->pnt;
 		int ow = rc.z / fsc.x;
-
-		if (ow > fontsize)//|| rc.w > fontsize)
-			ow++;
-		ovg_image_data* img_data = image_cache.push_cache_size({ ow,rc.w }, &pos);
-
+		if (!exact_bounds && ow > fontsize) ++ow;
+		// A tightly bounded mask needs an empty texel on all sides when sampled.
+		const int gutter = exact_bounds ? 1 : 0;
+		const int stored_h = std::max(rc.w, (int)img_ds.height);
+		ovg_image_data* img_data = image_cache.push_cache_size({ow + 2 * gutter, stored_h + 2 * gutter}, &pos);
+		if (!img_data) return ret;
+		pos += glm::ivec2(gutter);
 		gfont_copy_image(img_data, pos.x, pos.y, -1, &img_ds, rc, false, fsc.x > 1, SubpixelLayout::RGB);
 
 		glyph_atlas_entry entry{};
@@ -1617,76 +1629,66 @@ vg_font_metrics_t vg_get_font_metrics(const font_familys_t* ffs, float font_size
 }
 
 
-hb_raster_image_t* build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
+static glyph_raster build_glyph_image_hb(vg_font* hp, uint32_t gid, int font_size, glm::ivec4* ot, const glm::vec2& scale)
 {
-	hb_raster_image_t* img = nullptr;
-	hb_glyph_extents_t gext = {};
-	hb_glyph_extents_t gext0 = {};
-	hb_font_extents_t extents[2] = {};
-	auto rdr = hp->rdr;
-	auto font = hp->font;
-	auto pnt = hp->pnt;
-	hb_font_set_scale(font, font_size, font_size);
-	hb_font_get_glyph_extents(font, gid, &gext0);
+	glyph_raster img(nullptr, {hp});
+	auto* rdr = hp->rdr;
+	auto* font = hp->font;
+	auto* pnt = hp->pnt;
 	hb_raster_draw_reset(rdr);
-	hb_bool_t bhe = hb_font_get_h_extents(hp->font, &extents[0]);
-	hb_bool_t bve = hb_font_get_v_extents(hp->font, &extents[1]);
-	float x, y;
-	hb_raster_draw_get_scale_factor(rdr, &x, &y);
-	uint32_t ww = font_size;
-	int pad = std::max(2.0, font_size / 4.0);
-
-	hb_raster_extents_t rex = {};
-	auto ext = &rex;
-	float sx = 1.0, sy = 1.0;
-	float gx = 0.0, gy = 0.0;
-	float pmin_x = 1e30f, pmin_y = 1e30f;
-	float pmax_x = -1e30f, pmax_y = -1e30f;
-	float margin = 2;
-	do {
+	hb_font_set_scale(font, font_size, font_size);
+	const bool exact_bounds = scale.x == 1 && scale.y == 1 && !pnt;
+	if (exact_bounds)
+	{
+		// At small sizes integer font extents can round inward, and an
+		// explicit raster box then drops coverage before the text is drawn.
+		// Let HarfBuzz bound the actual outline in the flipped pixel space.
+		hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, -1.f, 0.f, 0.f);
+		hb_raster_draw_glyph(rdr, font, gid);
+		img.reset(hb_raster_draw_render(rdr));
+	}
+	else
+	{
+		// Keep the existing color paint and LCD buffer geometry.
+		constexpr int margin = 2;
+		hb_glyph_extents_t regular = {}, scaled = {};
+		hb_font_get_glyph_extents(font, gid, &regular);
 		hb_font_set_scale(font, font_size * scale.x, font_size * scale.y);
-		bool bext = hb_font_get_glyph_extents(font, gid, &gext);
-		ext->x_origin = gext.x_bearing;
-		ext->y_origin = -(gext.y_bearing + margin);
-		ext->width = ovg::align_up(abs(gext.x_bearing) + gext.width + margin * 2, 2);
-		ext->height = ovg::align_up(abs(gext.height) + abs(gext.y_bearing), 2);
-		ext->stride = 0;
-		if (pnt)
+		const bool has_extents = hb_font_get_glyph_extents(font, gid, &scaled);
+		hb_raster_extents_t box = {};
+		box.x_origin = scaled.x_bearing;
+		box.y_origin = -(scaled.y_bearing + margin);
+		box.width = ovg::align_up(abs(scaled.x_bearing) + scaled.width + margin * 2, 2);
+		box.height = ovg::align_up(abs(scaled.height) + abs(scaled.y_bearing), 2);
+		if (pnt && has_extents)
 		{
-			hb_raster_paint_set_extents(pnt, ext);
+			hb_raster_paint_set_extents(pnt, &box);
 			hb_raster_paint_set_foreground(pnt, HB_COLOR(255, 255, 255, 255));
-			if (bext)//&& hb_raster_paint_set_glyph_extents(pnt, &gext))
-			{
-				hb_raster_paint_set_transform(pnt, 1.f, 0.f, 0.f, -1.f, 0.f, 0.f);
-				hb_raster_paint_glyph(pnt, font, gid);	// 光栅化颜色字形
-				img = hb_raster_paint_render(pnt);
-			}
-			if (img)
-			{
-				hb_raster_paint_recycle_image(pnt, img);
-				break;
-			}
+			hb_raster_paint_set_transform(pnt, 1.f, 0.f, 0.f, -1.f, 0.f, 0.f);
+			hb_raster_paint_glyph(pnt, font, gid);
+			img.reset(hb_raster_paint_render(pnt));
+			img.get_deleter().painted = !!img;
 		}
+		if (!img)
 		{
-			//hb_raster_draw_set_glyph_extents(rdr, &gext);
-			hb_raster_draw_set_extents(rdr, ext);
-			hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, -1.f, 0.0f, 0.0f);
-			hb_raster_draw_glyph(rdr, font, gid);	// 单色
-			img = hb_raster_draw_render(rdr);
-			if (img) { hb_raster_draw_recycle_image(rdr, img); }
+			hb_raster_draw_set_extents(rdr, &box);
+			hb_raster_draw_set_transform(rdr, 1.f, 0.f, 0.f, -1.f, 0.f, 0.f);
+			hb_raster_draw_glyph(rdr, font, gid);
+			img.reset(hb_raster_draw_render(rdr));
 		}
-	} while (0);
-	if (img) {
+		ot->x = regular.x_bearing;
+		ot->y = regular.y_bearing + margin;
+		ot->w = ovg::align_up(abs(regular.height) + margin * 2, 4);
+	}
+	if (img)
+	{
 		hb_raster_extents_t ext = {};
-		hb_raster_image_get_extents(img, &ext);
-		if (!ext.width || !ext.height) { img = 0; return img; }
-		if (ot)
-		{
-			ot->x = gext0.x_bearing;
-			ot->y = gext0.y_bearing + margin;
+		hb_raster_image_get_extents(img.get(), &ext);
+		if (!ext.width || !ext.height) img.reset();
+		else if (exact_bounds)
+			*ot = {ext.x_origin, -ext.y_origin, (int)ext.width, (int)ext.height};
+		else
 			ot->z = ext.width;
-			ot->w = ovg::align_up(abs(gext0.height) + margin * 2, 4);
-		}
 	}
 	return img;
 }
@@ -3023,6 +3025,7 @@ static bool blend_rgba8_layout(const vg_text_rgba_layout& layout, int tx, int ty
             int sw = 0, sh = 0, pitch = 0, sx = 0, sy = 0;
             int bearing_x = 0, bearing_y = 0;
             bool color = e->has_color, bgra = true, a8 = false;
+            glyph_raster image(nullptr, {});
             if (cmd.type == glyph_draw_cmd::RASTER) {
                 const auto* atlas = (const ovg_image_data*)e->atlas_img;
                 if (!atlas || !atlas->data) return false;
@@ -3038,13 +3041,13 @@ static bool blend_rgba8_layout(const vg_text_rgba_layout& layout, int tx, int ty
                 auto* fs = (FontStyle*)hb_font_get_user_data(e->font, &fontStyleKey);
                 if (!gid || !fs) return false;
                 glm::ivec4 rc = {};
-                hb_raster_image_t* image = build_glyph_image_hb(&fs->font, gid, cmd.fontsize, &rc, {1, 1});
+                image = build_glyph_image_hb(&fs->font, gid, cmd.fontsize, &rc, {1, 1});
                 if (!image) return false;
                 hb_raster_extents_t ext = {};
-                hb_raster_image_get_extents(image, &ext);
-                auto fmt = hb_raster_image_get_format(image);
+                hb_raster_image_get_extents(image.get(), &ext);
+                auto fmt = hb_raster_image_get_format(image.get());
                 if (fmt != HB_RASTER_FORMAT_A8 && fmt != HB_RASTER_FORMAT_BGRA32) return false;
-                src = (const uint8_t*)hb_raster_image_get_buffer(image);
+                src = (const uint8_t*)hb_raster_image_get_buffer(image.get());
                 pitch = ext.stride; sw = std::min((int)ext.width, rc.z);
                 sh = std::min((int)ext.height, rc.w);
                 bearing_x = rc.x; bearing_y = rc.y;
